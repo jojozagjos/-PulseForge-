@@ -2,8 +2,6 @@
   "trackId": "birdbrain",
   "title": "BIRDBRAIN",
   "artist": "OK Glass feat. Kasane Teto",
-  "bpm": 120,
-  "durationMs": 180000,
   "audio": {
     "wav": "/assets/music/birdbrain.mp3"
   },

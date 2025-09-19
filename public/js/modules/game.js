@@ -1,16 +1,29 @@
 // public/js/modules/game.js
 import { AudioPlayer } from "./audio.js";
 
+/** Timing windows (ms) */
+const PERFECT_MS = 30;
+const GREAT_MS   = 65;
+const GOOD_MS    = 100;
+
 /** Visual tuning */
-const WHITE_FLASH_MS = 140;      // used for taps (not holds now)
+const WHITE_FLASH_MS = 140;      // taps only
 const HIT_FADE_RATE  = 0.05;
 const MISS_FADE_RATE = 0.10;
 const HOLD_BODY_FADE = 0.06;
 
+/** Visual options */
+const VIS = {
+  laneColors: [0x19cdd0, 0x8A5CFF, 0xC8FF4D, 0xFFA94D], // teal, purple, lime, orange
+  showHitWindows: true,   // translucent guides around the judge line
+  receptorGlow: true,     // glow pulse on key press and on hit
+  ringOnHit: true         // expanding ring on Great/Perfect
+};
+
 export class Game {
   constructor(runtime, settings) {
     this.runtime = runtime;
-    this.settings = settings;
+    this.settings = settings || {};
 
     // Find or create canvas safely
     this.canvas = document.getElementById("game-canvas");
@@ -38,6 +51,7 @@ export class Game {
 
     // Inputs / holds
     this.keyDown = new Set();
+    this.held = []; // lane-held booleans set in _buildScene/_prepareInputs
     // lane -> { endMs, broken, headRef, bodyRef }
     this.activeHoldsByLane = new Map();
 
@@ -49,12 +63,55 @@ export class Game {
     this.$judge = null;
     this.fxLayer = null;
     this.spriteByNote = new Map();
+
+    // Caches, pools, and visual elements
+    this._texCache = {
+      headNormal: null,
+      headWhite: null,
+      headGloss: null,
+      bodyNormalByLen: new Map(),
+      bodyWhiteByLen: new Map(),
+      _headW: null,
+      _headH: null
+    };
+    this._fxStyles = null;
+    this._fxPool = [];
+    this._lastHud = { combo: null, acc: null, score: null };
+
+    this.vis = VIS;
+    this.receptors = [];   // per-lane receptors at the judge line
+    this.judgeStatic = null;
+    this.receptorLayer = null;
+    this._ringTex = null;  // cached ring texture for hit FX
+
+    // Per-lane note indices for hit scanning
+    this.notesByLane = [];
+    this.nextIdxByLane = [];
   }
 
   async run() {
     this.canvas.style.display = "block";
+    // Clamp resolution to reduce fill-rate on high-DPI screens
+    const clampRes = Math.max(
+      1,
+      Math.min(
+        this.settings.renderScale || 1,
+        (window?.devicePixelRatio || 1)
+      )
+    );
+
     this.app = new PIXI.Application();
-    await this.app.init({ canvas: this.canvas, width: this.width, height: this.height, antialias: true, background: 0x0a0c10 });
+    await this.app.init({
+      canvas: this.canvas,
+      width: this.width,
+      height: this.height,
+      antialias: false,
+      background: 0x0a0c10,
+      resolution: clampRes,
+      powerPreference: "high-performance"
+    });
+    this.app.ticker.maxFPS = this.settings.maxFps || 120;
+
     this._buildScene();
 
     if (this.runtime.mode === "solo") await this._playSolo(this.runtime.manifest);
@@ -93,14 +150,16 @@ export class Game {
   }
 
   _buildScene() {
-    // Subtle grid
+    // Subtle grid (static)
     const grid = new PIXI.Graphics();
     grid.alpha = 0.22;
     for (let i = 0; i < 44; i++) { grid.moveTo(0, i * 18); grid.lineTo(this.width, i * 18); }
     this.app.stage.addChild(grid);
+    if ("cacheAsBitmap" in grid) grid.cacheAsBitmap = true;
 
     // Lanes
     this.laneCount = 4;
+    this.held = new Array(this.laneCount).fill(false);
     this.laneWidth = Math.max(120, Math.min(180, Math.floor(this.width / 10)));
     this.laneGap = Math.max(18, Math.min(32, Math.floor(this.width / 70)));
     const totalW = this.laneCount * this.laneWidth + (this.laneCount - 1) * this.laneGap;
@@ -116,19 +175,67 @@ export class Game {
       g.stroke({ width: 2, color: 0x2a3142 });
       g.alpha = 0.95;
       this.app.stage.addChild(g);
+      if ("cacheAsBitmap" in g) g.cacheAsBitmap = true;
     }
 
-    const j = new PIXI.Graphics();
-    j.moveTo(this.startX - 12, this.judgeY);
-    j.lineTo(this.startX + totalW + 12, this.judgeY);
-    j.stroke({ width: 4, color: 0x25f4ee });
-    this.app.stage.addChild(j);
+    // ===== Judge line (static) + receptors (dynamic) =====
+    this.judgeStatic = new PIXI.Container();
+    this.app.stage.addChild(this.judgeStatic);
 
-    // Notes layer
+    // Bright core line + faint halo
+    {
+      const core = new PIXI.Graphics();
+      core.moveTo(this.startX - 12, this.judgeY);
+      core.lineTo(this.startX + totalW + 12, this.judgeY);
+      core.stroke({ width: 3, color: 0xffffff, alpha: 0.9 });
+      this.judgeStatic.addChild(core);
+
+      const halo = new PIXI.Graphics();
+      halo.moveTo(this.startX - 14, this.judgeY);
+      halo.lineTo(this.startX + totalW + 14, this.judgeY);
+      halo.stroke({ width: 10, color: 0x25f4ee, alpha: 0.15 });
+      this.judgeStatic.addChild(halo);
+    }
+    if ("cacheAsBitmap" in this.judgeStatic) this.judgeStatic.cacheAsBitmap = true;
+
+    // Per-lane receptors (tri-chevrons pointing to the line)
+    this.receptorLayer = new PIXI.Container();
+    this.app.stage.addChild(this.receptorLayer);
+
+    this.receptors = [];
+    for (let i = 0; i < this.laneCount; i++) {
+      const laneCenterX = this._laneX(i) + this.laneWidth / 2;
+
+      const rec = new PIXI.Container();
+      rec.x = laneCenterX;
+      rec.y = this.judgeY;
+      rec.alpha = 0.95;
+
+      const chev = new PIXI.Graphics();
+      const c = this.vis.laneColors[i % this.vis.laneColors.length];
+      chev.moveTo(-14, -16); chev.lineTo(0, -4); chev.lineTo(14, -16);
+      chev.stroke({ width: 3, color: c, alpha: 0.95 });
+      rec.addChild(chev);
+
+      const bar = new PIXI.Graphics();
+      bar.roundRect(-this.laneWidth * 0.35, -2, this.laneWidth * 0.7, 4, 2);
+      bar.fill({ color: c, alpha: 0.25 });
+      rec.addChild(bar);
+
+      const glow = new PIXI.Graphics();
+      glow.roundRect(-this.laneWidth * 0.38, -6, this.laneWidth * 0.76, 12, 4);
+      glow.fill({ color: c, alpha: 0.0 });
+      rec.addChild(glow);
+
+      rec.__glow = glow;
+      rec.__pulse = 0;
+      this.receptorLayer.addChild(rec);
+      this.receptors.push(rec);
+    }
+
+    // Notes and FX layers
     this.noteLayer = new PIXI.Container();
     this.app.stage.addChild(this.noteLayer);
-
-    // Floating FX layer (for animated judgments)
     this.fxLayer = new PIXI.Container();
     this.app.stage.addChild(this.fxLayer);
 
@@ -137,20 +244,38 @@ export class Game {
     this.$acc = document.getElementById("hud-acc");
     this.$score = document.getElementById("hud-score");
 
-    // Ensure DOM judgment element exists and is visible
     this._ensureJudgmentElement();
+
+    this._fxStyles = {
+      Perfect: new PIXI.TextStyle({
+        fill: 0x25F4EE, fontSize: 36, fontFamily: "Arial", fontWeight: "bold",
+        dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
+      }),
+      Great: new PIXI.TextStyle({
+        fill: 0xC8FF4D, fontSize: 36, fontFamily: "Arial", fontWeight: "bold",
+        dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
+      }),
+      Good: new PIXI.TextStyle({
+        fill: 0x8A5CFF, fontSize: 36, fontFamily: "Arial", fontWeight: "bold",
+        dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
+      }),
+      Miss: new PIXI.TextStyle({
+        fill: 0xaa4b5b, fontSize: 36, fontFamily: "Arial", fontWeight: "bold",
+        dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
+      })
+    };
   }
 
   async _playSolo(manifest) {
     const player = new AudioPlayer();
     await player.load(manifest.audioUrl);
     this.chart = manifest;
+    this._prepareNotes();
     this._prepareInputs();
 
     const audioStartAtSec = player.ctx.currentTime + this.leadInMs / 1000;
     const source = player.playAt(audioStartAtSec);
 
-    // Map WebAudio time to performance.now()
     const perfAtAudioZero = performance.now() - player.ctx.currentTime * 1000;
     const startPerfMs = perfAtAudioZero + audioStartAtSec * 1000;
 
@@ -162,30 +287,32 @@ export class Game {
     const track = rt.track;
     const diff = rt.difficulty || "normal";
     const chart = await fetch(track.charts[diff]).then(r => r.json());
-    chart.audioUrl = track.audio.wav || track.audio.mp3;
-    this.chart = chart;
+    chart.audioUrl = track.audio?.wav || track.audio?.mp3;
 
     const player = new AudioPlayer();
     await player.load(chart.audioUrl);
+    this.chart = chart;
+    this._prepareNotes();
     this._prepareInputs();
 
-    const nowEpoch = Date.now();
-    const delaySec = Math.max(0.05, (rt.startAt - nowEpoch) / 1000);
+    const delaySec = Math.max(0, rt.startAt ? (rt.startAt - Date.now()) / 1000 : 0);
     const audioStartAtSec = player.ctx.currentTime + delaySec;
     const source = player.playAt(audioStartAtSec);
     const startPerfMs = performance.now() + delaySec * 1000;
 
-    const secret = rt.secret, socket = rt.socket, roomCode = rt.roomCode;
-    let lastSent = 0;
-    const sendBundle = () => {
-      const t = Date.now(); if (t - lastSent < 120) return; lastSent = t;
-      const bundle = { t, acc: this.state.acc, score: this.state.score, combo: this.state.combo };
-      bundle.mac = pseudoHmac(JSON.stringify({ t: bundle.t, acc: bundle.acc, score: bundle.score, combo: bundle.combo }), secret);
-      socket.emit("playEvent", { code: roomCode, bundle });
-    };
+    await this._gameLoop(startPerfMs, null);
+    source.stop();
+  }
 
-    await this._gameLoop(startPerfMs, sendBundle);
-    source.stop(); socket.emit("complete", { code: roomCode });
+  _prepareNotes() {
+    this.chart.notes.sort((a, b) => a.tMs - b.tMs);
+    this.notesByLane = Array.from({ length: this.laneCount }, () => []);
+    for (const n of this.chart.notes) {
+      if (typeof n.lane === "number" && n.lane >= 0 && n.lane < this.laneCount) {
+        this.notesByLane[n.lane].push(n);
+      }
+    }
+    this.nextIdxByLane = Array.from({ length: this.laneCount }, () => 0);
   }
 
   _prepareInputs() {
@@ -197,12 +324,17 @@ export class Game {
       const k = (e.key || "").toUpperCase(); if (!(k in map)) return;
       if (this.keyDown.has(k)) return;
       this.keyDown.add(k);
-      this._attemptHit(map[k], true);
+      const lane = map[k];
+      this.held[lane] = true;
+      this._flashReceptor(lane, 0.8);
+      this._attemptHit(lane, true);
     };
     window.onkeyup = e => {
       const k = (e.key || "").toUpperCase(); if (!(k in map)) return;
+      const lane = map[k];
       this.keyDown.delete(k);
-      this._attemptHoldRelease(map[k]);
+      this.held[lane] = false;
+      this._attemptHoldRelease(lane);
     };
   }
 
@@ -211,8 +343,6 @@ export class Game {
     const nowMs = this.state.timeMs + (this.settings.latencyMs || 0);
     const hold = this.activeHoldsByLane.get(lane);
     if (!hold || hold.broken) return;
-
-    // Early release -> break hold and fade both parts
     if (nowMs < hold.endMs - 80) {
       hold.broken = true;
       this.state.combo = 0;
@@ -227,7 +357,6 @@ export class Game {
       }
       this.activeHoldsByLane.delete(lane);
     }
-    // Releasing after tail is okay; completion handled in loop.
   }
 
   _attemptHit(lane, isDown) {
@@ -235,21 +364,22 @@ export class Game {
     if (this.state.timeMs < 0) return;
     const nowMs = this.state.timeMs + (this.settings.latencyMs || 0);
 
-    for (let i = this.state.nextIdx; i < this.chart.notes.length; i++) {
-      const n = this.chart.notes[i]; if (n.hit) continue; if (n.lane !== lane) continue;
+    const arr = this.notesByLane[lane] || [];
+    let idx = this.nextIdxByLane[lane] || 0;
+
+    for (let i = idx; i < arr.length; i++) {
+      const n = arr[i]; if (n.hit) { idx = i + 1; continue; }
       const dt = nowMs - n.tMs, adt = Math.abs(dt);
       const isHold = (n.dMs && n.dMs > 0);
 
-      if (adt <= 30) this._registerHit(n, lane, "Perfect", isHold);
-      else if (adt <= 65) this._registerHit(n, lane, "Great", isHold);
-      else if (adt <= 100) this._registerHit(n, lane, "Good", isHold);
-      else if (dt < -120) { break; }
-      else { continue; }
-      return;
+      if (adt <= PERFECT_MS) { this._registerHit(n, lane, "Perfect", isHold); idx = i + 1; break; }
+      else if (adt <= GREAT_MS) { this._registerHit(n, lane, "Great", isHold); idx = i + 1; break; }
+      else if (adt <= GOOD_MS) { this._registerHit(n, lane, "Good", isHold); idx = i + 1; break; }
+      else if (dt < -120) { break; } // too early for this lane
+      else { idx = i + 1; continue; } // late, skip
     }
 
-    this.state.combo = 0;
-    this._judgment("Miss", true);
+    this.nextIdxByLane[lane] = idx;
   }
 
   _registerHit(note, lane, label, isHold) {
@@ -261,13 +391,20 @@ export class Game {
     this.state.hits += 1;
     this._judgment(label);
 
+    // Pulse receptor and spawn a ring for Great/Perfect
+    const lc = this.vis.laneColors[lane % this.vis.laneColors.length];
+    this._flashReceptor(lane, label === "Perfect" ? 1.0 : 0.7);
+    if (label === "Perfect" || label === "Great") {
+      const cx = this._laneX(lane) + this.laneWidth / 2;
+      this._spawnRing(cx, this.judgeY, lc);
+    }
+
     const vis = this.spriteByNote?.get(note);
     if (vis) {
       if (isHold) {
-        // Paint head/body white and keep them solid during the hold
         this._paintHeadWhite(vis.head);
         if (vis.body) {
-          this._paintBodyWhite(vis, note);     // upward geometry
+          this._paintBodyWhite(vis, note);
           vis.body.__pfHoldActive = true;
         }
         vis.head.__pfHoldActive = true;
@@ -278,34 +415,24 @@ export class Game {
           headRef: vis.head,
           bodyRef: vis.body || null
         });
-        // DO NOT start fading yet; wait until tail completion.
       } else {
-        // Tap: flash then fade
         this._paintHeadWhite(vis.head);
         vis.head.__pfFlashUntil = (this.state.timeMs >= 0 ? this.state.timeMs : 0) + WHITE_FLASH_MS;
         vis.head.__pfFadeRate = HIT_FADE_RATE;
       }
     }
-
-    // Advance next index
-    while (this.state.nextIdx < this.chart.notes.length && this.chart.notes[this.state.nextIdx].hit) this.state.nextIdx++;
   }
 
   _paintHeadWhite(head) {
-    const w = Math.max(1, head.width), h = Math.max(1, head.height);
-    head.clear();
-    head.roundRect(0, 0, w, h, 10);
-    head.fill({ color: 0xffffff });
+    head.texture = this._getHeadTexture(true);
+    head.tint = 0xFFFFFF;
     head.alpha = 1;
   }
 
-  // Draw white hold body UPWARD, matching runtime geometry
   _paintBodyWhite(vis, note) {
     const lengthPx = Math.max(10, (note.dMs || 0) * this.pixelsPerMs);
-    const stemX = (vis.head.width - 12) / 2;
-    vis.body.clear();
-    vis.body.roundRect(stemX, -(lengthPx - 2), 12, lengthPx, 6);
-    vis.body.fill({ color: 0xffffff, alpha: 0.95 });
+    vis.body.texture = this._getBodyTexture(lengthPx, true);
+    vis.body.tint = 0xFFFFFF;
     vis.body.alpha = 1;
   }
 
@@ -314,7 +441,6 @@ export class Game {
   }
 
   _judgment(label, miss = false) {
-    // DOM overlay text
     this._ensureJudgmentElement();
     const el = this.$judge;
     if (el) {
@@ -332,29 +458,24 @@ export class Game {
       });
     }
 
-    // In-canvas floating text
-    const style = new PIXI.TextStyle({
-      fill: miss ? 0xaa4b5b : (label === "Perfect" ? 0x25F4EE : (label === "Great" ? 0xC8FF4D : 0x8A5CFF)),
-      fontSize: 36,
-      fontFamily: "Arial",
-      fontWeight: "bold",
-      dropShadow: true,
-      dropShadowColor: "#000000",
-      dropShadowBlur: 3,
-      dropShadowDistance: 2,
-    });
-    const t = new PIXI.Text({ text: label, style });
+    const style = miss ? this._fxStyles.Miss
+      : label === "Perfect" ? this._fxStyles.Perfect
+      : label === "Great" ? this._fxStyles.Great
+      : this._fxStyles.Good;
+
+    const t = this._acquireFxText();
+    t.style = style;
+    t.text = label;
     t.anchor.set(0.5, 0.5);
     t.x = this.width / 2;
     t.y = this.judgeY - 42;
     t.alpha = 1;
     t.__pfVelY = -0.7;
     this.fxLayer.addChild(t);
-    t.__pfFade = { rate: 0.03, remove: true };
+    t.__pfFade = { rate: 0.03, remove: true, pooled: true };
   }
 
   async _gameLoop(startPerfMs, tickHook) {
-    // Build sprites once
     this.noteLayer.removeChildren();
     this.fxLayer.removeChildren();
     this.spriteByNote.clear();
@@ -362,35 +483,57 @@ export class Game {
     const headH = 32;
     const headW = Math.max(28, this.laneWidth - 16);
 
+    this._ensureHeadTextures(headW, headH);
+
     this.noteSprites = this.chart.notes.map(n => {
       const cont = new PIXI.Container();
-      const body = (n.dMs && n.dMs > 0) ? new PIXI.Graphics() : null;
-      if (body) cont.addChild(body);
+      const isHold = (n.dMs && n.dMs > 0);
 
-      const head = new PIXI.Graphics();
-      head.roundRect(0, 0, headW, headH, 10);
-      head.fill({ color: 0x19cdd0 });
-      head.stroke({ width: 2, color: 0x0ea7a9 });
-      cont.addChild(head);
+      const head = new PIXI.Sprite(this._getHeadTexture(false));
+      head.width = headW;
+      head.height = headH;
+      head.tint = this.vis.laneColors[n.lane % this.vis.laneColors.length];
+
+      let gloss = null;
+      if (this._texCache.headGloss) {
+        gloss = new PIXI.Sprite(this._texCache.headGloss);
+        gloss.alpha = 0.45;
+      }
 
       cont.x = this._laneX(n.lane) + (this.laneWidth - headW) / 2;
       cont.y = -60;
-      this.noteLayer.addChild(cont);
+
+      let body = null;
+      if (isHold) {
+        const lengthPx = Math.max(10, n.dMs * this.pixelsPerMs);
+        body = new PIXI.Sprite(this._getBodyTexture(lengthPx, false));
+        const stemX = (headW - 12) / 2;
+        body.x = stemX;
+        body.y = -(lengthPx - 2);
+        body.tint = this.vis.laneColors[n.lane % this.vis.laneColors.length];
+        body.alpha = 0.55;
+        cont.addChild(body);
+      }
+
+      cont.addChild(head);
+      if (gloss) cont.addChild(gloss);
 
       head.__pfFlashUntil = null;
       head.__pfFadeRate   = HIT_FADE_RATE;
       head.__pfHoldActive = false;
+
       if (body) {
         body.__pfFlashUntil = null;
         body.__pfFadeRate   = HOLD_BODY_FADE;
         body.__pfHoldActive = false;
       }
 
-      this.spriteByNote.set(n, { cont, head, body, n });
-      return { cont, head, body, n };
+      this.noteLayer.addChild(cont);
+      const rec = { cont, head, body, n, gloss };
+      this.spriteByNote.set(n, rec);
+      return rec;
     });
 
-    // Countdown
     const showCountdown = (msLeft) => {
       this._ensureJudgmentElement();
       const sLeft = Math.ceil(msLeft / 1000);
@@ -402,62 +545,75 @@ export class Game {
       if (this.$judge) this.$judge.style.opacity = "0";
     };
 
+    const offscreenY = this.height + 80;
+
     return await new Promise(resolve => {
       this.app.ticker.add(() => {
         const nowPerf = performance.now();
-        const tMs = nowPerf - startPerfMs; // negative during countdown
+        const tMs = nowPerf - startPerfMs;
         this.state.timeMs = tMs;
 
         if (tMs < 0) showCountdown(-tMs); else hideCountdown();
 
-        // Update FX texts
-        for (const child of [...this.fxLayer.children]) {
+        // Update FX texts and FX sprites
+        for (let i = this.fxLayer.children.length - 1; i >= 0; i--) {
+          const child = this.fxLayer.children[i];
           if (child.__pfVelY) child.y += child.__pfVelY;
+          if (child.__pfScaleVel) {
+            const nx = child.scale.x + child.__pfScaleVel;
+            child.scale.set(nx, nx);
+          }
           if (child.__pfFade) {
             child.alpha = Math.max(0, child.alpha - child.__pfFade.rate);
             if (child.alpha <= 0.01) {
-              if (child.__pfFade.remove) this.fxLayer.removeChild(child);
+              if (child.__pfFade.remove) {
+                if (child.__pfFade.pooled) this._releaseFxText(child);
+                this.fxLayer.removeChild(child);
+              }
+              child.__pfFade = null;
             }
           }
         }
 
+        // Animate receptor glow pulses
+        for (let i = 0; i < this.receptors.length; i++) {
+          const rec = this.receptors[i];
+          if (!rec) continue;
+          if (rec.__pulse > 0) {
+            const t = rec.__pulse;
+            const scale = 1.0 + 0.12 * Math.sin((Math.PI * t) / 10);
+            rec.scale.set(scale, scale);
+            rec.__glow.alpha = Math.max(0, rec.__glow.alpha - 0.06);
+            rec.__pulse--;
+          } else {
+            rec.scale.set(1, 1);
+            rec.__glow.alpha = Math.max(0, rec.__glow.alpha - 0.06);
+          }
+        }
+
         // Notes
-        for (const obj of this.noteSprites) {
-          const { n, cont, body, head } = obj;
-          const removed = !cont.parent && (!body || !body.parent);
-          if (removed) continue;
+        for (let i = 0; i < this.noteSprites.length; i++) {
+          const obj = this.noteSprites[i];
+          const { n, cont, body, head, gloss } = obj;
+          if (!cont.parent && (!body || !body.parent)) continue;
 
           // Position so head crosses judge line at n.tMs
           const y = this.judgeY - (n.tMs - tMs) * this.pixelsPerMs;
           if (cont.parent) cont.y = y;
 
-          // Hold body geometry:
-          // Draw upward so the trail is before the head as it falls.
-          // If the hold is ACTIVE (player hit it), we keep its white body and skip redraw.
-          if (body && body.parent && n.dMs > 0) {
-            if (!body.__pfHoldActive) {
-              const lengthPx = Math.max(10, n.dMs * this.pixelsPerMs);
-              body.clear();
-              const stemX = (cont.width - 12) / 2;
-              body.roundRect(stemX, -(lengthPx - 2), 12, lengthPx, 6);
-              body.fill({ color: 0x0fa3a0, alpha: 0.55 });
-            }
-          }
-
-          // Miss window for unhit taps (holds get marked hit on press)
+          // Miss window for unhit taps (holds get marked on press)
           if (tMs >= 0 && !n.hit) {
             if (tMs - n.tMs > 120) {
               n.hit = true;
               this.state.combo = 0;
               this._judgment("Miss", true);
               cont.parent?.removeChild(cont);
-              if (body) body.parent?.removeChild(body);
               while (this.state.nextIdx < this.chart.notes.length && this.chart.notes[this.state.nextIdx].hit) this.state.nextIdx++;
               continue;
             }
           }
 
-          // Timed flash -> fade (for taps only now)
+          // Timed flash -> fade
           const now = tMs;
           if (head.__pfFlashUntil) {
             if (now >= head.__pfFlashUntil) {
@@ -477,32 +633,33 @@ export class Game {
             head.alpha = Math.max(0, head.alpha - head.__pfFade.rate);
             if (head.alpha <= 0.01) {
               if (head.__pfFade.remove) cont.parent?.removeChild(cont);
-              delete head.__pfFade;
+              head.__pfFade = null;
             }
           }
           if (body && body.parent && body.__pfFade) {
             body.alpha = Math.max(0, body.alpha - body.__pfFade.rate);
             if (body.alpha <= 0.01) {
-              if (body.__pfFade.remove !== false) body.parent.removeChild(body);
-              delete body.__pfFade;
+              if (body.__pfFade.remove !== false) cont.removeChild(body);
+              body.__pfFade = null;
             }
           }
 
+          // Shimmer the gloss more as the head nears the judge line
+          if (gloss) {
+            const dy = Math.abs(this.judgeY - y);
+            gloss.alpha = 0.25 + Math.max(0, 0.35 - Math.min(0.35, dy / 400));
+          }
+
           // Cull when below screen
-          const offscreenY = this.height + 80;
           if (cont.parent && cont.y > offscreenY) cont.parent.removeChild(cont);
-          if (body && body.parent && cont.y > offscreenY) body.parent.removeChild(body);
         }
 
         // Maintain active holds
         if (tMs >= 0) {
-          for (const [lane, hold] of [...this.activeHoldsByLane.entries()]) {
+          for (const [lane, hold] of this.activeHoldsByLane) {
             if (hold.broken) continue;
             if (tMs < hold.endMs) {
-              // Must keep key held; if not, early break is handled in keyup.
-              const held = [...this.keyDown].some(k => this.keyMap[k] === lane);
-              if (!held) {
-                // If key is not physically down, treat like a quick release miss
+              if (!this.held[lane]) {
                 hold.broken = true;
                 this.state.combo = 0;
                 this._judgment("Miss", true);
@@ -517,7 +674,6 @@ export class Game {
                 this.activeHoldsByLane.delete(lane);
               }
             } else {
-              // Tail reached successfully: begin fade OUT now
               if (hold.bodyRef) {
                 hold.bodyRef.__pfHoldActive = false;
                 this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE);
@@ -531,12 +687,24 @@ export class Game {
           }
         }
 
-        // HUD
+        // HUD (only when changed)
         this.state.total = this.chart.notes.length;
-        this.state.acc = this.state.total ? this.state.hits / this.state.total : 1;
-        if (this.$combo) this.$combo.textContent = this.state.combo + "x";
-        if (this.$acc) this.$acc.textContent = Math.round(this.state.acc * 100) + "%";
-        if (this.$score) this.$score.textContent = this.state.score.toString();
+        const acc = this.state.total ? this.state.hits / this.state.total : 1;
+        this.state.acc = acc;
+
+        if (this.$combo && this._lastHud.combo !== this.state.combo) {
+          this.$combo.textContent = this.state.combo + "x";
+          this._lastHud.combo = this.state.combo;
+        }
+        const accPct = Math.round(acc * 100) + "%";
+        if (this.$acc && this._lastHud.acc !== accPct) {
+          this.$acc.textContent = accPct;
+          this._lastHud.acc = accPct;
+        }
+        if (this.$score && this._lastHud.score !== this.state.score) {
+          this.$score.textContent = this.state.score.toString();
+          this._lastHud.score = this.state.score;
+        }
 
         if (tickHook) tickHook();
 
@@ -547,6 +715,92 @@ export class Game {
   }
 
   _laneX(idx) { return this.startX + idx * (this.laneWidth + this.laneGap); }
+
+  // ======== Texture and pool helpers ========
+
+  _ensureHeadTextures(headW, headH) {
+    if (this._texCache.headNormal && this._texCache._headW === headW && this._texCache._headH === headH) return;
+
+    const makeHead = (fillColor, strokeColor) => {
+      const g = new PIXI.Graphics();
+      g.roundRect(0, 0, headW, headH, 10);
+      g.fill({ color: fillColor });
+      g.stroke({ width: 2, color: strokeColor });
+      return this.app.renderer.generateTexture(g);
+    };
+
+    // Head gloss texture (cached)
+    const makeGloss = () => {
+      const g = new PIXI.Graphics();
+      g.roundRect(4, 4, headW - 8, Math.max(1, Math.floor(headH * 0.42)), 8);
+      g.fill({ color: 0xffffff, alpha: 0.20 });
+      return this.app.renderer.generateTexture(g);
+    };
+
+    this._texCache.headNormal = makeHead(0xffffff, 0xffffff);
+    this._texCache.headWhite  = makeHead(0xffffff, 0xffffff);
+    this._texCache.headGloss  = makeGloss();
+    this._texCache._headW = headW;
+    this._texCache._headH = headH;
+  }
+
+  _getHeadTexture(white = false) {
+    return white ? this._texCache.headWhite : this._texCache.headNormal;
+  }
+
+  _getBodyTexture(lengthPx, white = false) {
+    const key = Math.max(10, Math.floor(lengthPx));
+    const map = white ? this._texCache.bodyWhiteByLen : this._texCache.bodyNormalByLen;
+    const cached = map.get(key);
+    if (cached) return cached;
+
+    const g = new PIXI.Graphics();
+    g.roundRect(0, 0, 12, key, 6);
+    g.fill({ color: 0xffffff, alpha: 1 });
+    const tex = this.app.renderer.generateTexture(g);
+    map.set(key, tex);
+    return tex;
+  }
+
+  _acquireFxText() {
+    if (this._fxPool.length) return this._fxPool.pop();
+    const t = new PIXI.Text({ text: "", style: this._fxStyles.Good });
+    t.__pfVelY = 0;
+    t.__pfFade = null;
+    return t;
+  }
+
+  _releaseFxText(t) {
+    t.text = "";
+    t.__pfVelY = 0;
+    t.__pfFade = null;
+    this._fxPool.push(t);
+  }
+
+  _flashReceptor(lane, strength = 1.0) {
+    const rec = this.receptors[lane]; if (!rec) return;
+    rec.__pulse = Math.max(rec.__pulse, Math.floor(10 * strength)); // frames
+    if (this.vis.receptorGlow) rec.__glow.alpha = 0.22 * strength;
+  }
+
+  _spawnRing(x, y, color = 0x25f4ee) {
+    if (!this.vis.ringOnHit) return;
+    if (!this._ringTex) {
+      const g = new PIXI.Graphics();
+      g.circle(24, 24, 22);
+      g.stroke({ width: 4, color: 0xffffff, alpha: 1 });
+      this._ringTex = this.app.renderer.generateTexture(g);
+    }
+    const s = new PIXI.Sprite(this._ringTex);
+    s.anchor.set(0.5, 0.5);
+    s.x = x; s.y = y;
+    s.tint = color;
+    s.alpha = 0.9;
+    s.scale.set(0.55, 0.55);
+    s.__pfScaleVel = 0.06;     // expand each frame
+    s.__pfFade = { rate: 0.04, remove: true };
+    this.fxLayer.addChild(s);
+  }
 }
 
 function pseudoHmac(message, secret) {

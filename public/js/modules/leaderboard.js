@@ -1,4 +1,3 @@
-// public/js/modules/leaderboard.js
 export class Leaderboard {
   constructor(settings = {}) {
     this.settings = settings;
@@ -6,22 +5,35 @@ export class Leaderboard {
     this.$table = document.getElementById("lb-table-body");
     this.$title = document.getElementById("lb-title");
     this.$playBtn = document.getElementById("lb-play");
+
+    // new: difficulty select (create if missing)
+    this.$diff = document.getElementById("lb-diff") || this._ensureDiffSelect();
+
     this.tracks = [];
     this.selected = null;
 
-    // start disabled until a track is chosen
     if (this.$playBtn) this._setPlayEnabled(false);
     this.$playBtn?.addEventListener("click", () => this._playSelected());
+    this.$diff?.addEventListener("change", () => {
+      if (this.selected) this._loadBoard(this.selected.trackId, this.$diff.value);
+    });
+  }
+
+  _ensureDiffSelect() {
+    const header = this.$title?.parentElement || document.getElementById("lb-header") || document.body;
+    const sel = document.createElement("select");
+    sel.id = "lb-diff";
+    Object.assign(sel.style, { marginLeft: "8px" });
+    header.appendChild(sel);
+    return sel;
   }
 
   async mount() {
     await this._loadTracks();
     this._renderList();
-    // DO NOT auto-select; keep “Pick a song”
     if (this.$title) this.$title.textContent = "Pick a song";
-    if (this.$table) {
-      this.$table.innerHTML = `<tr><td class="muted" colspan="4">Pick a song</td></tr>`;
-    }
+    if (this.$table) this.$table.innerHTML = `<tr><td class="muted" colspan="4">Pick a song</td></tr>`;
+    if (this.$diff) this.$diff.innerHTML = ""; // no diffs until a track is picked
   }
 
   async _loadTracks() {
@@ -60,24 +72,56 @@ export class Leaderboard {
     this.selected = track;
     if (this.$title) this.$title.textContent = `${track.title} • Leaderboard`;
     this._setPlayEnabled(true);
-    await this._loadBoard(track.trackId);
+    this._populateDiffs(track);
+    await this._loadBoard(track.trackId, this.$diff?.value);
   }
 
-  async _loadBoard(trackId) {
+  _populateDiffs(track) {
+    const diffs = Object.keys(track?.charts || {});
+    if (!this.$diff) return;
+    this.$diff.innerHTML = "";
+    if (!diffs.length) {
+      const opt = document.createElement("option");
+      opt.value = ""; opt.textContent = "—";
+      this.$diff.appendChild(opt);
+      this.$diff.disabled = true;
+      return;
+    }
+    this.$diff.disabled = false;
+    for (const d of diffs) {
+      const opt = document.createElement("option");
+      opt.value = d;
+      opt.textContent = d[0].toUpperCase() + d.slice(1);
+      this.$diff.appendChild(opt);
+    }
+    // default to first diff
+    this.$diff.value = diffs[0];
+  }
+
+  async _loadBoard(trackId, diff) {
     if (!this.$table) return;
     this.$table.innerHTML = `<tr><td class="muted" colspan="4">Loading…</td></tr>`;
     try {
-      const rows = await fetch(`/api/leaderboard/${encodeURIComponent(trackId)}?limit=100`).then(r => r.json());
+      // ask the server for scores filtered by difficulty
+      const url = `/api/leaderboard/${encodeURIComponent(trackId)}?limit=100${diff ? `&diff=${encodeURIComponent(diff)}` : ""}`;
+      let rows = await fetch(url).then(r => r.json());
+
+      // fallback: if server returns mixed difficulties but includes a difficulty field, filter client-side
+      if (Array.isArray(rows) && rows.length && rows[0] && rows[0].difficulty != null && diff) {
+        rows = rows.filter(r => (r.difficulty || "normal") === diff);
+      }
+
       if (!Array.isArray(rows) || rows.length === 0) {
-        this.$table.innerHTML = `<tr><td class="muted" colspan="4">No scores yet. Be the first!</td></tr>`;
+        this.$table.innerHTML = `<tr><td class="muted" colspan="4">No scores yet for ${diff || "default"}.</td></tr>`;
         return;
       }
+
       this.$table.innerHTML = rows.map((r, i) => `
         <tr>
           <td>#${i + 1}</td>
           <td>${escapeHtml(r.name)}</td>
-          <td>${Number(r.score || 0).toLocaleString()}</td>
-          <td>${Math.round((r.acc || 0) * 100)}% • ${r.combo || 0}x</td>
+          <td class="num">${Number(r.score || 0).toLocaleString()}</td>
+          <td class="num">${Math.round((r.acc || 0) * 100)}% • ${r.combo || 0}x</td>
         </tr>
       `).join("");
     } catch (e) {
@@ -93,17 +137,16 @@ export class Leaderboard {
     const playerName = (this.settings?.name || "").trim();
     if (!playerName) {
       alert("Please set your Player Name in Settings before you start.");
-      // Jump to Settings if the main menu button exists
       document.getElementById("btn-settings")?.click();
-      // Focus the name input if present
       setTimeout(() => document.getElementById("set-name")?.focus(), 0);
       return;
     }
 
-    // Pick first available chart diff
+    // Use selected difficulty
     const diffs = Object.keys(this.selected.charts || {});
     if (!diffs.length) return;
-    const diff = diffs[0];
+    const diff = this.$diff?.value || diffs[0];
+
     const chartUrl = this.selected.charts[diff];
     try {
       const chart = await fetch(chartUrl).then(r => r.json());
@@ -115,8 +158,8 @@ export class Leaderboard {
       const runtime = { mode: "solo", manifest: chart };
       if (typeof window.PF_startGame === "function") {
         const results = await window.PF_startGame(runtime);
-        // Auto-submit already handled in PF_startGame if you added that hook.
-        // If you prefer submitting here instead, you can call submitScore(...) too.
+        // If you submit here, include difficulty:
+        // await submitScore({ trackId: chart.trackId, difficulty: diff, ...results, name: playerName });
       }
     } catch (e) {
       console.error(e);
