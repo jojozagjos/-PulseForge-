@@ -81,15 +81,32 @@ export class Editor {
     this._wiredAudio = false;
     this._wiredFile = false;
 
+    // --- placement rules / helpers ---
+    this.minGapMs = 60; // minimal head-to-head distance on same lane
+
     // Bind
     this._tick = this._tick.bind(this);
     this._onWheel = this._onWheel.bind(this);
     this._resize = this._resize.bind(this);
+    this._onKeyDown = this._onKeyDown.bind(this);
 
     // Size & listeners
     this._resize();
     window.addEventListener("resize", this._resize);
-    this.canvas.addEventListener("wheel", this._onWheel, { passive: false });
+    // Wheel: consume to prevent page scroll; capture early
+    this.canvas.addEventListener("wheel", this._onWheel, { passive: false, capture: true });
+
+    // Keyboard: Space toggles play/pause when editor is active
+    window.addEventListener("keydown", this._onKeyDown);
+
+    // Block middle-click auto-scroll on the canvas
+    this.canvas.addEventListener("auxclick", (e) => {
+      if (e.button === 1) { e.preventDefault(); e.stopPropagation(); }
+    });
+    // Also cancel as soon as the button goes down
+    this.canvas.addEventListener("pointerdown", (e) => {
+      if (e.button === 1) { e.preventDefault(); e.stopPropagation(); }
+    }, { capture: true });
 
     // Pointer
     this.canvas.addEventListener("pointermove", e => this._pointerMove(e));
@@ -226,7 +243,7 @@ export class Editor {
       this.seek(ms);
     });
 
-    // >>> These were missing when you started blank <<<
+    // ensure toolbars wired if starting blank
     this._wireAudioPicker();
     this._wireFileToolbar();
   }
@@ -458,6 +475,59 @@ export class Editor {
     }
   }
 
+  // ---------- Placement helpers ----------
+  _rangesOverlap(start, end, s, e) {
+    const A0 = Math.min(start, end);
+    const A1 = Math.max(start, end);
+    const B0 = Math.min(s, e);
+    const B1 = Math.max(s, e);
+    return !(A1 + this.minGapMs <= B0 || B1 + this.minGapMs <= A0);
+  }
+
+  /**
+   * Check if a note can be placed on lane/tMs/dMs without overlapping other notes in same lane.
+   * ignoreIdxSet is a Set of indices to ignore (e.g. selected while moving).
+   * Returns: { ok: boolean, conflictIdx: number | -1, cappedEndMs?: number }
+   */
+  _canPlaceNote(lane, tMs, dMs = 0, ignoreIdxSet = new Set()) {
+    if (!this.chart || !Array.isArray(this.chart.notes)) return { ok: true, conflictIdx: -1 };
+    const start = tMs;
+    const end = tMs + Math.max(0, dMs);
+
+    let next = null;
+
+    for (let i = 0; i < this.chart.notes.length; i++) {
+      if (ignoreIdxSet.has(i)) continue;
+      const n = this.chart.notes[i];
+      if (n.lane !== lane) continue;
+
+      // head spacing
+      if (Math.abs(n.tMs - tMs) < this.minGapMs) {
+        return { ok: false, conflictIdx: i };
+      }
+
+      // range overlap for holds/tails
+      const ns = n.tMs, ne = n.tMs + Math.max(0, n.dMs || 0);
+      if ((n.dMs || 0) > 0 || dMs > 0) {
+        if (this._rangesOverlap(start, end, ns, ne)) {
+          return { ok: false, conflictIdx: i };
+        }
+      }
+
+      if (n.tMs > tMs && (!next || n.tMs < next.tMs)) next = { ...n, idx: i };
+    }
+
+    // For holds, cap tail to avoid running into the next head
+    if (dMs > 0 && next) {
+      const maxEnd = next.tMs - this.minGapMs;
+      if (end > maxEnd) {
+        return { ok: true, conflictIdx: -1, cappedEndMs: Math.max(start, maxEnd) };
+      }
+    }
+
+    return { ok: true, conflictIdx: -1 };
+  }
+
   // ---------- Input / Tools ----------
   _screenToLane(x) {
     const totalW = this.chart.lanes * this._laneW() + (this.chart.lanes - 1) * this._laneGap();
@@ -491,21 +561,73 @@ export class Editor {
 
     if (this.drag.type === "pan") {
       this.scrollY = Math.max(0, this.drag.startScrollY + (this.drag.startY - this.mouse.y) * 1.0);
+
     } else if (this.drag.type === "createHold") {
-      const dMs = Math.max(0, this._screenToMs(this.mouse.y) - this.drag.baseMs);
+      const curMs = this._screenToMs(this.mouse.y);
+      let dMs = Math.max(0, curMs - this.drag.baseMs);
+
+      // Cap the tail to avoid overlapping the next note on the same lane
+      const ignore = new Set([this.chart.notes.length - 1]); // the temp note itself
+      const chkTail = this._canPlaceNote(this.mouse.lane, this.drag.baseMs, dMs, ignore);
+      if (chkTail.cappedEndMs !== undefined) {
+        dMs = Math.max(0, chkTail.cappedEndMs - this.drag.baseMs);
+      }
       this.drag.tempNote.dMs = dMs;
+
     } else if (this.drag.type === "move") {
       const dMs = this._screenToMs(this.mouse.y) - this.drag.startMs;
+      const dLane = this.mouse.lane - this.drag.startLane;
+
+      const ignore = new Set(this.selection);
+      let ok = true;
+      const proposals = [];
+
       for (const idx of this.selection) {
-        this.chart.notes[idx].tMs = this._clampMs(this.drag.orig[idx].tMs + dMs);
-        this.chart.notes[idx].lane = Math.max(0, Math.min(this.chart.lanes - 1, this.drag.orig[idx].lane + (this.mouse.lane - this.drag.startLane)));
+        const orig = this.drag.orig[idx];
+        const newLane = Math.max(0, Math.min(this.chart.lanes - 1, orig.lane + dLane));
+        const newStart = this._clampMs(orig.tMs + dMs);
+        const n = this.chart.notes[idx];
+        const newDur = Math.max(0, n.dMs || 0);
+
+        const chk = this._canPlaceNote(newLane, newStart, newDur, ignore);
+        if (!chk.ok) { ok = false; break; }
+        proposals.push({ idx, lane: newLane, tMs: newStart });
       }
+
+      if (!ok) {
+        this._help("Move blocked by overlap on same lane.");
+        return;
+      }
+
+      for (const p of proposals) {
+        const nn = this.chart.notes[p.idx];
+        nn.lane = p.lane;
+        nn.tMs  = p.tMs;
+      }
+
     } else if (this.drag.type === "stretch") {
-      const curMs = this._screenToMs(this.mouse.y);
       const idx = this.drag.stretchIdx;
       const n = this.chart.notes[idx];
-      n.dMs = Math.max(0, curMs - n.tMs);
+      const curMs = this._screenToMs(this.mouse.y);
+
+      let proposed = Math.max(0, curMs - n.tMs);
+
+      // Cap by next note on the same lane
+      const chk = this._canPlaceNote(n.lane, n.tMs, proposed, new Set([idx]));
+      if (chk.cappedEndMs !== undefined) {
+        proposed = Math.max(0, chk.cappedEndMs - n.tMs);
+      }
+      n.dMs = Math.max(0, Math.min(proposed, this.chart.durationMs - n.tMs));
     }
+  }
+
+  _lockPageScroll() {
+    document.body.style.overscrollBehavior = "contain";
+    document.documentElement.style.overflow = "hidden";
+  }
+  _unlockPageScroll() {
+    document.body.style.overscrollBehavior = "";
+    document.documentElement.style.overflow = "";
   }
 
   _pointerDown(e) {
@@ -514,17 +636,30 @@ export class Editor {
     const tMs = this._screenToMs(this.mouse.y);
 
     if (e.button === 1 || e.ctrlKey) {
+      e.preventDefault(); // stop browser default
+      this._lockPageScroll();
       this.drag = { type: "pan", startY: this.mouse.y, startScrollY: this.scrollY };
       return;
     }
 
     if (this.tool === "create") {
+      // Check head placement first
+      const chk = this._canPlaceNote(lane, tMs, 0, new Set());
+      if (!chk.ok) {
+        this._help("Cannot place note here (overlap on same lane).");
+        return;
+      }
+
+      // Place a tap to start; stretch into hold while dragging
       const note = { tMs, lane };
       this.chart.notes.push(note);
       this.selection.clear();
       const idx = this.chart.notes.length - 1;
       this.selection.add(idx);
+
+      // Begin stretch creation
       this.drag = { type: "createHold", baseMs: tMs, tempNote: note };
+
     } else if (this.tool === "select") {
       const hitIdx = this._hitTest(tMs, lane);
       if (hitIdx >= 0) {
@@ -539,6 +674,7 @@ export class Editor {
         this.drag = { type: "pan", startY: this.mouse.y, startScrollY: this.scrollY };
         if (!e.shiftKey) this.selection.clear();
       }
+
     } else if (this.tool === "stretch") {
       const hitIdx = this._hitTest(tMs, lane);
       if (hitIdx >= 0) {
@@ -547,15 +683,18 @@ export class Editor {
         this.selection.clear(); this.selection.add(hitIdx);
         this.drag = { type: "stretch", stretchIdx: hitIdx };
       }
+
     } else if (this.tool === "delete") {
       const hitIdx = this._hitTest(tMs, lane);
       if (hitIdx >= 0) {
         this.chart.notes.splice(hitIdx, 1);
         this.selection = new Set([...this.selection].filter(i => i !== hitIdx).map(i => i > hitIdx ? i - 1 : i));
       }
+
     } else if (this.tool === "copy") {
       this._copySelection();
       this._help("Copied.");
+
     } else if (this.tool === "paste") {
       this._pasteAt(tMs, lane);
     }
@@ -564,7 +703,10 @@ export class Editor {
   _pointerUp(e) {
     if (this.drag?.type === "createHold") {
       const n = this.drag.tempNote;
-      if (n.dMs && n.dMs < 10) delete n.dMs;
+      if (n.dMs && n.dMs < 10) delete n.dMs; // very short drag becomes a tap
+    }
+    if (this.drag?.type === "pan") {
+      this._unlockPageScroll();
     }
     this.drag = null;
   }
@@ -575,7 +717,7 @@ export class Editor {
       const n = this.chart.notes[i];
       if (n.lane !== lane) continue;
       const dt = Math.abs(n.tMs - tMs);
-      if (dt < 80 && dt < bestDt) { best = i; bestDt = dt; }
+      if (dt < 50 && dt < bestDt) { best = i; bestDt = dt; } // a bit stricter to prefer selecting
       if (n.dMs && Math.abs(n.tMs + n.dMs - tMs) < 80 && 60 < bestDt) { best = i; bestDt = 60; }
     }
     return best;
@@ -588,16 +730,35 @@ export class Editor {
 
   _pasteAt(tMs, lane) {
     if (!this.clipboard.length) { this._help("Clipboard empty."); return; }
+
     const minT = Math.min(...this.clipboard.map(n => n.tMs));
     const laneOffset = lane - this.clipboard[0].lane;
-    const pasted = this.clipboard.map(n => ({
-      tMs: this._clampMs(tMs + (n.tMs - minT)),
-      lane: Math.max(0, Math.min(this.chart.lanes - 1, n.lane + laneOffset)),
-      dMs: n.dMs
-    }));
+
     const startIdx = this.chart.notes.length;
-    this.chart.notes.push(...pasted);
-    this.selection = new Set(pasted.map((_, i) => startIdx + i));
+    let added = 0;
+
+    for (const src of this.clipboard) {
+      const newStart = this._clampMs(tMs + (src.tMs - minT));
+      const newLane  = Math.max(0, Math.min(this.chart.lanes - 1, src.lane + laneOffset));
+      const newDur   = Math.max(0, src.dMs || 0);
+
+      const chk = this._canPlaceNote(newLane, newStart, newDur, new Set());
+      if (!chk.ok) continue;
+
+      const note = { tMs: newStart, lane: newLane };
+      if (newDur > 0) note.dMs = newDur;
+      this.chart.notes.push(note);
+      added++;
+    }
+
+    if (added === 0) {
+      this._help("Nothing pasted due to overlaps.");
+      return;
+    }
+
+    this.selection.clear();
+    for (let i = startIdx; i < this.chart.notes.length; i++) this.selection.add(i);
+    this._help(`Pasted ${added} note(s).`);
   }
 
   _clampMs(ms) {
@@ -736,12 +897,39 @@ export class Editor {
   }
 
   _onWheel(e) {
+    // Always keep the page from scrolling while over the canvas
+    e.preventDefault();
+    e.stopPropagation();
+
     if (e.shiftKey) {
-      e.preventDefault();
+      // zoom
       const factor = e.deltaY < 0 ? 1.08 : 0.92;
       this.zoomY = Math.max(0.25, Math.min(3, this.zoomY * factor));
     } else {
+      // vertical scroll in editor
       this.scrollY = Math.max(0, this.scrollY + e.deltaY);
+    }
+  }
+
+  async _onKeyDown(e) {
+    // Only act when the editor screen is visible
+    const scr = document.getElementById("screen-editor");
+    const active = scr && scr.classList.contains("active");
+    if (!active) return;
+
+    // Ignore if the user is typing in inputs or editable elements
+    const tag = (e.target?.tagName || "").toUpperCase();
+    if (e.target?.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+    if (e.code === "Space" || e.key === " ") {
+      e.preventDefault();
+      await this._ensureAudioCtx();
+      if (this.audioCtx?.state === "suspended") {
+        try { await this.audioCtx.resume(); } catch {}
+      }
+      if (!this.audioBuffer) return;
+      if (this.playing) this.pause();
+      else this.play();
     }
   }
 
