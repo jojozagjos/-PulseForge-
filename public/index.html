@@ -20,8 +20,7 @@
       <div class="logo">PULSE<span>FORGE</span></div>
       <div class="menu">
         <button id="btn-solo" class="primary">Solo Practice</button>
-        <button id="btn-quick" class="secondary">Quick Match</button>
-        <button id="btn-party" class="secondary">Party Room</button>
+        <button id="btn-view-leaderboard" class="secondary">Leaderboard</button>
         <button id="btn-settings" class="tertiary">Settings</button>
         <button id="btn-editor" class="tertiary">Chart Editor</button>
       </div>
@@ -31,7 +30,7 @@
     <div id="screen-settings" class="screen">
       <h1>Settings</h1>
       <div class="panel">
-        <label>Player Name <input id="set-name" type="text" maxlength="16" placeholder="Player" /></label>
+        <label>Player Name <input id="set-name" type="text" maxlength="16" placeholder="Enter your name" /></label>        
         <label>Latency Offset (ms) <input id="set-latency" type="number" step="1" /></label>
         <label>Keys: Lane 1–4 (comma separated) <input id="set-keys" type="text" placeholder="D,F,J,K" /></label>
         <div class="row">
@@ -51,53 +50,41 @@
       </div>
     </div>
 
-    <!-- LOBBY -->
-    <div id="screen-lobby" class="screen">
-      <h1>Lobby</h1>
-
-      <div class="panel small" id="lobby-info"></div>
-
-      <!-- Host-only: track list + difficulty + start -->
-      <div id="lobby-host-tools" class="panel" style="display:none;">
-        <h3 style="margin:0 0 8px 0;">Match Setup</h3>
-
-        <!-- Track card grid -->
-        <div id="lobby-track-list" class="track-list" style="margin-bottom:10px;"></div>
-
-        <!-- Difficulty that auto-hides invalid options -->
-        <div class="row" style="gap:10px; flex-wrap:wrap;">
-          <label>
-            Difficulty
-            <select id="lobby-diff">
-              <option value="easy">Easy</option>
-              <option value="normal" selected>Normal</option>
-              <option value="hard">Hard</option>
-            </select>
-          </label>
-
-          <button id="lobby-refresh" class="secondary">Refresh Tracks</button>
-          <button id="btn-start" class="primary">Start</button>
-        </div>
+    <!-- Include this where your other screens live -->
+    <section id="screen-leaderboard" class="screen" style="padding:16px;">
+      <div class="row" style="display:flex; align-items:center; gap:12px;">
+        <h2 style="margin:0;">Leaderboards</h2>
+        <span id="lb-title" class="muted" style="margin-left:auto;">Pick a song</span>
+        <button id="lb-play" class="primary">Play Selected</button>
       </div>
 
-      <!-- Selected track summary (everyone can see) -->
-      <div id="lobby-selected" class="panel" style="display:none;">
-        <div style="display:flex; gap:12px; align-items:center;">
-          <div id="lobby-sel-cover" style="width:84px;height:84px;border-radius:8px;background:#111;border:1px solid #2a3142;background-size:cover;background-position:center;"></div>
-          <div style="display:flex; flex-direction:column;">
-            <div id="lobby-sel-title" style="font-weight:700;color:#eaf2ff;"></div>
-            <div id="lobby-sel-diffs" class="muted" style="margin-top:2px;"></div>
+      <div class="row" style="display:flex; gap:16px; margin-top:12px;">
+        <div style="flex:2;">
+          <h3 style="margin:8px 0;">Songs</h3>
+          <div id="lb-track-list"
+              style="display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px;"></div>
+        </div>
+
+        <div style="flex:1;">
+          <h3 style="margin:8px 0;">Top Scores</h3>
+          <div class="card" style="background:#111725;border:1px solid #2a3142;border-radius:12px;padding:8px;">
+            <table style="width:100%; border-collapse:collapse;">
+              <thead>
+                <tr>
+                  <th style="text-align:left;">Rank</th>
+                  <th style="text-align:left;">Name</th>
+                  <th style="text-align:right;">Score</th>
+                  <th style="text-align:right;">Acc / Combo</th>
+                </tr>
+              </thead>
+              <tbody id="lb-table-body">
+                <tr><td class="muted" colspan="4">Pick a song</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
-
-      <div id="lobby-players" class="panel"></div>
-
-      <div class="row">
-        <button id="btn-ready" class="secondary">Ready</button>
-        <button id="btn-leave" class="ghost">Leave</button>
-      </div>
-    </div>
+    </section>
 
     <div id="screen-editor" class="screen">
       <h1>Chart Editor</h1>
@@ -231,6 +218,6 @@
     </div>
   </div>
 
-  <script type="module" defer src="/js/main.js?v=18"></script>
+  <script type="module" defer src="/js/main.js?v=19"></script>
 </body>
 </html>

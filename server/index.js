@@ -1,7 +1,6 @@
 // server/index.js
 import express from "express";
 import http from "http";
-import { Server } from "socket.io";
 import path from "path";
 import cors from "cors";
 import fs from "fs";
@@ -12,170 +11,93 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "256kb" }));
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 const TRACKS_DIR = path.join(__dirname, "..", "public", "tracks");
+const DATA_DIR = path.join(__dirname, "..", "data");
+const LB_PATH = path.join(DATA_DIR, "leaderboards.json");
 
-/**
- * Each track lives at: public/tracks/<slug>/manifest.json
- * Example manifest.json:
- * {
- *   "trackId": "birdbrain",
- *   "title": "BIRDBRAIN",
- *   "artist": "OK Glass feat. Kasane Teto",
- *   "bpm": 120,
- *   "durationMs": 180000,
- *   "audio": { "wav": "/assets/music/birdbrain.mp3" },
- *   "charts": {
- *      "easy":   "/tracks/birdbrain/birdbrain.easy.json",
- *      "normal": "/tracks/birdbrain/birdbrain.normal.json",
- *      "hard":   "/tracks/birdbrain/birdbrain.hard.json"
- *   },
- *   "cover": "/assets/images/birdbrain-cover.jpg"
- * }
- */
+// ---------- tracks ----------
 function discoverTracks() {
   const out = [];
   if (!fs.existsSync(TRACKS_DIR)) return out;
-  for (const slug of fs.readdirSync(TRACKS_DIR, { withFileTypes: true })) {
-    if (!slug.isDirectory()) continue;
-    const manifestPath = path.join(TRACKS_DIR, slug.name, "manifest.json");
+  for (const dirEnt of fs.readdirSync(TRACKS_DIR, { withFileTypes: true })) {
+    if (!dirEnt.isDirectory()) continue;
+    const manifestPath = path.join(TRACKS_DIR, dirEnt.name, "manifest.json");
     if (!fs.existsSync(manifestPath)) continue;
     try {
-      const data = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-      // minimal validation
-      if (!data.trackId || !data.title || !data.audio) continue;
-      out.push(data);
-    } catch {
-      // ignore malformed
-    }
+      const m = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      if (!m.trackId || !m.title || !m.audio) continue;
+      out.push(m);
+    } catch { /* ignore malformed */ }
   }
   return out;
 }
 
-app.get("/api/tracks", (req, res) => {
-  const tracks = discoverTracks();
-  // If none found, fall back to a built-in training track if you still keep one
-  res.json(tracks);
+app.get("/api/tracks", (req, res) => res.json(discoverTracks()));
+
+// ---------- leaderboards ----------
+function loadLB() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    if (!fs.existsSync(LB_PATH)) fs.writeFileSync(LB_PATH, "{}");
+    return JSON.parse(fs.readFileSync(LB_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+}
+function saveLB(obj) {
+  try {
+    fs.writeFileSync(LB_PATH, JSON.stringify(obj, null, 2));
+  } catch {}
+}
+
+const MAX_PER_TRACK = 100;   // keep top 100 per song
+const NAME_MAX = 16;
+
+app.get("/api/leaderboard/:trackId", (req, res) => {
+  const trackId = (req.params.trackId || "").trim();
+  const limit = Math.max(1, Math.min(1000, Number(req.query.limit) || 50));
+  const db = loadLB();
+  const rows = Array.isArray(db[trackId]) ? db[trackId].slice(0, limit) : [];
+  res.json(rows);
 });
 
-/* ---------------- Multiplayer (unchanged) ---------------- */
+app.post("/api/leaderboard/submit", (req, res) => {
+  const { trackId, name, score, acc, combo } = req.body || {};
+  const tid = (trackId || "").trim();
+  const nmRaw = (name || "Player").slice(0, NAME_MAX);
+  const nm = nmRaw.replace(/[\n\r\t<>]/g, ""); // very simple sanitize
+
+  // very light sanity checks to deter accidental garbage
+  const sc = Math.max(0, Math.min(10_000_000, Math.floor(score || 0)));
+  const ac = Math.max(0, Math.min(1, Number(acc) || 0));
+  const cb = Math.max(0, Math.min(9_999, Math.floor(combo || 0)));
+  if (!tid) return res.status(400).json({ ok: false, error: "trackId required" });
+
+  const db = loadLB();
+  if (!Array.isArray(db[tid])) db[tid] = [];
+
+  // If same name already on board, keep the better score
+  const existingIdx = db[tid].findIndex(r => (r.name || "") === nm);
+  const row = { name: nm, score: sc, acc: ac, combo: cb, ts: Date.now() };
+
+  if (existingIdx >= 0) {
+    if (sc > (db[tid][existingIdx].score || 0)) db[tid][existingIdx] = row;
+    // else ignore worse submission
+  } else {
+    db[tid].push(row);
+  }
+
+  // Sort & clamp
+  db[tid].sort((a, b) => (b.score - a.score) || (b.acc - a.acc) || (b.combo - a.combo) || (a.ts - b.ts));
+  db[tid] = db[tid].slice(0, MAX_PER_TRACK);
+
+  saveLB(db);
+  res.json({ ok: true, rank: db[tid].findIndex(r => r === row) + 1, total: db[tid].length });
+});
+
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-
-function genRoomCode() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "";
-  for (let i = 0; i < 4; i++) code += chars[Math.floor(Math.random() * chars.length)];
-  return code;
-}
-
-const rooms = new Map();
-
-io.on("connection", (socket) => {
-  socket.on("createRoom", ({ name }) => {
-    const code = genRoomCode();
-    const secret = Math.random().toString(36).slice(2);
-    const room = { code, hostId: socket.id, players: new Map(), phase: "lobby", track: null, difficulty: "normal", startAt: 0, secret };
-    rooms.set(code, room);
-    room.players.set(socket.id, { name: (name || "Host").slice(0, 16), ready: false, score: 0, accuracy: 0, combo: 0 });
-    socket.join(code);
-    socket.emit("roomState", serializeRoom(room, socket.id));
-  });
-
-  socket.on("joinRoom", ({ code, name }) => {
-    const room = rooms.get((code || "").toUpperCase());
-    if (!room) return socket.emit("errorMsg", "Room not found.");
-    if (room.phase !== "lobby") return socket.emit("errorMsg", "Game already started.");
-    socket.join(room.code);
-    room.players.set(socket.id, { name: (name || "Player").slice(0, 16), ready: false, score: 0, accuracy: 0, combo: 0 });
-    io.to(room.code).emit("roomState", serializeRoom(room));
-  });
-
-  socket.on("ready", ({ code, ready }) => {
-    const room = rooms.get((code || "").toUpperCase()); if (!room) return;
-    const p = room.players.get(socket.id); if (!p) return;
-    p.ready = !!ready;
-    io.to(room.code).emit("roomState", serializeRoom(room));
-  });
-
-  socket.on("selectTrack", ({ code, track, difficulty }) => {
-    const room = rooms.get((code || "").toUpperCase()); if (!room) return;
-    if (room.hostId !== socket.id) return;
-    room.track = track; if (difficulty) room.difficulty = difficulty;
-    io.to(room.code).emit("roomState", serializeRoom(room));
-  });
-
-  socket.on("start", ({ code }) => {
-    const room = rooms.get((code || "").toUpperCase()); if (!room) return;
-    if (room.hostId !== socket.id) return;
-    if (!room.track) return socket.emit("errorMsg", "Select a track first.");
-    room.phase = "playing";
-    room.startAt = Date.now() + 3500;
-    for (const p of room.players.values()) { p.score = 0; p.accuracy = 0; p.combo = 0; p.ready = false; }
-    io.to(room.code).emit("countdown", { startAt: room.startAt, track: room.track, difficulty: room.difficulty, secret: room.secret });
-  });
-
-  socket.on("playEvent", ({ code, bundle }) => {
-    const room = rooms.get((code || "").toUpperCase()); if (!room) return;
-    const p = room.players.get(socket.id); if (!p) return;
-    if (!bundle || typeof bundle !== "object" || !room.secret) return;
-    const mac = pseudoHmac(JSON.stringify({ t: bundle.t, acc: bundle.acc, score: bundle.score, combo: bundle.combo }), room.secret);
-    if (mac !== bundle.mac) return;
-    p.score = Math.max(p.score || 0, bundle.score | 0);
-    p.accuracy = Math.max(p.accuracy || 0, bundle.acc || 0);
-    p.combo = Math.max(p.combo || 0, bundle.combo || 0);
-    const board = [...room.players.values()].map(pl => ({ name: pl.name, score: pl.score || 0, acc: pl.accuracy || 0, combo: pl.combo || 0 })).sort((a, b) => b.score - a.score);
-    io.to(room.code).emit("liveScoreboard", board);
-  });
-
-  socket.on("complete", ({ code }) => {
-    const room = rooms.get((code || "").toUpperCase()); if (!room) return;
-    if (socket.id === room.hostId) {
-      room.phase = "results";
-      const results = [...room.players.values()].map(p => ({ name: p.name, score: p.score, acc: p.accuracy, combo: p.combo })).sort((a, b) => b.score - a.score);
-      io.to(room.code).emit("results", results);
-    }
-  });
-
-  socket.on("leaveRoom", ({ code }) => {
-    const room = rooms.get((code || "").toUpperCase()); if (!room) return;
-    room.players.delete(socket.id);
-    socket.leave(room.code);
-    if (room.players.size === 0) rooms.delete(code);
-    else io.to(room.code).emit("roomState", serializeRoom(room));
-  });
-
-  socket.on("disconnect", () => {
-    for (const [code, room] of rooms) {
-      if (room.players.has(socket.id)) {
-        room.players.delete(socket.id);
-        if (room.players.size === 0) rooms.delete(code);
-        else io.to(room.code).emit("roomState", serializeRoom(room));
-      }
-    }
-  });
-});
-
-function serializeRoom(room, requesterId = null) {
-  return {
-    code: room.code,
-    hostId: room.hostId,
-    youAreHost: requesterId ? (room.hostId === requesterId) : undefined,
-    phase: room.phase,
-    track: room.track,
-    difficulty: room.difficulty,
-    players: [...room.players.values()].map(p => ({ name: p.name, ready: p.ready, score: p.score, acc: p.accuracy, combo: p.combo }))
-  };
-}
-
-function pseudoHmac(message, secret) {
-  const data = message + "|" + secret;
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < data.length; i++) { h ^= data.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return ("0000000" + (h >>> 0).toString(16)).slice(-8);
-}
-
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log("PulseForge auto-tracks on", PORT));
+server.listen(PORT, () => console.log("PulseForge server on", PORT));
