@@ -2,17 +2,17 @@
 import { AudioPlayer } from "./audio.js";
 
 /** Visual tuning */
-const WHITE_FLASH_MS = 140;      // how long the white flash stays before fade starts
-const HIT_FADE_RATE  = 0.05;     // alpha reduction per frame for note head/body
-const MISS_FADE_RATE = 0.10;     // faster fade for misses, if used
-const HOLD_BODY_FADE = 0.06;     // fade speed for hold stems after completion
+const WHITE_FLASH_MS = 140;      // taps: how long the white flash holds before fading
+const HIT_FADE_RATE  = 0.05;
+const MISS_FADE_RATE = 0.10;
+const HOLD_BODY_FADE = 0.06;
 
 export class Game {
   constructor(runtime, settings) {
     this.runtime = runtime;
     this.settings = settings;
 
-    // Find or create canvas safely
+    // Canvas
     this.canvas = document.getElementById("game-canvas");
     if (!this.canvas) {
       this.canvas = document.createElement("canvas");
@@ -21,7 +21,6 @@ export class Game {
       document.body.appendChild(this.canvas);
     }
 
-    // Window-based size; never read clientWidth here
     const w = typeof window !== "undefined" ? (window.innerWidth || 1280) : 1280;
     const h = typeof window !== "undefined" ? (window.innerHeight || 720) : 720;
     this.width  = Math.max(960, Math.min(Math.floor(w), 1920));
@@ -38,17 +37,21 @@ export class Game {
 
     // Inputs / holds
     this.keyDown = new Set();
-    // lane -> { endMs, broken, bodyRef }
+    // lane -> { endMs, broken, headRef, bodyRef }
     this.activeHoldsByLane = new Map();
 
-    // Layers / HUD refs
+    // Layers / refs
     this.noteLayer = null;
+    this.fxLayer = null;
+    this.spriteByNote = new Map();
     this.$combo = null;
     this.$acc = null;
     this.$score = null;
-    this.$judge = null;         // DOM overlay
-    this.fxLayer = null;        // in-Pixi floating judgments
-    this.spriteByNote = new Map();
+    this.$judge = null;
+
+    // Audio-time sync
+    this.audioCtx = null;
+    this.startCtxTime = null; // seconds (AudioContext time when song visual "0" begins)
   }
 
   async run() {
@@ -93,7 +96,7 @@ export class Game {
   }
 
   _buildScene() {
-    // Subtle grid
+    // Background grid
     const grid = new PIXI.Graphics();
     grid.alpha = 0.22;
     for (let i = 0; i < 44; i++) { grid.moveTo(0, i * 18); grid.lineTo(this.width, i * 18); }
@@ -102,11 +105,11 @@ export class Game {
     // Lanes
     this.laneCount = 4;
     this.laneWidth = Math.max(120, Math.min(180, Math.floor(this.width / 10)));
-    this.laneGap = Math.max(18, Math.min(32, Math.floor(this.width / 70)));
+    this.laneGap   = Math.max(18, Math.min(32, Math.floor(this.width / 70)));
     const totalW = this.laneCount * this.laneWidth + (this.laneCount - 1) * this.laneGap;
     this.startX = (this.width - totalW) / 2;
 
-    // Higher judge line
+    // Judge line
     this.judgeY = this.height - 240;
 
     for (let i = 0; i < this.laneCount; i++) {
@@ -124,20 +127,16 @@ export class Game {
     j.stroke({ width: 4, color: 0x25f4ee });
     this.app.stage.addChild(j);
 
-    // Notes layer
+    // Layers
     this.noteLayer = new PIXI.Container();
-    this.app.stage.addChild(this.noteLayer);
-
-    // Floating FX layer (for animated judgments)
     this.fxLayer = new PIXI.Container();
+    this.app.stage.addChild(this.noteLayer);
     this.app.stage.addChild(this.fxLayer);
 
     // HUD refs
     this.$combo = document.getElementById("hud-combo");
-    this.$acc = document.getElementById("hud-acc");
+    this.$acc   = document.getElementById("hud-acc");
     this.$score = document.getElementById("hud-score");
-
-    // Ensure DOM judgment element exists and is visible
     this._ensureJudgmentElement();
   }
 
@@ -147,15 +146,15 @@ export class Game {
     this.chart = manifest;
     this._prepareInputs();
 
+    // Schedule audio, but record AudioContext-based start time
     const audioStartAtSec = player.ctx.currentTime + this.leadInMs / 1000;
-    const source = player.playAt(audioStartAtSec);
+    player.playAt(audioStartAtSec);
 
-    // Map WebAudio time to performance.now()
-    const perfAtAudioZero = performance.now() - player.ctx.currentTime * 1000;
-    const startPerfMs = perfAtAudioZero + audioStartAtSec * 1000;
+    // === Audio-locked visual clock ===
+    this.audioCtx = player.ctx;
+    this.startCtxTime = audioStartAtSec;
 
-    await this._gameLoop(startPerfMs, () => {});
-    source.stop();
+    await this._gameLoop(() => {});
   }
 
   async _playMp(rt) {
@@ -172,8 +171,11 @@ export class Game {
     const nowEpoch = Date.now();
     const delaySec = Math.max(0.05, (rt.startAt - nowEpoch) / 1000);
     const audioStartAtSec = player.ctx.currentTime + delaySec;
-    const source = player.playAt(audioStartAtSec);
-    const startPerfMs = performance.now() + delaySec * 1000;
+    player.playAt(audioStartAtSec);
+
+    // === Audio-locked visual clock ===
+    this.audioCtx = player.ctx;
+    this.startCtxTime = audioStartAtSec;
 
     const secret = rt.secret, socket = rt.socket, roomCode = rt.roomCode;
     let lastSent = 0;
@@ -184,8 +186,8 @@ export class Game {
       socket.emit("playEvent", { code: roomCode, bundle });
     };
 
-    await this._gameLoop(startPerfMs, sendBundle);
-    source.stop(); socket.emit("complete", { code: roomCode });
+    await this._gameLoop(sendBundle);
+    socket.emit("complete", { code: roomCode });
   }
 
   _prepareInputs() {
@@ -206,6 +208,7 @@ export class Game {
     };
   }
 
+  // --- Judging helpers (unchanged logic, uses settings.latencyMs) ---
   _attemptHoldRelease(lane) {
     if (this.state.timeMs < 0) return;
     const nowMs = this.state.timeMs + (this.settings.latencyMs || 0);
@@ -216,10 +219,10 @@ export class Game {
       hold.broken = true;
       this.state.combo = 0;
       this._judgment("Miss", true);
-      if (hold.bodyRef) this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE);
+      if (hold.bodyRef) { hold.bodyRef.__pfHoldActive = false; this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE); }
+      if (hold.headRef) { hold.headRef.__pfHoldActive = false; this._beginFadeOut(hold.headRef, MISS_FADE_RATE); }
       this.activeHoldsByLane.delete(lane);
     }
-    // Release after tail is fine.
   }
 
   _attemptHit(lane, isDown) {
@@ -251,26 +254,24 @@ export class Game {
     this.state.combo += 1;
     this.maxCombo = Math.max(this.maxCombo || 0, this.state.combo);
     this.state.hits += 1;
-    this._judgment(label);        // DOM text + in-Pixi float
+    this._judgment(label);
 
     const vis = this.spriteByNote?.get(note);
     if (vis) {
-      // Flash white and hold for a moment before fading
-      this._paintHeadWhite(vis.head);
-      vis.head.__pfFlashUntil = (this.state.timeMs >= 0 ? this.state.timeMs : 0) + WHITE_FLASH_MS;
-      vis.head.__pfFadeRate = HIT_FADE_RATE;
-
       if (isHold) {
-        const endMs = note.tMs + (note.dMs || 0);
-        this.activeHoldsByLane.set(lane, { endMs, broken: false, bodyRef: vis.body || null });
-
+        // White + stay visible until tail completion
+        this._paintHeadWhite(vis.head);
         if (vis.body) {
-          this._paintBodyWhite(vis, note);
-          vis.body.__pfFlashUntil = (this.state.timeMs >= 0 ? this.state.timeMs : 0) + WHITE_FLASH_MS;
-          vis.body.__pfFadeRate = HOLD_BODY_FADE;
+          this._paintBodyWhite(vis, note);   // BELOW head (after)
+          vis.body.__pfHoldActive = true;
         }
+        vis.head.__pfHoldActive = true;
+
+        const endMs = note.tMs + (note.dMs || 0);
+        this.activeHoldsByLane.set(lane, { endMs, broken: false, headRef: vis.head, bodyRef: vis.body || null });
       } else {
-        // No hold: just fade the head container
+        // Tap: flash then fade
+        this._paintHeadWhite(vis.head);
         vis.head.__pfFlashUntil = (this.state.timeMs >= 0 ? this.state.timeMs : 0) + WHITE_FLASH_MS;
         vis.head.__pfFadeRate = HIT_FADE_RATE;
       }
@@ -288,13 +289,13 @@ export class Game {
     head.alpha = 1;
   }
 
+  // Draw white hold body BELOW the head (after)
   _paintBodyWhite(vis, note) {
-    const headH = 32; // must match creation
     const lengthPx = Math.max(10, (note.dMs || 0) * this.pixelsPerMs);
     const stemX = (vis.head.width - 12) / 2;
     vis.body.clear();
-    vis.body.roundRect(stemX, headH - 2, 12, lengthPx, 6);
-    vis.body.fill({ color: 0xffffff, alpha: 0.9 });
+    vis.body.roundRect(stemX, 32 - 2, 12, lengthPx, 6);
+    vis.body.fill({ color: 0xffffff, alpha: 0.95 });
     vis.body.alpha = 1;
   }
 
@@ -303,7 +304,7 @@ export class Game {
   }
 
   _judgment(label, miss = false) {
-    // DOM overlay text
+    // DOM overlay
     this._ensureJudgmentElement();
     const el = this.$judge;
     if (el) {
@@ -311,7 +312,6 @@ export class Game {
       el.style.color = miss ? "#aa4b5b" : (label === "Perfect" ? "#25F4EE" : (label === "Great" ? "#C8FF4D" : "#8A5CFF"));
       el.style.opacity = "1";
       el.style.transform = "translate(-50%, 50%) scale(1.0)";
-      // quick pop
       requestAnimationFrame(() => {
         el.style.transform = "translate(-50%, 50%) scale(1.08)";
         el.style.opacity = "1";
@@ -322,7 +322,7 @@ export class Game {
       });
     }
 
-    // In-canvas floating text near the judge line as a backup visual
+    // Floating canvas text
     const style = new PIXI.TextStyle({
       fill: miss ? 0xaa4b5b : (label === "Perfect" ? 0x25F4EE : (label === "Great" ? 0xC8FF4D : 0x8A5CFF)),
       fontSize: 36,
@@ -338,14 +338,12 @@ export class Game {
     t.x = this.width / 2;
     t.y = this.judgeY - 42;
     t.alpha = 1;
-    t.__pfVelY = -0.7; // float up a bit
+    t.__pfVelY = -0.7;
     this.fxLayer.addChild(t);
-
-    // Schedule fade-out of the floating text
     t.__pfFade = { rate: 0.03, remove: true };
   }
 
-  async _gameLoop(startPerfMs, tickHook) {
+  async _gameLoop(tickHook) {
     // Build sprites once
     this.noteLayer.removeChildren();
     this.fxLayer.removeChildren();
@@ -361,7 +359,7 @@ export class Game {
 
       const head = new PIXI.Graphics();
       head.roundRect(0, 0, headW, headH, 10);
-      head.fill({ color: 0x19cdd0 });                 // default teal
+      head.fill({ color: 0x19cdd0 });
       head.stroke({ width: 2, color: 0x0ea7a9 });
       cont.addChild(head);
 
@@ -369,20 +367,14 @@ export class Game {
       cont.y = -60;
       this.noteLayer.addChild(cont);
 
-      // bookkeeping
-      head.__pfFlashUntil = null;     // ms timestamp to begin fading after
-      head.__pfFadeRate = HIT_FADE_RATE;
-
-      if (body) {
-        body.__pfFlashUntil = null;
-        body.__pfFadeRate = HOLD_BODY_FADE;
-      }
+      head.__pfFlashUntil = null; head.__pfFadeRate = HIT_FADE_RATE; head.__pfHoldActive = false;
+      if (body) { body.__pfFlashUntil = null; body.__pfFadeRate = HOLD_BODY_FADE; body.__pfHoldActive = false; }
 
       this.spriteByNote.set(n, { cont, head, body, n });
       return { cont, head, body, n };
     });
 
-    // Countdown using DOM overlay
+    // Countdown helpers
     const showCountdown = (msLeft) => {
       this._ensureJudgmentElement();
       const sLeft = Math.ceil(msLeft / 1000);
@@ -390,52 +382,48 @@ export class Game {
       this.$judge.textContent = sLeft > 0 ? String(sLeft) : "Go!";
       this.$judge.style.opacity = "1";
     };
-    const hideCountdown = () => {
-      if (this.$judge) this.$judge.style.opacity = "0";
-    };
+    const hideCountdown = () => { if (this.$judge) this.$judge.style.opacity = "0"; };
 
+    // === Main loop
     return await new Promise(resolve => {
       this.app.ticker.add(() => {
-        const nowPerf = performance.now();
-        const tMs = nowPerf - startPerfMs; // negative during countdown
+        // Audio-locked time
+        let tMs = 0;
+        if (this.audioCtx && this.startCtxTime != null) {
+          tMs = (this.audioCtx.currentTime - this.startCtxTime) * 1000; // negative during countdown
+        }
         this.state.timeMs = tMs;
 
         if (tMs < 0) showCountdown(-tMs); else hideCountdown();
 
-        // Update FX texts
+        // FX texts
         for (const child of [...this.fxLayer.children]) {
           if (child.__pfVelY) child.y += child.__pfVelY;
           if (child.__pfFade) {
             child.alpha = Math.max(0, child.alpha - child.__pfFade.rate);
-            if (child.alpha <= 0.01) {
-              if (child.__pfFade.remove) this.fxLayer.removeChild(child);
-            }
+            if (child.alpha <= 0.01) { if (child.__pfFade.remove) this.fxLayer.removeChild(child); }
           }
         }
 
-        // Notes
+        // Notes render/update
         for (const obj of this.noteSprites) {
           const { n, cont, body, head } = obj;
-          const removed = !cont.parent && (!body || !body.parent);
-          if (removed) continue;
+          if (!cont.parent && (!body || !body.parent)) continue;
 
-          // Position so head crosses judge line at n.tMs
+          // Position: head crosses judge at n.tMs
           const y = this.judgeY - (n.tMs - tMs) * this.pixelsPerMs;
           if (cont.parent) cont.y = y;
 
-          // Hold body render
-          if (body && body.parent && n.dMs > 0) {
+          // Hold body BELOW head (after)
+          if (body && body.parent && n.dMs > 0 && !body.__pfHoldActive) {
             const lengthPx = Math.max(10, n.dMs * this.pixelsPerMs);
             body.clear();
-            const stemX = (head.width - 12) / 2;
-            body.roundRect(stemX, head.height - 2, 12, lengthPx, 6);
-            // Only recolor to teal while not in white-flash override
-            if (!body.__pfFlashUntil) {
-              body.fill({ color: 0x0fa3a0, alpha: 0.55 });
-            }
+            const stemX = (cont.width - 12) / 2;
+            body.roundRect(stemX, headH - 2, 12, lengthPx, 6);
+            body.fill({ color: 0x0fa3a0, alpha: 0.55 });
           }
 
-          // Miss window
+          // Miss window for unhit taps/holds (head not hit in time)
           if (tMs >= 0 && !n.hit) {
             if (tMs - n.tMs > 120) {
               n.hit = true;
@@ -448,41 +436,30 @@ export class Game {
             }
           }
 
-          // White flash hold then fade
-          const now = tMs;
-          if (head.__pfFlashUntil) {
-            if (now >= head.__pfFlashUntil) {
-              head.__pfFlashUntil = null;          // start fading
-              this._beginFadeOut(head, head.__pfFadeRate, true);
-            }
+          // Timed flash -> fade (taps)
+          if (head.__pfFlashUntil && tMs >= head.__pfFlashUntil) {
+            head.__pfFlashUntil = null;
+            this._beginFadeOut(head, head.__pfFadeRate, true);
           }
-          if (body && body.__pfFlashUntil) {
-            if (now >= body.__pfFlashUntil) {
-              body.__pfFlashUntil = null;
-              this._beginFadeOut(body, body.__pfFadeRate, true);
-            }
+          if (body && body.__pfFlashUntil && tMs >= body.__pfFlashUntil) {
+            body.__pfFlashUntil = null;
+            this._beginFadeOut(body, body.__pfFadeRate, true);
           }
 
-          // Per-frame fade progression
+          // Per-frame fades
           if (head.parent && head.__pfFade) {
             head.alpha = Math.max(0, head.alpha - head.__pfFade.rate);
-            if (head.alpha <= 0.01) {
-              if (head.__pfFade.remove) cont.parent?.removeChild(cont);
-              delete head.__pfFade;
-            }
+            if (head.alpha <= 0.01) { if (head.__pfFade.remove) cont.parent?.removeChild(cont); delete head.__pfFade; }
           }
           if (body && body.parent && body.__pfFade) {
             body.alpha = Math.max(0, body.alpha - body.__pfFade.rate);
-            if (body.alpha <= 0.01) {
-              if (body.__pfFade.remove !== false) body.parent.removeChild(body);
-              delete body.__pfFade;
-            }
+            if (body.alpha <= 0.01) { if (body.__pfFade.remove !== false) body.parent.removeChild(body); delete body.__pfFade; }
           }
 
-          // Cull when below screen
-          const offscreenY = this.height + 80;
-          if (cont.parent && cont.y > offscreenY) cont.parent.removeChild(cont);
-          if (body && body.parent && cont.y > offscreenY) body.parent.removeChild(body);
+          // Cull below screen
+          const offY = this.height + 80;
+          if (cont.parent && cont.y > offY) cont.parent.removeChild(cont);
+          if (body && body.parent && cont.y > offY) body.parent.removeChild(body);
         }
 
         // Maintain active holds
@@ -495,18 +472,14 @@ export class Game {
                 hold.broken = true;
                 this.state.combo = 0;
                 this._judgment("Miss", true);
-                if (hold.bodyRef) {
-                  hold.bodyRef.__pfFlashUntil = null;
-                  this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE);
-                }
+                if (hold.bodyRef) { hold.bodyRef.__pfHoldActive = false; this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE); }
+                if (hold.headRef) { hold.headRef.__pfHoldActive = false; this._beginFadeOut(hold.headRef, MISS_FADE_RATE); }
                 this.activeHoldsByLane.delete(lane);
               }
             } else {
-              // Tail reached; auto-complete without timed release
-              if (hold.bodyRef) {
-                hold.bodyRef.__pfFlashUntil = null;
-                this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE);
-              }
+              // Completed hold: start fade now
+              if (hold.bodyRef) { hold.bodyRef.__pfHoldActive = false; this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE); }
+              if (hold.headRef) { hold.headRef.__pfHoldActive = false; this._beginFadeOut(hold.headRef, HIT_FADE_RATE); }
               this.activeHoldsByLane.delete(lane);
             }
           }
@@ -516,7 +489,7 @@ export class Game {
         this.state.total = this.chart.notes.length;
         this.state.acc = this.state.total ? this.state.hits / this.state.total : 1;
         if (this.$combo) this.$combo.textContent = this.state.combo + "x";
-        if (this.$acc) this.$acc.textContent = Math.round(this.state.acc * 100) + "%";
+        if (this.$acc)   this.$acc.textContent = Math.round(this.state.acc * 100) + "%";
         if (this.$score) this.$score.textContent = this.state.score.toString();
 
         if (tickHook) tickHook();

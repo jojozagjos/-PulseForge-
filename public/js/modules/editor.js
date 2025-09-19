@@ -1,5 +1,5 @@
 // public/js/modules/editor.js
-// PulseForge Chart Editor with audio picker + New/Open/Save As toolbar
+// PulseForge Chart Editor – precise hit testing, no-snap selection, overlap guards, keyboard transport, box-select
 export class Editor {
   constructor(opts) {
     this.canvas = document.getElementById(opts.canvasId);
@@ -45,21 +45,25 @@ export class Editor {
 
     this.manifest = null;
     this.manifestUrl = null;
-    this.chart = null; // { bpm, durationMs, lanes, notes: [...] }
+    this.chart = null; // { bpm, durationMs, lanes, notes:[{tMs,lane,dMs?}] }
     this.chartUrl = null;
     this.difficulty = "normal";
+
+    // View/scroll
     this.zoomY = 1.0;
-    this.scrollY = 0; // px offset from 0ms
+    this.scrollY = 0; // px from 0ms
     this.pxPerMs = 0.35;
 
+    // Optional tiny visual nudge if you perceive flash vs audio offset (ms)
+    this.editorLatencyMs = 0; // try +10 / -10 if you notice a tiny drift
+
+    // Tools & selection
     this.tool = "create"; // create | select | stretch | delete | copy | paste
-    this.subdiv = 4; // grid per beat
+    this.subdiv = 4;
     this.snap = true;
-
-    this.selection = new Set(); // indices into chart.notes
+    this.selection = new Set();
     this.clipboard = [];
-
-    this.drag = null; // dragging, stretching, panning
+    this.drag = null; // {type, ...}
     this.mouse = { x: 0, y: 0, lane: 0 };
 
     // Style palette
@@ -74,15 +78,20 @@ export class Editor {
       noteHeadStroke: "#0ea7a9",
       holdBody: "rgba(15,163,160,0.55)",
       selection: "#ffd166",
-      playhead: "#25f4ee"
+      playhead: "#25f4ee",
+      boxSelect: "rgba(255, 209, 102, 0.16)",
+      boxSelectBorder: "#ffd166"
     };
 
-    // wiring guards so we can call mountToolbar() safely multiple times
+    // Guards to wire only once
     this._wiredAudio = false;
     this._wiredFile = false;
 
-    // --- placement rules / helpers ---
-    this.minGapMs = 60; // minimal head-to-head distance on same lane
+    // Placement helpers
+    this.minGapMs = 60;           // minimal lane spacing for heads/tails
+    this.headH = 28;              // draw height of a tap/hold head
+    this.headPad = 10;            // corner radius for head
+    this.tailHandlePadMs = 90;    // click tolerance around tail time to stretch
 
     // Bind
     this._tick = this._tick.bind(this);
@@ -93,20 +102,14 @@ export class Editor {
     // Size & listeners
     this._resize();
     window.addEventListener("resize", this._resize);
-    // Wheel: consume to prevent page scroll; capture early
-    this.canvas.addEventListener("wheel", this._onWheel, { passive: false, capture: true });
 
-    // Keyboard: Space toggles play/pause when editor is active
-    window.addEventListener("keydown", this._onKeyDown);
-
-    // Block middle-click auto-scroll on the canvas
-    this.canvas.addEventListener("auxclick", (e) => {
-      if (e.button === 1) { e.preventDefault(); e.stopPropagation(); }
+    // Block page scrolling when using the editor canvas
+    this.canvas.addEventListener("wheel", this._onWheel, { passive: false });
+    this.canvas.addEventListener("mousedown", e => {
+      if (e.button === 1) e.preventDefault(); // middle-drag pan without autoscroll
     });
-    // Also cancel as soon as the button goes down
-    this.canvas.addEventListener("pointerdown", (e) => {
-      if (e.button === 1) { e.preventDefault(); e.stopPropagation(); }
-    }, { capture: true });
+
+    window.addEventListener("keydown", this._onKeyDown);
 
     // Pointer
     this.canvas.addEventListener("pointermove", e => this._pointerMove(e));
@@ -172,14 +175,14 @@ export class Editor {
     }
     this._updateScrubMax();
 
-    // make sure toolbars are wired when coming via manifest path too
+    // Ensure pickers wired
     this._wireAudioPicker();
     this._wireFileToolbar();
   }
 
   /** Wire all UI pieces; safe to call even on blank start. */
   mountToolbar() {
-    // Tools: style safeguard if you didn't add classes in HTML
+    // Tool button baseline styling (if no classes provided)
     document.querySelectorAll('[data-tool]').forEach(btn => {
       if (!btn.classList.contains("primary") && !btn.classList.contains("secondary") && !btn.classList.contains("ghost")) {
         btn.style.background = "#1e2433";
@@ -243,7 +246,6 @@ export class Editor {
       this.seek(ms);
     });
 
-    // ensure toolbars wired if starting blank
     this._wireAudioPicker();
     this._wireFileToolbar();
   }
@@ -252,9 +254,7 @@ export class Editor {
   _wireFileToolbar() {
     if (this._wiredFile) return;
     this._wiredFile = true;
-    console.log("[Editor] wiring File toolbar");
 
-    // New chart (clears notes only)
     document.getElementById(this.ids.fileNew)?.addEventListener("click", () => {
       if (!this.chart) this.newChart();
       this.chart.notes = [];
@@ -310,7 +310,6 @@ export class Editor {
       }
     });
 
-    // Save As
     document.getElementById(this.ids.fileSaveAs)?.addEventListener("click", () => {
       this._downloadChart(this._suggestChartFilename());
     });
@@ -336,7 +335,6 @@ export class Editor {
   _wireAudioPicker() {
     if (this._wiredAudio) return;
     this._wiredAudio = true;
-    console.log("[Editor] wiring Audio picker");
 
     const urlInput = document.getElementById(this.ids.audioUrl);
     const loadUrlBtn = document.getElementById(this.ids.audioLoadUrl);
@@ -484,45 +482,31 @@ export class Editor {
     return !(A1 + this.minGapMs <= B0 || B1 + this.minGapMs <= A0);
   }
 
-  /**
-   * Check if a note can be placed on lane/tMs/dMs without overlapping other notes in same lane.
-   * ignoreIdxSet is a Set of indices to ignore (e.g. selected while moving).
-   * Returns: { ok: boolean, conflictIdx: number | -1, cappedEndMs?: number }
-   */
+  /** Check if a note can be placed in a lane (no overlaps). */
   _canPlaceNote(lane, tMs, dMs = 0, ignoreIdxSet = new Set()) {
     if (!this.chart || !Array.isArray(this.chart.notes)) return { ok: true, conflictIdx: -1 };
     const start = tMs;
     const end = tMs + Math.max(0, dMs);
 
     let next = null;
-
     for (let i = 0; i < this.chart.notes.length; i++) {
       if (ignoreIdxSet.has(i)) continue;
       const n = this.chart.notes[i];
       if (n.lane !== lane) continue;
 
-      // head spacing
-      if (Math.abs(n.tMs - tMs) < this.minGapMs) {
-        return { ok: false, conflictIdx: i };
-      }
+      if (Math.abs(n.tMs - tMs) < this.minGapMs) return { ok: false, conflictIdx: i };
 
-      // range overlap for holds/tails
       const ns = n.tMs, ne = n.tMs + Math.max(0, n.dMs || 0);
       if ((n.dMs || 0) > 0 || dMs > 0) {
-        if (this._rangesOverlap(start, end, ns, ne)) {
-          return { ok: false, conflictIdx: i };
-        }
+        if (this._rangesOverlap(start, end, ns, ne)) return { ok: false, conflictIdx: i };
       }
 
       if (n.tMs > tMs && (!next || n.tMs < next.tMs)) next = { ...n, idx: i };
     }
 
-    // For holds, cap tail to avoid running into the next head
     if (dMs > 0 && next) {
       const maxEnd = next.tMs - this.minGapMs;
-      if (end > maxEnd) {
-        return { ok: true, conflictIdx: -1, cappedEndMs: Math.max(start, maxEnd) };
-      }
+      if (end > maxEnd) return { ok: true, conflictIdx: -1, cappedEndMs: Math.max(start, maxEnd) };
     }
 
     return { ok: true, conflictIdx: -1 };
@@ -539,9 +523,13 @@ export class Editor {
     return Math.max(0, Math.min(this.chart.lanes - 1, lane));
   }
 
+  /** Raw (no-snap) ms from a screen y. */
+  _screenToMsRaw(y) {
+    return (y + this.scrollY) / (this.pxPerMs * this.zoomY) * 1.0;
+  }
+
   _screenToMs(y) {
-    const ms = (y + this.scrollY) / (this.pxPerMs * this.zoomY) * 1.0;
-    return this._snapMs(ms);
+    return this._snapMs(this._screenToMsRaw(y));
   }
 
   _snapMs(ms) {
@@ -565,19 +553,14 @@ export class Editor {
     } else if (this.drag.type === "createHold") {
       const curMs = this._screenToMs(this.mouse.y);
       let dMs = Math.max(0, curMs - this.drag.baseMs);
-
-      // Cap the tail to avoid overlapping the next note on the same lane
-      const ignore = new Set([this.chart.notes.length - 1]); // the temp note itself
-      const chkTail = this._canPlaceNote(this.mouse.lane, this.drag.baseMs, dMs, ignore);
-      if (chkTail.cappedEndMs !== undefined) {
-        dMs = Math.max(0, chkTail.cappedEndMs - this.drag.baseMs);
-      }
+      const ignore = new Set([this.chart.notes.length - 1]); // temp note
+      const chkTail = this._canPlaceNote(this.drag.lane, this.drag.baseMs, dMs, ignore);
+      if (chkTail.cappedEndMs !== undefined) dMs = Math.max(0, chkTail.cappedEndMs - this.drag.baseMs);
       this.drag.tempNote.dMs = dMs;
 
     } else if (this.drag.type === "move") {
       const dMs = this._screenToMs(this.mouse.y) - this.drag.startMs;
       const dLane = this.mouse.lane - this.drag.startLane;
-
       const ignore = new Set(this.selection);
       let ok = true;
       const proposals = [];
@@ -588,139 +571,188 @@ export class Editor {
         const newStart = this._clampMs(orig.tMs + dMs);
         const n = this.chart.notes[idx];
         const newDur = Math.max(0, n.dMs || 0);
-
         const chk = this._canPlaceNote(newLane, newStart, newDur, ignore);
         if (!chk.ok) { ok = false; break; }
         proposals.push({ idx, lane: newLane, tMs: newStart });
       }
-
-      if (!ok) {
-        this._help("Move blocked by overlap on same lane.");
-        return;
-      }
-
+      if (!ok) { this._help("Move blocked by overlap on same lane."); return; }
       for (const p of proposals) {
         const nn = this.chart.notes[p.idx];
-        nn.lane = p.lane;
-        nn.tMs  = p.tMs;
+        nn.lane = p.lane; nn.tMs = p.tMs;
       }
 
     } else if (this.drag.type === "stretch") {
       const idx = this.drag.stretchIdx;
       const n = this.chart.notes[idx];
       const curMs = this._screenToMs(this.mouse.y);
-
       let proposed = Math.max(0, curMs - n.tMs);
-
-      // Cap by next note on the same lane
       const chk = this._canPlaceNote(n.lane, n.tMs, proposed, new Set([idx]));
-      if (chk.cappedEndMs !== undefined) {
-        proposed = Math.max(0, chk.cappedEndMs - n.tMs);
-      }
+      if (chk.cappedEndMs !== undefined) proposed = Math.max(0, chk.cappedEndMs - n.tMs);
       n.dMs = Math.max(0, Math.min(proposed, this.chart.durationMs - n.tMs));
+
+    } else if (this.drag.type === "boxSelect") {
+      // Update marquee end
+      this.drag.endX = this.mouse.x;
+      this.drag.endY = this.mouse.y;
+
+      // Recompute hovered set (no snap; pure geometry)
+      const box = this._normalizedBox(this.drag.startX, this.drag.startY, this.drag.endX, this.drag.endY);
+      const hitSet = this._notesInBox(box);
+
+      // Live preview (don’t commit yet)
+      if (this.drag.additive) {
+        // additive preview = union of current selection and hits
+        this._previewSelection = new Set([...this.selection, ...hitSet]);
+      } else {
+        this._previewSelection = hitSet;
+      }
     }
   }
 
-  _lockPageScroll() {
-    document.body.style.overscrollBehavior = "contain";
-    document.documentElement.style.overflow = "hidden";
-  }
-  _unlockPageScroll() {
-    document.body.style.overscrollBehavior = "";
-    document.documentElement.style.overflow = "";
-  }
-
   _pointerDown(e) {
+    e.preventDefault(); // avoid text selection / page drag
     this.canvas.setPointerCapture(e.pointerId);
     const lane = this.mouse.lane;
-    const tMs = this._screenToMs(this.mouse.y);
+    const tMsSnap = this._screenToMs(this.mouse.y);   // snapped for placement
 
+    // Middle or Ctrl -> pan
     if (e.button === 1 || e.ctrlKey) {
-      e.preventDefault(); // stop browser default
-      this._lockPageScroll();
       this.drag = { type: "pan", startY: this.mouse.y, startScrollY: this.scrollY };
       return;
     }
 
     if (this.tool === "create") {
-      // Check head placement first
-      const chk = this._canPlaceNote(lane, tMs, 0, new Set());
-      if (!chk.ok) {
-        this._help("Cannot place note here (overlap on same lane).");
-        return;
-      }
-
-      // Place a tap to start; stretch into hold while dragging
-      const note = { tMs, lane };
+      const chk = this._canPlaceNote(lane, tMsSnap, 0, new Set());
+      if (!chk.ok) { this._help("Cannot place note here (overlap on same lane)."); return; }
+      const note = { tMs: tMsSnap, lane };
       this.chart.notes.push(note);
       this.selection.clear();
       const idx = this.chart.notes.length - 1;
       this.selection.add(idx);
+      this.drag = { type: "createHold", baseMs: tMsSnap, tempNote: note, lane };
 
-      // Begin stretch creation
-      this.drag = { type: "createHold", baseMs: tMs, tempNote: note };
-
-    } else if (this.tool === "select") {
-      const hitIdx = this._hitTest(tMs, lane);
-      if (hitIdx >= 0) {
-        if (!this.selection.has(hitIdx)) {
-          if (!e.shiftKey) this.selection.clear();
-          this.selection.add(hitIdx);
+    } else if (this.tool === "select" || this.tool === "stretch" || this.tool === "delete") {
+      const hit = this._hitTestRect(this.mouse.x, this.mouse.y);
+      if (hit.idx >= 0) {
+        if (this.tool === "delete") {
+          this.chart.notes.splice(hit.idx, 1);
+          this.selection = new Set([...this.selection].filter(i => i !== hit.idx).map(i => i > hit.idx ? i - 1 : i));
+          return;
         }
-        const orig = {};
-        for (const i of this.selection) orig[i] = { tMs: this.chart.notes[i].tMs, lane: this.chart.notes[i].lane };
-        this.drag = { type: "move", startMs: tMs, startLane: lane, orig };
+        // select (click)
+        if (!this.selection.has(hit.idx)) {
+          if (!e.shiftKey) this.selection.clear();
+          this.selection.add(hit.idx);
+        }
+
+        if (this.tool === "stretch" || hit.onTail) {
+          const n = this.chart.notes[hit.idx];
+          if (!n.dMs) n.dMs = 0;
+          this.selection.clear(); this.selection.add(hit.idx);
+          this.drag = { type: "stretch", stretchIdx: hit.idx };
+        } else {
+          // move
+          const orig = {};
+          for (const i of this.selection) orig[i] = { tMs: this.chart.notes[i].tMs, lane: this.chart.notes[i].lane };
+          this.drag = { type: "move", startMs: tMsSnap, startLane: lane, orig };
+        }
       } else {
-        this.drag = { type: "pan", startY: this.mouse.y, startScrollY: this.scrollY };
-        if (!e.shiftKey) this.selection.clear();
-      }
-
-    } else if (this.tool === "stretch") {
-      const hitIdx = this._hitTest(tMs, lane);
-      if (hitIdx >= 0) {
-        const n = this.chart.notes[hitIdx];
-        if (!n.dMs) n.dMs = 0;
-        this.selection.clear(); this.selection.add(hitIdx);
-        this.drag = { type: "stretch", stretchIdx: hitIdx };
-      }
-
-    } else if (this.tool === "delete") {
-      const hitIdx = this._hitTest(tMs, lane);
-      if (hitIdx >= 0) {
-        this.chart.notes.splice(hitIdx, 1);
-        this.selection = new Set([...this.selection].filter(i => i !== hitIdx).map(i => i > hitIdx ? i - 1 : i));
+        // Empty space:
+        if (this.tool === "select") {
+          // Begin marquee selection (Shift => additive)
+          this._previewSelection = null;
+          this.drag = {
+            type: "boxSelect",
+            startX: this.mouse.x,
+            startY: this.mouse.y,
+            endX: this.mouse.x,
+            endY: this.mouse.y,
+            additive: !!e.shiftKey
+          };
+        } else {
+          // Other tools: pan on empty space
+          this.drag = { type: "pan", startY: this.mouse.y, startScrollY: this.scrollY };
+        }
       }
 
     } else if (this.tool === "copy") {
-      this._copySelection();
-      this._help("Copied.");
+      this._copySelection(); this._help("Copied.");
 
     } else if (this.tool === "paste") {
-      this._pasteAt(tMs, lane);
+      this._pasteAt(tMsSnap, lane);
     }
   }
 
   _pointerUp(e) {
     if (this.drag?.type === "createHold") {
       const n = this.drag.tempNote;
-      if (n.dMs && n.dMs < 10) delete n.dMs; // very short drag becomes a tap
-    }
-    if (this.drag?.type === "pan") {
-      this._unlockPageScroll();
+      if (n.dMs && n.dMs < 10) delete n.dMs; // tiny drag becomes tap
+    } else if (this.drag?.type === "boxSelect") {
+      // Commit the marquee selection
+      const box = this._normalizedBox(this.drag.startX, this.drag.startY, this.drag.endX, this.drag.endY);
+      const hitSet = this._notesInBox(box);
+      if (this.drag.additive) {
+        for (const i of hitSet) this.selection.add(i);
+      } else {
+        this.selection = hitSet;
+      }
+      this._previewSelection = null;
     }
     this.drag = null;
   }
 
-  _hitTest(tMs, lane) {
-    let best = -1, bestDt = 9999;
+  /**
+   * Rectangle hit test for the note head and hold body/tail.
+   * Returns { idx, onTail } or { idx:-1, onTail:false }
+   */
+  _hitTestRect(mouseX, mouseY) {
+    if (!this.chart) return { idx: -1, onTail: false };
+
+    const w = this.canvas.width / (window.devicePixelRatio || 1);
+    const laneW = this._laneW(), gap = this._laneGap();
+    const totalW = this.chart.lanes * laneW + (this.chart.lanes - 1) * gap;
+    const startX = (w - totalW) / 2;
+    const pxPerMs = this.pxPerMs * this.zoomY;
+
+    const headW = Math.max(26, laneW - 18);
+    const tMsAtPointer = this._screenToMsRaw(mouseY);
+
+    let best = { idx: -1, onTail: false, score: 1e9 };
+
     for (let i = 0; i < this.chart.notes.length; i++) {
       const n = this.chart.notes[i];
-      if (n.lane !== lane) continue;
-      const dt = Math.abs(n.tMs - tMs);
-      if (dt < 50 && dt < bestDt) { best = i; bestDt = dt; } // a bit stricter to prefer selecting
-      if (n.dMs && Math.abs(n.tMs + n.dMs - tMs) < 80 && 60 < bestDt) { best = i; bestDt = 60; }
+      const laneX = startX + n.lane * (laneW + gap);
+      const x = laneX + (laneW - headW) / 2;
+      const y = n.tMs * pxPerMs - this.scrollY;
+
+      // head rect
+      const hx0 = x, hx1 = x + headW;
+      const hy0 = y, hy1 = y + this.headH;
+
+      const inHead = (mouseX >= hx0 && mouseX <= hx1 && mouseY >= hy0 && mouseY <= hy1);
+
+      // body rect (AFTER the head)
+      let inBody = false, onTail = false;
+      if (n.dMs && n.dMs > 0) {
+        const len = Math.max(6, n.dMs * pxPerMs);
+        const bx0 = x + (headW - 12) / 2, bx1 = bx0 + 12;
+        const by0 = y + this.headH - 2, by1 = by0 + len; // after the head (downward)
+        inBody = (mouseX >= bx0 && mouseX <= bx1 && mouseY >= by0 && mouseY <= by1);
+
+        // tail handle near the AFTER time
+        const tailMs = n.tMs + n.dMs;
+        if (Math.abs(tMsAtPointer - tailMs) <= this.tailHandlePadMs) {
+          onTail = true;
+        }
+      }
+
+      if (inHead || inBody || onTail) {
+        const score = Math.abs(n.tMs - tMsAtPointer);
+        if (score < best.score) best = { idx: i, onTail };
+      }
     }
-    return best;
+
+    return { idx: best.idx, onTail: best.onTail || false };
   }
 
   _copySelection() {
@@ -751,25 +783,64 @@ export class Editor {
       added++;
     }
 
-    if (added === 0) {
-      this._help("Nothing pasted due to overlaps.");
-      return;
-    }
+    if (added === 0) { this._help("Nothing pasted due to overlaps."); return; }
 
     this.selection.clear();
     for (let i = startIdx; i < this.chart.notes.length; i++) this.selection.add(i);
     this._help(`Pasted ${added} note(s).`);
   }
 
-  _clampMs(ms) {
-    return Math.max(0, Math.min(ms, this.chart.durationMs));
+  _clampMs(ms) { return Math.max(0, Math.min(ms, this.chart.durationMs)); }
+
+  // ---------- Box select helpers ----------
+  _normalizedBox(x0, y0, x1, y1) {
+    const left = Math.min(x0, x1), right = Math.max(x0, x1);
+    const top = Math.min(y0, y1), bottom = Math.max(y0, y1);
+    return { left, right, top, bottom };
+  }
+
+  _rectsOverlap(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1) {
+    return ax0 <= bx1 && ax1 >= bx0 && ay0 <= by1 && ay1 >= by0;
+  }
+
+  /** Return a Set of note indices intersecting the marquee box */
+  _notesInBox(box) {
+    const result = new Set();
+    if (!this.chart) return result;
+
+    const w = this.canvas.width / (window.devicePixelRatio || 1);
+    const laneW = this._laneW(), gap = this._laneGap();
+    const totalW = this.chart.lanes * laneW + (this.chart.lanes - 1) * gap;
+    const startX = (w - totalW) / 2;
+    const pxPerMs = this.pxPerMs * this.zoomY;
+    const headW = Math.max(26, laneW - 18);
+
+    for (let i = 0; i < this.chart.notes.length; i++) {
+      const n = this.chart.notes[i];
+      const laneX = startX + n.lane * (laneW + gap);
+      const x = laneX + (laneW - headW) / 2;
+      const y = n.tMs * pxPerMs - this.scrollY;
+
+      // head rect
+      const hx0 = x, hx1 = x + headW;
+      const hy0 = y, hy1 = y + this.headH;
+      let hit = this._rectsOverlap(hx0, hy0, hx1, hy1, box.left, box.top, box.right, box.bottom);
+
+      // body (after the head)
+      if (!hit && n.dMs && n.dMs > 0) {
+        const len = Math.max(6, n.dMs * pxPerMs);
+        const bx0 = x + (headW - 12) / 2, bx1 = bx0 + 12;
+        const by0 = y + this.headH - 2, by1 = by0 + len;
+        hit = this._rectsOverlap(bx0, by0, bx1, by1, box.left, box.top, box.right, box.bottom);
+      }
+
+      if (hit) result.add(i);
+    }
+    return result;
   }
 
   // ---------- Drawing ----------
-  _tick() {
-    this._draw();
-    requestAnimationFrame(this._tick);
-  }
+  _tick() { this._draw(); requestAnimationFrame(this._tick); }
 
   _resize() {
     const ratio = window.devicePixelRatio || 1;
@@ -842,26 +913,33 @@ export class Editor {
     }
 
     // notes
-    const headH = 28;
+    const headH = this.headH;
     const headW = Math.max(26, laneW - 18);
+
+    const now = this.currentTimeMs() + this.editorLatencyMs;
+    const flashWindow = 40; // ms
 
     for (let i = 0; i < this.chart.notes.length; i++) {
       const n = this.chart.notes[i];
       const x = startX + n.lane * (laneW + gap) + (laneW - headW) / 2;
       const y = Math.floor(n.tMs * pxPerMs - this.scrollY);
 
+      // Hold body AFTER the head (downward)
       if (n.dMs && n.dMs > 0) {
         const len = Math.max(6, n.dMs * pxPerMs);
         ctx.fillStyle = this.colors.holdBody;
         this._roundRect(ctx, x + (headW - 12) / 2, y + headH - 2, 12, len, 6, true);
       }
 
-      ctx.fillStyle = this.colors.noteHead;
-      ctx.strokeStyle = this.colors.noteHeadStroke;
+      // flash head near playhead
+      const flash = Math.abs(n.tMs - now) <= flashWindow;
+      ctx.fillStyle = flash ? "#ffffff" : this.colors.noteHead;
+      ctx.strokeStyle = flash ? "#ffffff" : this.colors.noteHeadStroke;
       ctx.lineWidth = 2;
-      this._roundRect(ctx, x, y, headW, headH, 10, true);
+      this._roundRect(ctx, x, y, headW, headH, this.headPad, true);
 
-      if (this.selection.has(i)) {
+      const selected = this._previewSelection ? this._previewSelection.has(i) : this.selection.has(i);
+      if (selected) {
         ctx.strokeStyle = this.colors.selection;
         ctx.lineWidth = 2;
         ctx.strokeRect(x - 2, y - 2, headW + 4, headH + 4);
@@ -869,7 +947,7 @@ export class Editor {
     }
 
     // playhead
-    const phY = Math.floor(this.currentTimeMs() * pxPerMs - this.scrollY);
+    const phY = Math.floor(now * pxPerMs - this.scrollY);
     ctx.strokeStyle = this.colors.playhead;
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -877,9 +955,19 @@ export class Editor {
     ctx.lineTo(startX + totalW + 16, phY);
     ctx.stroke();
 
+    // marquee rectangle preview
+    if (this.drag?.type === "boxSelect") {
+      const box = this._normalizedBox(this.drag.startX, this.drag.startY, this.drag.endX, this.drag.endY);
+      ctx.fillStyle = this.colors.boxSelect;
+      ctx.strokeStyle = this.colors.boxSelectBorder;
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(box.left, box.top, box.right - box.left, box.bottom - box.top);
+      ctx.strokeRect(box.left, box.top, box.right - box.left, box.bottom - box.top);
+    }
+
     // footer info
     const t = document.getElementById(this.ids.time);
-    if (t) t.textContent = `${Math.floor(this.currentTimeMs() / 1000)}s / ${Math.floor((this.chart.durationMs || 0) / 1000)}s`;
+    if (t) t.textContent = `${Math.floor((this.currentTimeMs()) / 1000)}s / ${Math.floor((this.chart.durationMs || 0) / 1000)}s`;
 
     const s = document.getElementById(this.ids.scrub);
     if (s && !s.matches(":active")) s.value = String(Math.floor(this.currentTimeMs()));
@@ -897,16 +985,14 @@ export class Editor {
   }
 
   _onWheel(e) {
-    // Always keep the page from scrolling while over the canvas
+    // Keep the page still while interacting with canvas
     e.preventDefault();
     e.stopPropagation();
 
     if (e.shiftKey) {
-      // zoom
       const factor = e.deltaY < 0 ? 1.08 : 0.92;
       this.zoomY = Math.max(0.25, Math.min(3, this.zoomY * factor));
     } else {
-      // vertical scroll in editor
       this.scrollY = Math.max(0, this.scrollY + e.deltaY);
     }
   }
@@ -917,34 +1003,28 @@ export class Editor {
     const active = scr && scr.classList.contains("active");
     if (!active) return;
 
-    // Ignore if the user is typing in inputs or editable elements
+    // Ignore if typing
     const tag = (e.target?.tagName || "").toUpperCase();
     if (e.target?.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
-    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-        e.preventDefault();
-        // step sizes (ms): normal=250, Shift=1000, Alt=50, Ctrl/Cmd=5000
-        let step = 250;
-        if (e.shiftKey) step = 1000;
-        else if (e.altKey) step = 50;
-        else if (e.ctrlKey || e.metaKey) step = 5000;
-
-        const dir = e.key === "ArrowRight" ? 1 : -1;
-        const dur = this.chart?.durationMs ?? Math.floor(this.audioBuffer?.duration * 1000) ?? 0;
-        const target = Math.max(0, Math.min(dur, this.currentTimeMs() + dir * step));
-        this.seek(target); // keeps play/pause state
-        return;
-    }
-
+    // Space: toggle
     if (e.code === "Space" || e.key === " ") {
       e.preventDefault();
       await this._ensureAudioCtx();
-      if (this.audioCtx?.state === "suspended") {
-        try { await this.audioCtx.resume(); } catch {}
-      }
+      if (this.audioCtx?.state === "suspended") { try { await this.audioCtx.resume(); } catch {} }
       if (!this.audioBuffer) return;
-      if (this.playing) this.pause();
-      else this.play();
+      if (this.playing) this.pause(); else this.play();
+      return;
+    }
+
+    // Left / Right: nudge by 50 ms (hold Shift for 10x)
+    const step = (e.shiftKey ? 500 : 50);
+    if (e.code === "ArrowRight") {
+      e.preventDefault();
+      this.seek(Math.min((this.chart?.durationMs || 0), this.currentTimeMs() + step));
+    } else if (e.code === "ArrowLeft") {
+      e.preventDefault();
+      this.seek(Math.max(0, this.currentTimeMs() - step));
     }
   }
 
