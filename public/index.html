@@ -1,4 +1,3 @@
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -8,6 +7,12 @@
   <link rel="stylesheet" href="/css/style.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/8.1.5/pixi.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
+  <style>
+    /* small additions for the editor canvas */
+    #editor-canvas { width: 100%; height: 60vh; background: #0d111a; border: 1px solid #2a3142; border-radius: 12px; }
+    #editor-controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 12px 0; }
+    #editor-controls input[type="text"], #editor-controls input[type="number"] { width: 180px; }
+  </style>
 </head>
 <body>
   <div id="ui-root">
@@ -18,8 +23,9 @@
         <button id="btn-quick" class="secondary">Quick Match</button>
         <button id="btn-party" class="secondary">Party Room</button>
         <button id="btn-settings" class="tertiary">Settings</button>
+        <button id="btn-editor" class="tertiary">Chart Editor</button>
       </div>
-      <div class="footer">© PulseForge</div>
+      <div class="footer">By: Joseph Slade</div>
     </div>
 
     <div id="screen-settings" class="screen">
@@ -39,25 +45,170 @@
       <h1>Solo Practice</h1>
       <div id="track-list" class="track-list"></div>
       <div class="row">
-        <select id="solo-diff">
-          <option value="easy">Easy</option>
-          <option value="normal" selected>Normal</option>
-          <option value="hard">Hard</option>
-        </select>
+        <select id="solo-diff"></select>
         <button id="btn-play-solo" class="primary">Play</button>
         <button id="btn-back-from-solo" class="ghost">Back</button>
       </div>
     </div>
 
+    <!-- LOBBY -->
     <div id="screen-lobby" class="screen">
       <h1>Lobby</h1>
-      <div id="lobby-info" class="panel small"></div>
+
+      <div class="panel small" id="lobby-info"></div>
+
+      <!-- Host-only: track list + difficulty + start -->
+      <div id="lobby-host-tools" class="panel" style="display:none;">
+        <h3 style="margin:0 0 8px 0;">Match Setup</h3>
+
+        <!-- Track card grid -->
+        <div id="lobby-track-list" class="track-list" style="margin-bottom:10px;"></div>
+
+        <!-- Difficulty that auto-hides invalid options -->
+        <div class="row" style="gap:10px; flex-wrap:wrap;">
+          <label>
+            Difficulty
+            <select id="lobby-diff">
+              <option value="easy">Easy</option>
+              <option value="normal" selected>Normal</option>
+              <option value="hard">Hard</option>
+            </select>
+          </label>
+
+          <button id="lobby-refresh" class="secondary">Refresh Tracks</button>
+          <button id="btn-start" class="primary">Start</button>
+        </div>
+      </div>
+
+      <!-- Selected track summary (everyone can see) -->
+      <div id="lobby-selected" class="panel" style="display:none;">
+        <div style="display:flex; gap:12px; align-items:center;">
+          <div id="lobby-sel-cover" style="width:84px;height:84px;border-radius:8px;background:#111;border:1px solid #2a3142;background-size:cover;background-position:center;"></div>
+          <div style="display:flex; flex-direction:column;">
+            <div id="lobby-sel-title" style="font-weight:700;color:#eaf2ff;"></div>
+            <div id="lobby-sel-diffs" class="muted" style="margin-top:2px;"></div>
+          </div>
+        </div>
+      </div>
+
       <div id="lobby-players" class="panel"></div>
+
       <div class="row">
         <button id="btn-ready" class="secondary">Ready</button>
-        <button id="btn-start" class="primary">Start</button>
         <button id="btn-leave" class="ghost">Leave</button>
       </div>
+    </div>
+
+    <div id="screen-editor" class="screen">
+      <h1>Chart Editor</h1>
+
+      <div class="row" style="margin-top:10px;">
+        <button id="btn-back-editor" class="ghost">Back</button>
+      </div>
+
+      <!-- Chart File (collapsible) -->
+      <details id="ed-sec-chart" class="panel" style="margin-top:10px;">
+        <summary style="cursor:pointer; font-weight:600; padding:6px 0;">Chart File</summary>
+        <div class="row" style="gap:10px; flex-wrap:wrap; margin-top:8px;">
+          <button id="ed-new" class="secondary">New Chart (Clear Notes)</button>
+
+          <label style="flex:1 1 320px;">
+            Manifest URL
+            <input id="ed-manifest-url" type="text" placeholder="/tracks/birdbrain/manifest.json" />
+          </label>
+          <label>
+            Difficulty
+            <select id="ed-diff">
+              <option value="easy">easy</option>
+              <option value="normal" selected>normal</option>
+              <option value="hard">hard</option>
+            </select>
+          </label>
+          <button id="ed-open-url" class="secondary">Open Manifest</button>
+
+          <label style="flex:1 1 320px;">
+            Or open chart JSON file
+            <input id="ed-open-file" type="file" accept="application/json" />
+          </label>
+          <button id="ed-open-use-file" class="secondary">Use Chart File</button>
+
+          <button id="ed-save-as" class="primary">Save Chart As…</button>
+          <button id="ed-clear-notes" class="ghost">Clear Notes</button>
+        </div>
+      </details>
+
+      <!-- Audio (collapsible) -->
+      <details id="ed-sec-audio" class="panel" style="margin-top:10px;">
+        <summary style="cursor:pointer; font-weight:600; padding:6px 0;">Audio</summary>
+        <div class="row" style="gap:10px; flex-wrap:wrap; margin-top:8px;">
+          <label style="flex:1 1 360px;">
+            Use existing URL
+            <input id="ed-audio-url" type="text" placeholder="/assets/music/my-song.mp3" />
+          </label>
+          <button id="ed-audio-load-url" class="secondary">Load URL</button>
+
+          <label style="flex:1 1 360px;">
+            Or import file
+            <input id="ed-audio-file" type="file" accept="audio/*" />
+          </label>
+          <button id="ed-audio-use-file" class="secondary">Use File</button>
+
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input id="ed-audio-apply-manifest" type="checkbox" />
+            Update manifest audio fields
+          </label>
+        </div>
+        <div class="muted" id="ed-audio-hint" style="margin-top:6px;">
+          Tip: For URL, use a path under /public, e.g. /assets/music/track.mp3.
+          For file, we preview with a temporary blob URL; remember to copy the file into your project before shipping.
+        </div>
+      </details>
+
+      <!-- Tools (collapsible) -->
+      <details id="ed-sec-tools" open class="panel" style="margin-top:10px;">
+        <summary style="cursor:pointer; font-weight:600; padding:6px 0;">Tools & Parameters</summary>
+
+        <!-- Tools -->
+        <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap;">
+          <button data-tool="select" class="secondary">Select/Move</button>
+          <button data-tool="create" class="secondary">Create</button>
+          <button data-tool="delete" class="secondary">Delete</button>
+          <button data-tool="stretch" class="secondary">Stretch</button>
+          <button data-tool="copy" class="secondary">Copy</button>
+          <button data-tool="paste" class="secondary">Paste</button>
+        </div>
+
+        <!-- Parameters -->
+        <div class="row" style="margin-top:6px; gap:12px; flex-wrap:wrap;">
+          <label>BPM <input id="ed-bpm" type="number" value="120" /></label>
+          <label>Subdiv <input id="ed-subdiv" type="number" value="4" /></label>
+          <label>Lanes <input id="ed-lanes" type="number" value="4" /></label>
+          <label>Zoom <input id="ed-zoom" type="range" min="0.25" max="3" step="0.01" value="1" /></label>
+        </div>
+
+        <!-- Transport -->
+        <div class="row" style="margin-top:6px; gap:10px; flex-wrap:wrap;">
+          <button class="secondary" id="ed-play">Play</button>
+          <button class="secondary" id="ed-pause">Pause</button>
+          <button class="secondary" id="ed-stop">Stop</button>
+          <button class="secondary" id="ed-import">Import JSON</button>
+          <button class="secondary" id="ed-export">Export JSON</button>
+          <span class="secondary" id="ed-time">0s / 0s</span>
+        </div>
+      </details>
+
+      <div id="ed-help" class="muted" style="margin-top:6px;">Tip: Shift+wheel to zoom; Ctrl/Middle-drag to pan.</div>
+
+      <!-- Scrubber -->
+      <input id="ed-scrub" type="range" min="0" max="180000" step="1" style="width:100%" />
+
+      <!-- Canvas -->
+      <div style="height: 70vh; border:1px solid #2a3142; border-radius:12px; overflow:hidden; margin-top:8px;">
+        <canvas id="editor-canvas" style="width:100%; height:100%; display:block;"></canvas>
+      </div>
+
+      <!-- Help + Back -->
+      <div id="help" class="muted" style="margin-top:6px;">Tip: Shift+wheel to zoom; Ctrl/Middle-drag to pan.</div>
     </div>
 
     <canvas id="game-canvas"></canvas>
@@ -77,12 +228,11 @@
       <h1>Results</h1>
       <div id="results-container" class="panel"></div>
       <div class="row">
-        <button id="btn-replay" class="primary">Replay</button>
-        <button id="btn-menu" class="ghost">Main Menu</button>
+        <button id="btn-replay" class="primary">Main Menu</button>
       </div>
     </div>
   </div>
 
-  <script type="module" defer src="/js/main.js?v=9"></script>
+  <script type="module" defer src="/js/main.js?v=18"></script>
 </body>
 </html>

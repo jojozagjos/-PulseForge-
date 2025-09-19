@@ -19,3 +19,49 @@ input,select{background:#0f1420;border:1px solid #2a3142;color:var(--text);borde
 .hud .left{position:absolute;left:16px;top:16px}.hud .right{position:absolute;right:16px;top:16px}.combo{font-size:28px;color:var(--neon)}.acc{font-size:14px;color:var(--muted)}.score{font-size:28px;color:#fff}
 .judgment{position:absolute;left:50%;top:70%;transform:translate(-50%,-50%);font-size:36px;opacity:0;transition:opacity .1s ease,transform .1s ease}.judgment.show{opacity:1;transform:translate(-50%,-62%)}
 #screen-results .panel{max-width:680px}.results-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px dashed #2a3142}.results-row:last-child{border-bottom:none}
+
+/* Editor tool buttons default look */
+#screen-editor [data-tool] {
+  background: #1e2433;
+  border: 1px solid #2a3142;
+  color: #eee;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.9em;
+  cursor: pointer;
+}
+#screen-editor [data-tool]:hover {
+  background: #2a3142;
+}
+
+/* Track card base (tweak if you already have styles) */
+.track {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid #2a3142;
+  background: #0d1424;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 100ms ease, box-shadow 100ms ease, border-color 100ms ease;
+}
+.track:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  border-color: #3b4661;
+}
+
+/* Selected state */
+.track.sel {
+  border-color: #25f4ee;
+  box-shadow: 0 0 0 2px rgba(37, 244, 238, 0.25) inset, 0 8px 28px rgba(0,0,0,0.45);
+  background: linear-gradient(180deg, #0f1a2a 0%, #0c1220 100%);
+}
+.track .cover {
+  width: 96px; height: 96px;
+  border-radius: 8px;
+  background-size: cover; background-position: center;
+  border: 1px solid #2a3142;
+}
