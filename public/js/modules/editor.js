@@ -921,6 +921,21 @@ export class Editor {
     const tag = (e.target?.tagName || "").toUpperCase();
     if (e.target?.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        // step sizes (ms): normal=250, Shift=1000, Alt=50, Ctrl/Cmd=5000
+        let step = 250;
+        if (e.shiftKey) step = 1000;
+        else if (e.altKey) step = 50;
+        else if (e.ctrlKey || e.metaKey) step = 5000;
+
+        const dir = e.key === "ArrowRight" ? 1 : -1;
+        const dur = this.chart?.durationMs ?? Math.floor(this.audioBuffer?.duration * 1000) ?? 0;
+        const target = Math.max(0, Math.min(dur, this.currentTimeMs() + dir * step));
+        this.seek(target); // keeps play/pause state
+        return;
+    }
+
     if (e.code === "Space" || e.key === " ") {
       e.preventDefault();
       await this._ensureAudioCtx();
