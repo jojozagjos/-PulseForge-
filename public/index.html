@@ -1,0 +1,88 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PulseForge</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/8.1.5/pixi.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <div id="ui-root">
+    <div id="screen-main" class="screen active">
+      <div class="logo">PULSE<span>FORGE</span></div>
+      <div class="menu">
+        <button id="btn-solo" class="primary">Solo Practice</button>
+        <button id="btn-quick" class="secondary">Quick Match</button>
+        <button id="btn-party" class="secondary">Party Room</button>
+        <button id="btn-settings" class="tertiary">Settings</button>
+      </div>
+      <div class="footer">© PulseForge</div>
+    </div>
+
+    <div id="screen-settings" class="screen">
+      <h1>Settings</h1>
+      <div class="panel">
+        <label>Player Name <input id="set-name" type="text" maxlength="16" placeholder="Player" /></label>
+        <label>Latency Offset (ms) <input id="set-latency" type="number" step="1" /></label>
+        <label>Keys: Lane 1–4 (comma separated) <input id="set-keys" type="text" placeholder="D,F,J,K" /></label>
+        <div class="row">
+          <button id="btn-save-settings" class="primary">Save</button>
+          <button id="btn-back-main" class="ghost">Back</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="screen-solo" class="screen">
+      <h1>Solo Practice</h1>
+      <div id="track-list" class="track-list"></div>
+      <div class="row">
+        <select id="solo-diff">
+          <option value="easy">Easy</option>
+          <option value="normal" selected>Normal</option>
+          <option value="hard">Hard</option>
+        </select>
+        <button id="btn-play-solo" class="primary">Play</button>
+        <button id="btn-back-from-solo" class="ghost">Back</button>
+      </div>
+    </div>
+
+    <div id="screen-lobby" class="screen">
+      <h1>Lobby</h1>
+      <div id="lobby-info" class="panel small"></div>
+      <div id="lobby-players" class="panel"></div>
+      <div class="row">
+        <button id="btn-ready" class="secondary">Ready</button>
+        <button id="btn-start" class="primary">Start</button>
+        <button id="btn-leave" class="ghost">Leave</button>
+      </div>
+    </div>
+
+    <canvas id="game-canvas"></canvas>
+
+    <div id="hud" class="hud hidden">
+      <div class="left">
+        <div id="hud-combo" class="combo">0x</div>
+        <div id="hud-acc" class="acc">100%</div>
+      </div>
+      <div class="right">
+        <div id="hud-score" class="score">0</div>
+      </div>
+      <div id="judgment" class="judgment"></div>
+    </div>
+
+    <div id="screen-results" class="screen">
+      <h1>Results</h1>
+      <div id="results-container" class="panel"></div>
+      <div class="row">
+        <button id="btn-replay" class="primary">Replay</button>
+        <button id="btn-menu" class="ghost">Main Menu</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" defer src="/js/main.js?v=9"></script>
+</body>
+</html>
