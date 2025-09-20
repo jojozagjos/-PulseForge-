@@ -28,21 +28,51 @@ export const pool = new Pool({
 
 // schema — SMALLINTs + single composite index
 async function ensureSchema() {
+  // Create table if missing (new schema)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS leaderboard (
       track_id TEXT NOT NULL,
       diff SMALLINT NOT NULL,                  -- 0 easy, 1 normal, 2 hard
-      name VARCHAR(16) NOT NULL,               -- short display name
+      name VARCHAR(16) NOT NULL,
       score INTEGER NOT NULL CHECK (score >= 0),
-      acc SMALLINT NOT NULL CHECK (acc BETWEEN 0 AND 10000), -- accuracy in basis points (0..10000)
+      acc SMALLINT NOT NULL CHECK (acc BETWEEN 0 AND 10000), -- basis points
       combo SMALLINT NOT NULL CHECK (combo BETWEEN 0 AND 9999),
       ts TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (track_id, diff, name)
     );
+  `);
 
-    -- one lean index shaped for your top-N queries
-    CREATE INDEX IF NOT EXISTS leaderboard_rank_idx
-      ON leaderboard (track_id, diff, score DESC, acc DESC, combo DESC, ts ASC);
+  // --- MIGRATE OLD TABLES ---
+
+  // Add diff if missing, backfill to 1 ("normal"), enforce NOT NULL
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='leaderboard' AND column_name='diff'
+      ) THEN
+        ALTER TABLE leaderboard ADD COLUMN diff SMALLINT;
+        UPDATE leaderboard SET diff = 1 WHERE diff IS NULL;
+        ALTER TABLE leaderboard ALTER COLUMN diff SET NOT NULL;
+      END IF;
+    END $$;
+  `);
+
+  // Ensure composite ranking index exists
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind = 'i' AND c.relname = 'leaderboard_rank_idx'
+      ) THEN
+        CREATE INDEX leaderboard_rank_idx
+          ON leaderboard (track_id, diff, score DESC, acc DESC, combo DESC, ts ASC);
+      END IF;
+    END $$;
   `);
 }
 ensureSchema().catch(e => console.error("[LB] schema init failed:", e));

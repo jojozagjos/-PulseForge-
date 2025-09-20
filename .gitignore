@@ -15,6 +15,7 @@ package-lock.json
 # Local data (keep JSON LB out of git if you use Postgres)
 data/
 !data/README.md
+./scripts/db-reset.js
 
 # Logs & runtime junk
 logs/

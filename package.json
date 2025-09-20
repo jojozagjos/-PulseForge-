@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node server/index.js"
+    "dev": "node server/index.js",
+    "db:reset": "node scripts/db-reset.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
