@@ -5,6 +5,7 @@ import path from "path";
 import cors from "cors";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import leaderboardRouter from "./server/leaderboard.pg.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,6 +14,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "256kb" }));
 app.use(express.static(path.join(__dirname, "..", "public")));
+app.use("/api/leaderboard", leaderboardRouter);
 
 const TRACKS_DIR = path.join(__dirname, "..", "public", "tracks");
 const DATA_DIR = path.join(__dirname, "..", "data");
