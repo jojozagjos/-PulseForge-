@@ -219,20 +219,39 @@
         </div>
 
         <!-- Parameters -->
-        <div class="row" style="margin-top:6px; gap:12px; flex-wrap:wrap;">
+        <div class="row" style="margin-top:6px; gap:12px; flex-wrap:wrap; align-items:center;">
           <label>BPM <input id="ed-bpm" type="number" value="120" /></label>
           <label>Subdiv <input id="ed-subdiv" type="number" value="4" /></label>
           <label>Lanes <input id="ed-lanes" type="number" value="4" /></label>
-          <label>Zoom <input id="ed-zoom" type="range" min="0.25" max="3" step="0.01" value="1" /></label>
+          <label style="display:flex; align-items:center; gap:6px;">
+            Zoom
+            <input id="ed-zoom" type="range" min="0.25" max="3" step="0.01" value="1" />
+            <span id="ed-zoom-indicator" class="muted">100%</span>
+          </label>
+        </div>
+
+        <!-- Toggles -->
+        <div class="row" style="margin-top:6px; gap:18px; flex-wrap:wrap; align-items:center;">
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input id="ed-follow" type="checkbox" />
+            Follow Playhead
+          </label>
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input id="ed-metro" type="checkbox" />
+            Metronome
+          </label>
         </div>
 
         <!-- Transport -->
-        <div class="row" style="margin-top:6px; gap:10px; flex-wrap:wrap;">
+        <div class="row" style="margin-top:8px; gap:10px; flex-wrap:wrap; align-items:center;">
           <button class="secondary" id="ed-play">Play</button>
           <button class="secondary" id="ed-pause">Pause</button>
           <button class="secondary" id="ed-stop">Stop</button>
+          <button class="secondary" id="ed-undo">Undo</button>
+          <button class="secondary" id="ed-redo">Redo</button>
           <button class="secondary" id="ed-import">Import JSON</button>
           <button class="secondary" id="ed-export">Export JSON</button>
+          <button class="secondary" id="ed-test">Test in Game</button>
           <span class="secondary" id="ed-time">0s / 0s</span>
         </div>
       </details>
@@ -243,7 +262,9 @@
       <input id="ed-scrub" type="range" min="0" max="180000" step="1" style="width:100%" />
 
       <!-- Canvas -->
-      <div id="help" class="muted" style="margin-top:6px;">Tip: Shift+wheel to zoom; Space pause/unpause; arrowkeys forward and back in track</div>
+      <div id="help" class="muted" style="margin-top:6px;">
+        Shortcuts: Shift+Wheel = Zoom • Space = Play/Pause • ←/→ = Nudge • M = Metronome • Ctrl/Cmd+Z = Undo • Ctrl+Shift+Z / Ctrl+Y = Redo
+      </div>
       <div style="height: 70vh; border:1px solid #2a3142; border-radius:12px; overflow:hidden; margin-top:8px;">
         <canvas id="editor-canvas" style="width:100%; height:100%; display:block;"></canvas>
       </div>

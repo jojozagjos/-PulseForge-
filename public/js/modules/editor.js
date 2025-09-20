@@ -1,11 +1,11 @@
 // public/js/modules/editor.js
-// PulseForge Chart Editor – precise hit testing, zoom-anchored, crisp grid lines, QoL tools
+// PulseForge Chart Editor — metronome, playtest, center-follow, true zoom scaling, Undo/Redo, QoL tools
 export class Editor {
   constructor(opts) {
     this.canvas = document.getElementById(opts.canvasId);
     this.ctx = this.canvas.getContext("2d");
 
-    // UI ids
+    // UI ids (match your HTML)
     this.ids = {
       // Core controls
       scrub: opts.scrubId,
@@ -17,8 +17,12 @@ export class Editor {
       help: opts.helpLabelId,
 
       // Extra UI
-      followToggle: "ed-follow",               // checkbox to follow playhead
-      zoomIndicator: "ed-zoom-indicator",     // little text label near zoom slider
+      followToggle: "ed-follow",
+      zoomIndicator: "ed-zoom-indicator",
+      metroToggle: "ed-metro",
+      testBtn: "ed-test",
+      undoBtn: "ed-undo",
+      redoBtn: "ed-redo",
 
       // Audio picker
       audioUrl: "ed-audio-url",
@@ -39,31 +43,38 @@ export class Editor {
       fileClearNotes: "ed-clear-notes"
     };
 
-    // Model
+    // Audio state
     this.audioCtx = null;
     this.audioBuffer = null;
     this.audioSource = null;
     this.masterGain = null;
+    this.metroGain = null;
+    this.audioUrl = null;
 
     // Load saved volume now; apply to masterGain once AudioContext exists
     this._volume = this._getSavedVolume();
 
+    // Transport
     this.playing = false;
     this.playStartCtxTime = 0;
     this.playStartMs = 0;
 
+    // Metronome
+    this.metronome = { enabled: false, lookaheadMs: 120, nextBeatMs: 0, timer: null };
+
+    // Data
     this.manifest = null;
     this.manifestUrl = null;
-    this.chart = null; // { bpm, durationMs, lanes, notes:[{tMs,lane,dMs?}] }
+    this.chart = null; // { bpm, lanes, durationMs, notes:[{tMs,lane,dMs?}] }
     this.chartUrl = null;
     this.difficulty = "normal";
 
     // View/scroll
-    this.zoomY = 1.0;
-    this.scrollY = 0; // pixels from time 0 (CSS px)
-    this.pxPerMs = 0.35;
+    this.zoomY = 1.0;     // vertical zoom (affects note size, lane stems, etc.)
+    this.scrollY = 0;     // pixels from time 0 (CSS px)
+    this.pxPerMs = 0.35;  // base scale — actual is pxPerMs * zoomY
 
-    // Visual audio offset for perception tuning (ms)
+    // Perception tuning (ms) — added to playhead for drawing flashes
     this.editorLatencyMs = 0;
 
     // Tools & selection
@@ -72,11 +83,11 @@ export class Editor {
     this.snap = true;
     this.selection = new Set();
     this.clipboard = [];
-    this.drag = null; // {type, ...}
+    this.drag = null;
     this.mouse = { x: 0, y: 0, lane: 0 };
 
     // Follow playhead
-    this.follow = false; // controlled by checkbox
+    this.follow = false;
 
     // Style palette
     this.colors = {
@@ -100,18 +111,29 @@ export class Editor {
     // Guards to wire only once
     this._wiredAudio = false;
     this._wiredFile = false;
+    this._wiredFollow = false;
+    this._wiredMetro = false;
+    this._wiredTest = false;
+    this._wiredZoomIndicator = false;
+    this._wiredHistoryButtons = false;
 
-    // Placement helpers (note visuals)
+    // Placement helpers (note visuals scale with zoom)
     this.minGapMs = 60;
-    this.headH = 28;           // tap/hold head height (px)
-    this.headPad = 10;         // head corner radius
-    this.tailHandlePadMs = 90; // tail stretch tolerance
+    this.baseHeadH = 28;           // tap/hold head height (px @ zoom 1)
+    this.headPad = 10;             // head corner radius
+    this.tailHandlePadMs = 90;     // tail stretch tolerance (ms)
 
-    // Bind
+    // History (Undo/Redo)
+    this._undo = [];
+    this._redo = [];
+    this._historyLimit = 100;
+
+    // Bind methods
     this._tick = this._tick.bind(this);
     this._onWheel = this._onWheel.bind(this);
     this._resize = this._resize.bind(this);
     this._onKeyDown = this._onKeyDown.bind(this);
+    this._metroSchedulerTick = this._metroSchedulerTick.bind(this);
 
     // Live volume sync (from Settings screen)
     window.addEventListener("pf-volume-changed", (e) => {
@@ -147,95 +169,117 @@ export class Editor {
     this.onExport = opts.onExport || (() => {});
   }
 
-  // ---------- Coordinate helpers: single source of truth ----------
-  _pxPerMsNow() { return this.pxPerMs * this.zoomY; } // CSS px per ms
-
-  /** Convert time→screen Y (CSS pixels). Head TOP aligns to this (matches game). */
-  _timeToY(ms) { return ms * this._pxPerMsNow() - this.scrollY; }
-
-  /** Convert screen Y (CSS px) → time (ms). */
-  _yToTime(y) { return (y + this.scrollY) / this._pxPerMsNow(); }
-
-  /** Draw a crisp horizontal line; 1px lines on half-pixels to avoid blur. */
-  _strokeH(y, x0, x1, color, width = 1) {
-    const ctx = this.ctx;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.beginPath();
-    const yy = (width % 2 === 1) ? Math.round(y) + 0.5 : Math.round(y);
-    ctx.moveTo(x0, yy);
-    ctx.lineTo(x1, yy);
-    ctx.stroke();
+  // ===== History (Undo/Redo) =====
+  _snapshot() {
+    return {
+      chart: JSON.parse(JSON.stringify(this.chart)),
+      playStartMs: this.playStartMs,
+      zoomY: this.zoomY,
+      scrollY: this.scrollY,
+      selection: [...this.selection]
+    };
+  }
+  _restore(s) {
+    if (!s) return;
+    this.chart = JSON.parse(JSON.stringify(s.chart));
+    this.playStartMs = s.playStartMs || 0;
+    if (typeof s.zoomY === "number") this.zoomY = s.zoomY;
+    if (typeof s.scrollY === "number") this.scrollY = s.scrollY;
+    this.selection = new Set(s.selection || []);
+    this._syncInputs();
+    this._updateScrubMax();
+  }
+  _pushUndo(label) {
+    if (!this.chart) return;
+    this._undo.push(this._snapshot());
+    if (this._undo.length > this._historyLimit) this._undo.shift();
+    this._redo = [];
+    if (label) this._help(`${label} (undo available)`);
+  }
+  undo() {
+    if (!this._undo.length) return;
+    const cur = this._snapshot();
+    const prev = this._undo.pop();
+    this._redo.push(cur);
+    this._restore(prev);
+    this._help("Undid");
+  }
+  redo() {
+    if (!this._redo.length) return;
+    const cur = this._snapshot();
+    const next = this._redo.pop();
+    this._undo.push(cur);
+    this._restore(next);
+    this._help("Redid");
   }
 
-  /** Auto-scroll at edges while dragging (box-select/delete/move/stretch/createHold). */
+  // ===== Small helpers =====
+  _pxPerMsNow() { return this.pxPerMs * this.zoomY; } // CSS px per ms
+  _headHNow() { return Math.max(14, Math.min(120, this.baseHeadH * this.zoomY)); }
+  _stemWNow() { return Math.max(6, Math.min(24, 12 * this.zoomY)); }
+  _timeToY(ms) { return ms * this._pxPerMsNow() - this.scrollY; }
+  _yToTime(y) { return (y + this.scrollY) / this._pxPerMsNow(); }
+  _updateZoomIndicator() {
+    const label = document.getElementById(this.ids.zoomIndicator);
+    if (label) label.textContent = `${Math.round(this.zoomY * 100)}%`;
+  }
   _edgeAutoScroll(mouseY) {
     const h = this.canvas.height / (window.devicePixelRatio || 1);
     const pxPerMs = this._pxPerMsNow();
-    const maxScroll = Math.max(0, this.chart.durationMs * pxPerMs - h);
-
+    const maxScroll = Math.max(0, (this.chart?.durationMs || 0) * pxPerMs - h);
     const margin = 32;
     const maxSpeed = 14;
     let dy = 0;
-
-    if (mouseY < margin) {
-      dy = -((margin - mouseY) / margin) * maxSpeed;
-    } else if (mouseY > h - margin) {
-      dy = ((mouseY - (h - margin)) / margin) * maxSpeed;
-    }
-
-    if (dy !== 0) {
-      this.scrollY = Math.max(0, Math.min(maxScroll, this.scrollY + dy));
-    }
+    if (mouseY < margin) dy = -((margin - mouseY) / margin) * maxSpeed;
+    else if (mouseY > h - margin) dy = ((mouseY - (h - margin)) / margin) * maxSpeed;
+    if (dy !== 0) this.scrollY = Math.max(0, Math.min(maxScroll, this.scrollY + dy));
   }
 
-  // ---------- New UI ensures ----------
-  _ensureFollowToggle() {
-    let el = document.getElementById(this.ids.followToggle);
-    if (!el) {
-      const scrub = document.getElementById(this.ids.scrub);
-      if (!scrub) return;
-      const wrap = document.createElement("label");
-      wrap.style.marginLeft = "8px";
-      wrap.style.display = "inline-flex";
-      wrap.style.alignItems = "center";
-      el = document.createElement("input");
-      el.type = "checkbox";
-      el.id = this.ids.followToggle;
-      const txt = document.createElement("span");
-      txt.textContent = " Follow Playhead";
-      wrap.appendChild(el);
-      wrap.appendChild(txt);
-      scrub.parentElement?.insertBefore(wrap, scrub.nextSibling);
-    }
+  // ===== Wire HTML controls =====
+  _wireFollowToggle() {
+    if (this._wiredFollow) return;
+    const el = document.getElementById(this.ids.followToggle);
+    if (!el) return;
     el.addEventListener("change", () => {
       this.follow = !!el.checked;
       this._help(`Follow Playhead: ${this.follow ? "On" : "Off"}`);
     });
+    this._wiredFollow = true;
   }
-
-  _ensureZoomIndicator() {
+  _wireMetronomeControl() {
+    if (this._wiredMetro) return;
+    const el = document.getElementById(this.ids.metroToggle);
+    if (!el) return;
+    el.addEventListener("change", () => {
+      this.metronome.enabled = !!el.checked;
+      if (this.metronome.enabled && this.playing) this._metroStart();
+      else this._metroStop();
+      this._help(`Metronome: ${this.metronome.enabled ? "On" : "Off"}`);
+    });
+    this._wiredMetro = true;
+  }
+  _wireTestButton() {
+    if (this._wiredTest) return;
+    const btn = document.getElementById(this.ids.testBtn);
+    if (!btn) return;
+    btn.addEventListener("click", () => this.playtest());
+    this._wiredTest = true;
+  }
+  _wireZoomIndicator() {
+    if (this._wiredZoomIndicator) return;
     const zoomEl = document.getElementById(this.ids.zoom);
     if (!zoomEl) return;
-    let label = document.getElementById(this.ids.zoomIndicator);
-    if (!label) {
-      label = document.createElement("span");
-      label.id = this.ids.zoomIndicator;
-      label.style.marginLeft = "6px";
-      label.style.opacity = "0.9";
-      zoomEl.parentElement?.insertBefore(label, zoomEl.nextSibling);
-    }
     this._updateZoomIndicator();
+    this._wiredZoomIndicator = true;
+  }
+  _wireHistoryButtons() {
+    if (this._wiredHistoryButtons) return;
+    document.getElementById(this.ids.undoBtn)?.addEventListener("click", () => this.undo());
+    document.getElementById(this.ids.redoBtn)?.addEventListener("click", () => this.redo());
+    this._wiredHistoryButtons = true;
   }
 
-  _updateZoomIndicator() {
-    const label = document.getElementById(this.ids.zoomIndicator);
-    if (label) {
-      label.textContent = `${Math.round(this.zoomY * 100)}%`;
-    }
-  }
-
-  // ---------- Chart lifecycle ----------
+  // ===== Lifecycle =====
   /** Start a blank chart without loading a manifest. */
   newChart(init = {}) {
     this.manifest = null;
@@ -254,13 +298,21 @@ export class Editor {
     this.zoomY = 1.0;
     this._syncInputs();
     this._updateScrubMax();
-    this._ensureFollowToggle();
-    this._ensureZoomIndicator();
+    this._wireFollowToggle();
+    this._wireMetronomeControl();
+    this._wireZoomIndicator();
+    this._wireTestButton();
+    this._wireHistoryButtons();
     this._help("Blank chart ready. Use Audio or File to load assets.");
+    // Reset history
+    this._undo = [];
+    this._redo = [];
+    this._pushUndo(); // baseline
   }
 
   /** Load a manifest + chart (optional) and wire toolbars. */
   async loadManifest(manifestUrl, difficulty = "normal") {
+    if (this.chart) this._pushUndo("Load manifest");
     this.manifestUrl = manifestUrl;
     this.difficulty = difficulty;
     const m = await fetch(manifestUrl).then(r => r.json());
@@ -272,11 +324,13 @@ export class Editor {
       this.chart = { bpm: m.bpm || 120, durationMs: m.durationMs || 180000, lanes: 4, notes: [] };
     } else {
       this.chartUrl = chartUrl;
-      this.chart = await fetch(chartUrl).then(r => r.json());
-      this.chart.bpm = this.chart.bpm || this.manifest.bpm || 120;
-      this.chart.lanes = this.chart.lanes || 4;
-      this.chart.durationMs = this.chart.durationMs || this.manifest.durationMs || 180000;
-      if (!Array.isArray(this.chart.notes)) this.chart.notes = [];
+      const loaded = await fetch(chartUrl).then(r => r.json());
+      this.chart = {
+        bpm: loaded.bpm || m.bpm || 120,
+        lanes: loaded.lanes || 4,
+        durationMs: loaded.durationMs || m.durationMs || 180000,
+        notes: Array.isArray(loaded.notes) ? loaded.notes : []
+      };
     }
 
     this.subdiv = 4;
@@ -286,21 +340,23 @@ export class Editor {
     const audioUrl = this.manifest?.audio?.wav || this.manifest?.audio?.mp3;
     if (audioUrl) {
       await this._loadAudio(audioUrl);
+      this.audioUrl = audioUrl;
       const urlBox = document.getElementById(this.ids.audioUrl);
       if (urlBox) urlBox.value = audioUrl;
     }
     this._updateScrubMax();
 
-    // Ensure pickers wired
+    // Wire side toolbars (once)
     this._wireAudioPicker();
     this._wireFileToolbar();
-
-    // Ensure UI bits exist
-    this._ensureFollowToggle();
-    this._ensureZoomIndicator();
+    this._wireFollowToggle();
+    this._wireMetronomeControl();
+    this._wireZoomIndicator();
+    this._wireTestButton();
+    this._wireHistoryButtons();
   }
 
-  /** Wire basic toolbar. */
+  /** Wire toolbar & controls already in HTML. */
   mountToolbar() {
     // Tool baseline styling (if no classes provided)
     document.querySelectorAll('[data-tool]').forEach(btn => {
@@ -360,9 +416,9 @@ export class Editor {
     const zoomEl = document.getElementById(this.ids.zoom);
     const scrubEl = document.getElementById(this.ids.scrub);
 
-    bpmEl?.addEventListener("change", () => { this.chart.bpm = Number(bpmEl.value) || 120; });
+    bpmEl?.addEventListener("change", () => { this._pushUndo("BPM change"); this.chart.bpm = Number(bpmEl.value) || 120; });
     subEl?.addEventListener("change", () => { this.subdiv = Math.max(1, Number(subEl.value) || 4); });
-    lanesEl?.addEventListener("change", () => { this.chart.lanes = Math.max(1, Number(lanesEl.value) || 4); });
+    lanesEl?.addEventListener("change", () => { this._pushUndo("Lanes change"); this.chart.lanes = Math.max(1, Number(lanesEl.value) || 4); });
     zoomEl?.addEventListener("input", () => {
       this.zoomY = Math.max(0.25, Math.min(3, Number(zoomEl.value)));
       this._updateZoomIndicator();
@@ -373,6 +429,9 @@ export class Editor {
     document.getElementById("ed-pause")?.addEventListener("click", () => this.pause());
     document.getElementById("ed-stop")?.addEventListener("click", () => this.stop());
 
+    // Undo/Redo buttons
+    this._wireHistoryButtons();
+
     // Import / Export (chart JSON only)
     document.getElementById("ed-import")?.addEventListener("click", async () => {
       const txt = prompt("Paste chart JSON here:");
@@ -380,6 +439,7 @@ export class Editor {
       try {
         const obj = JSON.parse(txt);
         if (Array.isArray(obj.notes)) {
+          this._pushUndo("Import chart");
           this.chart = { ...this.chart, ...obj };
           this._syncInputs();
           this._updateScrubMax();
@@ -399,21 +459,23 @@ export class Editor {
       this.seek(ms);
     });
 
+    // Wire the rest
     this._wireAudioPicker();
     this._wireFileToolbar();
-
-    // Ensure UI bits exist
-    this._ensureFollowToggle();
-    this._ensureZoomIndicator();
+    this._wireFollowToggle();
+    this._wireMetronomeControl();
+    this._wireZoomIndicator();
+    this._wireTestButton();
   }
 
-  // ---------- File toolbar ----------
+  // ===== File toolbar =====
   _wireFileToolbar() {
     if (this._wiredFile) return;
     this._wiredFile = true;
 
     document.getElementById(this.ids.fileNew)?.addEventListener("click", () => {
       if (!this.chart) this.newChart();
+      this._pushUndo("Clear notes");
       this.chart.notes = [];
       this.selection.clear();
       this._help("New chart: notes cleared.");
@@ -421,6 +483,7 @@ export class Editor {
 
     document.getElementById(this.ids.fileClearNotes)?.addEventListener("click", () => {
       if (!this.chart) this.newChart();
+      this._pushUndo("Clear notes");
       this.chart.notes = [];
       this.selection.clear();
       this._help("Cleared all notes.");
@@ -451,6 +514,7 @@ export class Editor {
         const text = await f.text();
         const obj = JSON.parse(text);
         if (!Array.isArray(obj.notes)) throw new Error("Invalid chart JSON (missing notes array).");
+        this._pushUndo("Open chart file");
         this.chart = {
           bpm: obj.bpm || this.chart?.bpm || 120,
           lanes: obj.lanes || this.chart?.lanes || 4,
@@ -488,7 +552,7 @@ export class Editor {
     URL.revokeObjectURL(url);
   }
 
-  // ---------- Audio picker ----------
+  // ===== Audio picker =====
   _wireAudioPicker() {
     if (this._wiredAudio) return;
     this._wiredAudio = true;
@@ -505,6 +569,7 @@ export class Editor {
       try {
         await this._ensureAudioCtx();
         await this._loadAudio(url);
+        this.audioUrl = url;
         this._updateScrubMax();
         this._help("Loaded audio from URL.");
         if (applyManifest?.checked) {
@@ -526,9 +591,9 @@ export class Editor {
         await this._ensureAudioCtx();
         const blobUrl = URL.createObjectURL(f); // preview
         await this._loadAudio(blobUrl);
+        this.audioUrl = blobUrl;
         this._updateScrubMax();
         this._help("Loaded audio from file (preview via blob URL).");
-
         if (applyManifest?.checked) {
           if (!this.manifest) this.manifest = { charts: {} };
           if (!this.manifest.audio) this.manifest.audio = {};
@@ -545,15 +610,20 @@ export class Editor {
     });
   }
 
-  // ---------- Playback ----------
+  // ===== Playback & Metronome =====
   async _ensureAudioCtx() {
     if (this.audioCtx) return;
     this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
     // Create & wire master gain once
     this.masterGain = this.audioCtx.createGain();
-    this.masterGain.gain.value = this._volume;   // apply saved/current volume
+    this.masterGain.gain.value = this._volume;
     this.masterGain.connect(this.audioCtx.destination);
+
+    // Metronome gain goes through master
+    this.metroGain = this.audioCtx.createGain();
+    this.metroGain.gain.value = 0.5;
+    this.metroGain.connect(this.masterGain);
   }
 
   async _fetchArrayBuffer(url) {
@@ -606,11 +676,14 @@ export class Editor {
     const offset = startMs / 1000;
     this.audioSource = this.audioCtx.createBufferSource();
     this.audioSource.buffer = this.audioBuffer;
-    this.audioSource.connect(this.masterGain);   // route through master gain so volume applies
+    this.audioSource.connect(this.masterGain);
     this.audioSource.start(0, offset);
     this.playStartCtxTime = this.audioCtx.currentTime;
     this.playStartMs = startMs;
     this.playing = true;
+
+    if (this.metronome.enabled) this._metroStart();
+    try { this.audioSource.onended = () => { this.pause(); }; } catch {}
   }
 
   pause() {
@@ -618,6 +691,7 @@ export class Editor {
     this.playStartMs = this.currentTimeMs();
     try { this.audioSource.stop(); } catch {}
     this.playing = false;
+    this._metroStop();
   }
 
   stop() {
@@ -625,6 +699,7 @@ export class Editor {
     this.audioSource = null;
     this.playing = false;
     this.playStartMs = 0;
+    this._metroStop();
   }
 
   seek(ms) {
@@ -632,50 +707,51 @@ export class Editor {
     if (this.playing) { this.pause(); this.play(); }
   }
 
-  // ---------- Placement helpers ----------
-  _rangesOverlap(start, end, s, e) {
-    const A0 = Math.min(start, end);
-    const A1 = Math.max(start, end);
-    const B0 = Math.min(s, e);
-    const B1 = Math.max(s, e);
-    return !(A1 + this.minGapMs <= B0 || B1 + this.minGapMs <= A0);
+  _metroStart() {
+    if (!this.audioCtx) return;
+    const beatMs = 60000 / (this.chart?.bpm || 120);
+    const nowMs = this.currentTimeMs();
+    this.metronome.nextBeatMs = Math.ceil(nowMs / beatMs) * beatMs;
+    if (this.metronome.timer) clearInterval(this.metronome.timer);
+    this.metronome.timer = setInterval(this._metroSchedulerTick, 25);
+  }
+  _metroStop() {
+    if (this.metronome.timer) clearInterval(this.metronome.timer);
+    this.metronome.timer = null;
+  }
+  _metroSchedulerTick() {
+    if (!this.playing || !this.metronome.enabled || !this.audioCtx) return;
+    const bpm = this.chart?.bpm || 120;
+    const beatMs = 60000 / bpm;
+    const lookahead = this.metronome.lookaheadMs;
+    const nowMs = this.currentTimeMs();
+    const ctxNow = this.audioCtx.currentTime;
+
+    while (this.metronome.nextBeatMs <= nowMs + lookahead) {
+      const beatIdx = Math.round(this.metronome.nextBeatMs / beatMs);
+      const isBar = (beatIdx % 4) === 0;
+      const when = ctxNow + Math.max(0, (this.metronome.nextBeatMs - nowMs) / 1000);
+      this._scheduleClick(when, isBar);
+      this.metronome.nextBeatMs += beatMs;
+    }
+  }
+  _scheduleClick(when, strong = false) {
+    try {
+      const osc = this.audioCtx.createOscillator();
+      const eg = this.audioCtx.createGain();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(strong ? 1100 : 800, when);
+      eg.gain.setValueAtTime(0.0001, when);
+      eg.gain.exponentialRampToValueAtTime(strong ? 0.5 : 0.35, when + 0.004);
+      eg.gain.exponentialRampToValueAtTime(0.0001, when + 0.05);
+      osc.connect(eg);
+      eg.connect(this.metroGain || this.masterGain);
+      osc.start(when);
+      osc.stop(when + 0.08);
+    } catch {}
   }
 
-  /** Check if a note can be placed in a lane (no overlaps). */
-  _canPlaceNote(lane, tMs, dMs = 0, ignoreIdxSet = new Set()) {
-    if (!this.chart || !Array.isArray(this.chart.notes)) return { ok: true, conflictIdx: -1 };
-    const start = tMs;
-    const end = tMs + Math.max(0, dMs);
-
-    let next = null;
-    for (let i = 0; i < this.chart.notes.length; i++) {
-      if (ignoreIdxSet.has(i)) continue;
-      const n = this.chart.notes[i];
-      if (n.lane !== lane) continue;
-
-      // keep minimal gap between heads
-      if (Math.abs(n.tMs - tMs) < this.minGapMs) return { ok: false, conflictIdx: i };
-
-      const ns = n.tMs, ne = n.tMs + Math.max(0, n.dMs || 0);
-      if ((n.dMs || 0) > 0 || dMs > 0) {
-        if (this._rangesOverlap(start, end, ns, ne)) return { ok: false, conflictIdx: i };
-      }
-
-      if (n.tMs > tMs && (!next || n.tMs < next.tMs)) next = { ...n, idx: i };
-    }
-
-    // Hard cap tail to not cross into next note's time
-    if (dMs > 0 && next) {
-      const maxEnd = next.tMs - this.minGapMs;
-      if (end > maxEnd) {
-        return { ok: true, conflictIdx: -1, cappedEndMs: Math.max(start, maxEnd) };
-      }
-    }
-
-    return { ok: true, conflictIdx: -1 };
-  }
-
-  // ---------- Input / Tools ----------
+  // ===== Input / Tools =====
   _screenToLane(x) {
     const totalW = this.chart.lanes * this._laneW() + (this.chart.lanes - 1) * this._laneGap();
     const startX = (this.canvas.width / (window.devicePixelRatio || 1) - totalW) / 2;
@@ -685,12 +761,8 @@ export class Editor {
     const lane = Math.floor(rel / (w + g));
     return Math.max(0, Math.min(this.chart.lanes - 1, lane));
   }
-
-  /** Raw (no-snap) ms from a screen y. */
   _screenToMsRaw(y) { return this._yToTime(y); }
-
   _screenToMs(y) { return this._snapMs(this._screenToMsRaw(y)); }
-
   _snapMs(ms) {
     if (!this.snap) return ms;
     const beatMs = 60000 / (this.chart.bpm || 120);
@@ -759,13 +831,8 @@ export class Editor {
       const hitSet = this._notesInBox(box);
 
       if (this.drag.type === "boxSelect") {
-        if (this.drag.additive) {
-          this._previewSelection = new Set([...this.selection, ...hitSet]);
-        } else {
-          this._previewSelection = hitSet;
-        }
+        this._previewSelection = this.drag.additive ? new Set([...this.selection, ...hitSet]) : hitSet;
       } else {
-        // For delete marquee, just preview what will be deleted (reuse selection highlight)
         this._previewSelection = hitSet;
       }
     }
@@ -789,6 +856,7 @@ export class Editor {
     }
 
     if (this.tool === "create") {
+      this._pushUndo("Create note");
       const chk = this._canPlaceNote(lane, tMsSnap, 0, new Set());
       if (!chk.ok) { this._help("Cannot place note here (overlap on same lane)."); return; }
       const note = { tMs: tMsSnap, lane };
@@ -802,7 +870,7 @@ export class Editor {
       const hit = this._hitTestRect(this.mouse.x, this.mouse.y);
       if (hit.idx >= 0) {
         if (this.tool === "delete") {
-          // Click delete: remove a single note immediately
+          this._pushUndo("Delete note");
           this.chart.notes.splice(hit.idx, 1);
           // Fix selection indices and remove deleted from selection
           this.selection = new Set([...this.selection].filter(i => i !== hit.idx).map(i => i > hit.idx ? i - 1 : i));
@@ -816,17 +884,17 @@ export class Editor {
         }
 
         if (this.tool === "stretch" || hit.onTail) {
+          this._pushUndo("Stretch note");
           const n = this.chart.notes[hit.idx];
           if (!n.dMs) n.dMs = 0;
           this.selection.clear(); this.selection.add(hit.idx);
           this.drag = { type: "stretch", stretchIdx: hit.idx };
         } else if (this.tool === "select") {
-          // move
+          this._pushUndo("Move notes");
           const orig = {};
           for (const i of this.selection) orig[i] = { tMs: this.chart.notes[i].tMs, lane: this.chart.notes[i].lane };
           this.drag = { type: "move", startMs: tMsSnap, startLane: lane, orig };
         } else {
-          // delete tool shouldn't get here on hit (handled above), but keep pan fallback
           this.drag = { type: "pan", startY: this.mouse.y, startScrollY: this.scrollY };
         }
       } else {
@@ -842,7 +910,7 @@ export class Editor {
             additive: !!e.shiftKey
           };
         } else if (this.tool === "delete") {
-          // Start delete marquee
+          this._pushUndo("Delete (marquee)");
           this._previewSelection = null;
           this.drag = {
             type: "boxDelete",
@@ -865,7 +933,7 @@ export class Editor {
     }
   }
 
-  _pointerUp(e) {
+  _pointerUp() {
     if (this.drag?.type === "createHold") {
       const n = this.drag.tempNote;
       if (n.dMs && n.dMs < 10) delete n.dMs; // tiny drag becomes tap
@@ -873,11 +941,7 @@ export class Editor {
       // Commit the marquee selection
       const box = this._normalizedBox(this.drag.startX, this.drag.startY, this.drag.endX, this.drag.endY);
       const hitSet = this._notesInBox(box);
-      if (this.drag.additive) {
-        for (const i of hitSet) this.selection.add(i);
-      } else {
-        this.selection = hitSet;
-      }
+      this.selection = this.drag.additive ? new Set([...this.selection, ...hitSet]) : hitSet;
       this._previewSelection = null;
     } else if (this.drag?.type === "boxDelete") {
       // Delete everything inside the marquee
@@ -904,7 +968,10 @@ export class Editor {
     const totalW = this.chart.lanes * laneW + (this.chart.lanes - 1) * gap;
     const startX = (w - totalW) / 2;
 
+    const headH = this._headHNow();
     const headW = Math.max(26, laneW - 18);
+    const stemW = this._stemWNow();
+
     const tMsAtPointer = this._screenToMsRaw(mouseY);
 
     let best = { idx: -1, onTail: false, score: 1e9 };
@@ -913,30 +980,27 @@ export class Editor {
       const n = this.chart.notes[i];
       const laneX = startX + n.lane * (laneW + gap);
       const x = laneX + (laneW - headW) / 2;
-      const y = this._timeToY(n.tMs);
+
+      // center of the note = exact musical time
+      const yCenter = n.tMs * this._pxPerMsNow() - this.scrollY;
+      const yHead   = Math.floor(yCenter - headH / 2);  // top of head from center
 
       // head rect
       const hx0 = x, hx1 = x + headW;
-      const hy0 = y, hy1 = y + this.headH;
+      const hy0 = yHead, hy1 = yHead + headH;
 
       const inHead = (mouseX >= hx0 && mouseX <= hx1 && mouseY >= hy0 && mouseY <= hy1);
 
-      // body rect (AFTER the head)
-      let inBody = false, onTail = false;
+      // tail handle near the AFTER time
+      let onTail = false;
       if (n.dMs && n.dMs > 0) {
-        const len = Math.max(6, n.dMs * this._pxPerMsNow());
-        const bx0 = x + (headW - 12) / 2, bx1 = bx0 + 12;
-        const by0 = y + this.headH - 2, by1 = by0 + len; // after the head (downward)
-        inBody = (mouseX >= bx0 && mouseX <= bx1 && mouseY >= by0 && mouseY <= by1);
-
-        // tail handle near the AFTER time
         const tailMs = n.tMs + n.dMs;
         if (Math.abs(tMsAtPointer - tailMs) <= this.tailHandlePadMs) {
           onTail = true;
         }
       }
 
-      if (inHead || inBody || onTail) {
+      if (inHead || onTail) {
         const score = Math.abs(n.tMs - tMsAtPointer);
         if (score < best.score) best = { idx: i, onTail };
       }
@@ -952,6 +1016,7 @@ export class Editor {
 
   _deleteSelection() {
     if (!this.selection.size) return;
+    this._pushUndo("Delete selection");
     const idxs = [...this.selection].sort((a, b) => b - a); // delete high→low
     for (const i of idxs) {
       this.chart.notes.splice(i, 1);
@@ -961,35 +1026,38 @@ export class Editor {
 
   _pasteAt(tMs, lane) {
     if (!this.clipboard.length) { this._help("Clipboard empty."); return; }
-
+    this._pushUndo("Paste");
     const minT = Math.min(...this.clipboard.map(n => n.tMs));
     const laneOffset = lane - this.clipboard[0].lane;
 
-    const startIdx = this.chart.notes.length;
     let added = 0;
-
     for (const src of this.clipboard) {
       const newStart = this._clampMs(tMs + (src.tMs - minT));
       const newLane  = Math.max(0, Math.min(this.chart.lanes - 1, src.lane + laneOffset));
       const newDur   = Math.max(0, src.dMs || 0);
 
-      const chk = self._canPlaceNote(newLane, newStart, newDur, new Set()); // NOTE: 'self' is wrong—fix to 'this'
+      const chk = this._canPlaceNote(newLane, newStart, newDur, new Set());
+      if (!chk.ok) continue;
+
+      const n = { tMs: newStart, lane: newLane };
+      if (newDur > 0) n.dMs = newDur;
+      this.chart.notes.push(n);
+      added++;
     }
+    this._help(added ? `Pasted ${added} note(s).` : "Paste blocked by overlaps.");
   }
 
   _clampMs(ms) { return Math.max(0, Math.min(ms, this.chart.durationMs)); }
 
-  // ---------- Box select helpers ----------
+  // ===== Box select helpers =====
   _normalizedBox(x0, y0, x1, y1) {
     const left = Math.min(x0, x1), right = Math.max(x0, x1);
     const top = Math.min(y0, y1), bottom = Math.max(y0, y1);
     return { left, right, top, bottom };
   }
-
   _rectsOverlap(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1) {
     return ax0 <= bx1 && ax1 >= bx0 && ay0 <= by1 && ay1 >= by0;
   }
-
   /** Return a Set of note indices intersecting the marquee box */
   _notesInBox(box) {
     const result = new Set();
@@ -999,24 +1067,27 @@ export class Editor {
     const laneW = this._laneW(), gap = this._laneGap();
     const totalW = this.chart.lanes * laneW + (this.chart.lanes - 1) * gap;
     const startX = (w - totalW) / 2;
+    const headH = this._headHNow();
     const headW = Math.max(26, laneW - 18);
+    const stemW = this._stemWNow();
 
     for (let i = 0; i < this.chart.notes.length; i++) {
       const n = this.chart.notes[i];
       const laneX = startX + n.lane * (laneW + gap);
       const x = laneX + (laneW - headW) / 2;
-      const y = this._timeToY(n.tMs);
+      const yCenter = n.tMs * this._pxPerMsNow() - this.scrollY;
+      const yHead   = Math.floor(yCenter - headH / 2);
 
       // head rect
       const hx0 = x, hx1 = x + headW;
-      const hy0 = y, hy1 = y + this.headH;
+      const hy0 = yHead, hy1 = yHead + headH;
       let hit = this._rectsOverlap(hx0, hy0, hx1, hy1, box.left, box.top, box.right, box.bottom);
 
       // body (after the head)
       if (!hit && n.dMs && n.dMs > 0) {
         const len = Math.max(6, n.dMs * this._pxPerMsNow());
-        const bx0 = x + (headW - 12) / 2, bx1 = bx0 + 12;
-        const by0 = y + this.headH - 2, by1 = by0 + len;
+        const bx0 = x + (headW - stemW) / 2, bx1 = bx0 + stemW;
+        const by0 = yHead + headH - 2, by1 = by0 + len;
         hit = this._rectsOverlap(bx0, by0, bx1, by1, box.left, box.top, box.right, box.bottom);
       }
 
@@ -1025,7 +1096,7 @@ export class Editor {
     return result;
   }
 
-  // ---------- Equal-spacing helpers ----------
+  // ===== Equal-spacing helpers =====
   _strideFromSelection() {
     if (!this.selection || this.selection.size < 2) return null;
     const times = [...this.selection].map(i => this.chart.notes[i]?.tMs).filter(v => typeof v === "number").sort((a,b)=>a-b);
@@ -1046,7 +1117,7 @@ export class Editor {
     return { prev, next };
   }
 
-  // ---------- Drawing ----------
+  // ===== Draw loop =====
   _tick() { this._draw(); requestAnimationFrame(this._tick); }
 
   _resize() {
@@ -1093,7 +1164,7 @@ export class Editor {
     const stepMs = beatMs / Math.max(1, this.subdiv);
     const pxPerMs = this._pxPerMsNow();
 
-    const startMs = this.scrollY / pxPerMs * 1.0;
+    const startMs = this.scrollY / pxPerMs;
     const endMs   = startMs + h / pxPerMs;
     const firstBeat = Math.floor(startMs / beatMs);
     const lastBeat  = Math.ceil(endMs / beatMs);
@@ -1139,25 +1210,18 @@ export class Editor {
       ctx.restore();
     }
 
-    // notes (CENTER-ALIGNED to beat/playhead)
-    const headH = this.headH;
+    // notes (CENTER-ALIGNED to beat/playhead); scale with zoom
+    const headH = this._headHNow();
     const headW = Math.max(26, laneW - 18);
+    const stemW = this._stemWNow();
 
     const now = this.currentTimeMs() + this.editorLatencyMs;
 
-    // If follow is on, keep the playhead in a comfy band
+    // Follow: keep playhead centered when playing
     if (this.follow && this.playing) {
-      const phY_cur = now * pxPerMs - this.scrollY;
-      const bandTop = 100;
-      const bandBot = h - 100;
-      let newScroll = this.scrollY;
-      if (phY_cur < bandTop) {
-        newScroll = Math.max(0, now * pxPerMs - bandTop);
-      } else if (phY_cur > bandBot) {
-        newScroll = Math.max(0, now * pxPerMs - bandBot);
-      }
+      const targetScroll = Math.max(0, now * pxPerMs - h / 2);
       const maxScroll = Math.max(0, this.chart.durationMs * pxPerMs - h);
-      this.scrollY = Math.max(0, Math.min(maxScroll, newScroll));
+      this.scrollY = Math.max(0, Math.min(maxScroll, targetScroll));
     }
 
     const flashWindow = 40; // ms around the center time
@@ -1174,7 +1238,7 @@ export class Editor {
       if (n.dMs && n.dMs > 0) {
         const len = Math.max(6, n.dMs * pxPerMs);
         ctx.fillStyle = this.colors.holdBody;
-        this._roundRect(ctx, x + (headW - 12) / 2, yHead + headH - 2, 12, len, 6, true);
+        this._roundRect(ctx, x + (headW - stemW) / 2, yHead + headH - 2, stemW, len, Math.min(6 * this.zoomY, stemW/2), true);
       }
 
       // flash head when its *center* is near playhead
@@ -1193,7 +1257,7 @@ export class Editor {
     }
 
     // playhead (also lines up with note centers)
-    let phY = Math.floor(now * pxPerMs - this.scrollY);
+    const phY = Math.floor(now * pxPerMs - this.scrollY);
     ctx.strokeStyle = this.colors.playhead;
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -1303,14 +1367,25 @@ export class Editor {
 
     // Ignore if typing
     const tag = (e.target?.tagName || "").toUpperCase();
-    if (e.target?.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (e.target?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(tag)) return;
+
+    // Undo/Redo
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
+      e.preventDefault();
+      this.undo();
+      return;
+    }
+    if ((mod && e.shiftKey && (e.key === "z" || e.key === "Z")) || (mod && (e.key === "y" || e.key === "Y"))) {
+      e.preventDefault();
+      this.redo();
+      return;
+    }
 
     // Delete keys: delete ALL selected notes
     if (e.key === "Delete" || e.key === "Backspace") {
       if (this.selection.size) {
-        const count = this.selection.size;
         this._deleteSelection();
-        this._help(`Deleted ${count} selected note(s).`);
       }
       e.preventDefault();
       return;
@@ -1326,6 +1401,13 @@ export class Editor {
       return;
     }
 
+    // M: toggle metronome
+    if (e.key.toLowerCase() === "m") {
+      const box = document.getElementById(this.ids.metroToggle);
+      if (box) { box.checked = !box.checked; box.dispatchEvent(new Event("change")); }
+      return;
+    }
+
     // Left / Right: nudge by 50 ms (hold Shift for 10x)
     const step = (e.shiftKey ? 500 : 50);
     if (e.code === "ArrowRight") {
@@ -1335,6 +1417,30 @@ export class Editor {
       e.preventDefault();
       this.seek(Math.max(0, this.currentTimeMs() - step));
     }
+  }
+
+  // ===== Playtest =====
+  playtest() {
+    if (typeof window.PF_startGame !== "function") {
+      alert("Playtest is unavailable (PF_startGame not found).");
+      return;
+    }
+    const notes = Array.isArray(this.chart?.notes) ? [...this.chart.notes].sort((a,b)=>a.tMs-b.tMs) : [];
+    const out = {
+      bpm: this.chart?.bpm || 120,
+      lanes: this.chart?.lanes || 4,
+      durationMs: this.chart?.durationMs || (this.audioBuffer ? Math.floor(this.audioBuffer.duration * 1000) : 180000),
+      notes,
+      title: this.manifest?.title || "Editor Preview",
+      difficulty: this.difficulty || "normal",
+      trackId: (this.manifest?.title ? this.manifest.title.toLowerCase().replace(/[^a-z0-9]+/g, "-") : "editor-preview"),
+      audioUrl: this.audioUrl || this.manifest?.audio?.wav || this.manifest?.audio?.mp3
+    };
+    if (!out.audioUrl) {
+      alert("Load an audio file/URL or a manifest with audio before playtesting.");
+      return;
+    }
+    window.PF_startGame({ mode: "solo", manifest: out });
   }
 
   _syncInputs() {
@@ -1348,10 +1454,52 @@ export class Editor {
 
   _help(msg) {
     const el = document.getElementById(this.ids.help);
-    if (el) el.textContent = msg;
+    if (el) el.textContent = msg || "";
   }
 
-  // ---------- Volume helpers ----------
+  // ===== Overlap / lane helpers =====
+  _rangesOverlap(start, end, s, e) {
+    const A0 = Math.min(start, end);
+    const A1 = Math.max(start, end);
+    const B0 = Math.min(s, e);
+    const B1 = Math.max(s, e);
+    return !(A1 + this.minGapMs <= B0 || B1 + this.minGapMs <= A0);
+  }
+  /** Check if a note can be placed in a lane (no overlaps). */
+  _canPlaceNote(lane, tMs, dMs = 0, ignoreIdxSet = new Set()) {
+    if (!this.chart || !Array.isArray(this.chart.notes)) return { ok: true, conflictIdx: -1 };
+    const start = tMs;
+    const end = tMs + Math.max(0, dMs);
+
+    let next = null;
+    for (let i = 0; i < this.chart.notes.length; i++) {
+      if (ignoreIdxSet.has(i)) continue;
+      const n = this.chart.notes[i];
+      if (n.lane !== lane) continue;
+
+      // keep minimal gap between heads
+      if (Math.abs(n.tMs - tMs) < this.minGapMs) return { ok: false, conflictIdx: i };
+
+      const ns = n.tMs, ne = n.tMs + Math.max(0, n.dMs || 0);
+      if ((n.dMs || 0) > 0 || dMs > 0) {
+        if (this._rangesOverlap(start, end, ns, ne)) return { ok: false, conflictIdx: i };
+      }
+
+      if (n.tMs > tMs && (!next || n.tMs < next.tMs)) next = { ...n, idx: i };
+    }
+
+    // Hard cap tail to not cross into next note's time
+    if (dMs > 0 && next) {
+      const maxEnd = next.tMs - this.minGapMs;
+      if (end > maxEnd) {
+        return { ok: true, conflictIdx: -1, cappedEndMs: Math.max(start, maxEnd) };
+      }
+    }
+
+    return { ok: true, conflictIdx: -1 };
+  }
+
+  // ===== Volume helpers =====
   _getSavedVolume() {
     try {
       const s = JSON.parse(localStorage.getItem("pf-settings") || "{}");
@@ -1360,10 +1508,13 @@ export class Editor {
     } catch {}
     return 1; // default 100%
   }
-
   setVolume(v) {
     const vol = Math.max(0, Math.min(1, Number(v) || 0));
     this._volume = vol;
     if (this.masterGain) this.masterGain.gain.value = vol;
   }
+
+  // ===== Lane geometry =====
+  _laneW() { return Math.max(110, Math.min(160, Math.floor((this.canvas.width / (window.devicePixelRatio || 1)) / 10))); }
+  _laneGap() { return Math.max(18, Math.min(28, Math.floor((this.canvas.width / (window.devicePixelRatio || 1)) / 80))); }
 }
