@@ -197,7 +197,6 @@ export class Leaderboard {
   async _playSelected() {
     if (!this.selected) return;
 
-    // Require name before starting from Leaderboard
     const playerName = (this.settings?.name || "").trim();
     if (!playerName) {
       alert("Please set your Player Name in Settings before you start.");
@@ -206,42 +205,22 @@ export class Leaderboard {
       return;
     }
 
-    // Use selected difficulty
     const diffs = Object.keys(this.selected.charts || {});
     if (!diffs.length) return;
     const diff = this.$diff?.value || diffs[0];
 
-    const chartUrl = this.selected.charts[diff];
     try {
+      const chartUrl = this.selected.charts[diff];
       const chart = await fetch(chartUrl).then(r => r.json());
       chart.audioUrl = this.selected.audio?.wav || this.selected.audio?.mp3;
       chart.title = this.selected.title;
       chart.trackId = this.selected.trackId;
       chart.difficulty = diff;
 
-      const runtime = { mode: "solo", manifest: chart };
+      // Let PF_startGame handle running AND submitting.
       if (typeof window.PF_startGame === "function") {
-        const results = await window.PF_startGame(runtime);
-        // results expected like:
-        // [{ label: "Score", value: "12345" }, { label: "Accuracy", value: "98%" }, { label: "Max Combo", value: 123 }]
-        const score = Number((results.find(r => r.label === "Score")?.value) || 0);
-        const accStr = (results.find(r => r.label === "Accuracy")?.value) || "0%";
-        const acc = Math.max(0, Math.min(1, parseInt(String(accStr), 10) / 100));
-        const combo = Number((results.find(r => r.label === "Max Combo")?.value) || 0);
-
-        // Submit to server
-        await fetch("/api/leaderboard/submit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            trackId: chart.trackId,
-            difficulty: diff,
-            name: playerName,
-            score, acc, combo
-          })
-        }).then(r => r.json()).catch(() => ({}));
-
-        // Reload & highlight your row
+        await window.PF_startGame({ mode: "solo", manifest: chart });
+        // Optional: once submission finishes (handled by PF_startGame), refresh the table:
         await this._loadBoard(chart.trackId, diff);
         this._highlightSelf(playerName);
       }

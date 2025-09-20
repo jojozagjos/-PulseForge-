@@ -1,0 +1,56 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+.pnpm-debug.log*
+
+# Env & secrets
+.env
+.env.*.local
+!.env.example
+
+# Local data (keep JSON LB out of git if you use Postgres)
+data/
+!data/README.md
+
+# Logs & runtime junk
+logs/
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage / test
+coverage/
+.nyc_output/
+
+# Caches
+.cache/
+.parcel-cache/
+.eslintcache
+.turbo/
+.next/
+dist/
+build/
+tmp/
+temp/
+
+# Editor/OS cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Optional: ignore big media you don’t want in git
+# (uncomment if you keep song assets outside the repo)
+# public/assets/music/
+# public/tracks/**/audio/*
+# public/tracks/**/cover.* 
+
+# Service worker build output (if you add one later)
+public/sw.js
