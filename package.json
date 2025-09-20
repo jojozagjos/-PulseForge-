@@ -4,9 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "node server/index.js",
-    "db:reset": "node scripts/db-reset.js"
+    "start": "node -r dotenv/config server/index.js",
+    "dev": "node server/index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

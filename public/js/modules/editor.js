@@ -40,7 +40,12 @@ export class Editor {
       fileSaveAs: "ed-save-as",
       fileLoadManifestUrl: "ed-manifest-url",
       fileDifficulty: "ed-diff",
-      fileClearNotes: "ed-clear-notes"
+      fileClearNotes: "ed-clear-notes",
+
+      // Transport buttons in the HTML
+      playBtn: "ed-play",
+      pauseBtn: "ed-pause",
+      stopBtn: "ed-stop"
     };
 
     // Audio state
@@ -56,8 +61,8 @@ export class Editor {
 
     // Transport
     this.playing = false;
-    this.playStartCtxTime = 0;
-    this.playStartMs = 0;
+    this.playStartCtxTime = 0; // AudioContext time when current run started
+    this.playStartMs = 0;      // Musical offset for the current run (ms)
 
     // Metronome
     this.metronome = { enabled: false, lookaheadMs: 120, nextBeatMs: 0, timer: null };
@@ -140,7 +145,6 @@ export class Editor {
       const v = Number(e?.detail?.volume);
       if (Number.isFinite(v)) this.setVolume(v);
     });
-    // Optional legacy alias
     window.addEventListener("pf-volume", (e) => {
       const v = Number(e?.detail?.volume);
       if (Number.isFinite(v)) this.setVolume(v);
@@ -296,6 +300,7 @@ export class Editor {
     this.selection.clear();
     this.scrollY = 0;
     this.zoomY = 1.0;
+    this.playStartMs = 0;
     this._syncInputs();
     this._updateScrubMax();
     this._wireFollowToggle();
@@ -334,6 +339,7 @@ export class Editor {
     }
 
     this.subdiv = 4;
+    this.playStartMs = 0;
     this._syncInputs();
 
     await this._ensureAudioCtx();
@@ -424,10 +430,10 @@ export class Editor {
       this._updateZoomIndicator();
     });
 
-    // Transport
-    document.getElementById("ed-play")?.addEventListener("click", () => this.play());
-    document.getElementById("ed-pause")?.addEventListener("click", () => this.pause());
-    document.getElementById("ed-stop")?.addEventListener("click", () => this.stop());
+    // Transport (note: Stop ends the song)
+    document.getElementById(this.ids.playBtn)?.addEventListener("click", () => this.play());
+    document.getElementById(this.ids.pauseBtn)?.addEventListener("click", () => this.pause());
+    document.getElementById(this.ids.stopBtn)?.addEventListener("click", () => this.end()); // END, not reset to zero
 
     // Undo/Redo buttons
     this._wireHistoryButtons();
@@ -456,7 +462,7 @@ export class Editor {
     // Scrubber
     scrubEl?.addEventListener("input", () => {
       const ms = Number(scrubEl.value);
-      this.seek(ms);
+      this.seek(ms); // seek updates playStartMs; if playing, it will restart from here
     });
 
     // Wire the rest
@@ -522,6 +528,7 @@ export class Editor {
           notes: obj.notes
         };
         this.selection.clear();
+        this.playStartMs = 0;
         this._syncInputs();
         this._updateScrubMax();
         this._help(`Opened local chart file: ${f.name}`);
@@ -671,9 +678,11 @@ export class Editor {
 
   play() {
     if (!this.audioBuffer) return;
-    if (this.playing) this.stop();
+    // resume from scrub/playhead
+    if (this.playing) this._stopSourceOnly();
     const startMs = Math.max(0, Math.min(this.playStartMs, this.chart.durationMs));
     const offset = startMs / 1000;
+
     this.audioSource = this.audioCtx.createBufferSource();
     this.audioSource.buffer = this.audioBuffer;
     this.audioSource.connect(this.masterGain);
@@ -683,20 +692,52 @@ export class Editor {
     this.playing = true;
 
     if (this.metronome.enabled) this._metroStart();
-    try { this.audioSource.onended = () => { this.pause(); }; } catch {}
+
+    // when naturally ends, snap to end and stop
+    try {
+      this.audioSource.onended = () => {
+        this.playing = false;
+        this._metroStop();
+        const endMs = this.chart?.durationMs || Math.floor(this.audioBuffer.duration * 1000) || 0;
+        this.playStartMs = endMs; // snap to end
+        const s = document.getElementById(this.ids.scrub);
+        if (s) s.value = String(endMs);
+      };
+    } catch {}
   }
 
   pause() {
     if (!this.playing) return;
     this.playStartMs = this.currentTimeMs();
-    try { this.audioSource.stop(); } catch {}
+    this._stopSourceOnly();
     this.playing = false;
     this._metroStop();
   }
 
-  stop() {
-    if (this.audioSource) { try { this.audioSource.stop(); } catch {} }
+  /** End the song: stop and jump playhead to the end. */
+  end() {
+    const endMs = this.chart?.durationMs || Math.floor(this.audioBuffer?.duration * 1000) || 0;
+    this._stopSourceOnly();
+    this.playing = false;
+    this.playStartMs = endMs;
+    this._metroStop();
+    const s = document.getElementById(this.ids.scrub);
+    if (s) s.value = String(endMs);
+  }
+
+  /** Internal: stop only the current buffer source (no resets). */
+  _stopSourceOnly() {
+    if (this.audioSource) {
+      try { this.audioSource.onended = null; } catch {}
+      try { this.audioSource.stop(); } catch {}
+      this.audioSource.disconnect?.();
+    }
     this.audioSource = null;
+  }
+
+  /** Legacy stop(): keep as "reset to zero" if needed elsewhere. */
+  stop() {
+    this._stopSourceOnly();
     this.playing = false;
     this.playStartMs = 0;
     this._metroStop();
@@ -704,7 +745,7 @@ export class Editor {
 
   seek(ms) {
     this.playStartMs = Math.max(0, Math.min(ms, this.chart.durationMs));
-    if (this.playing) { this.pause(); this.play(); }
+    if (this.playing) { this._stopSourceOnly(); this.play(); } // restart from new offset
   }
 
   _metroStart() {
@@ -1401,6 +1442,18 @@ export class Editor {
       return;
     }
 
+    // Home/End: jump to start/end
+    if (e.key === "Home") {
+      e.preventDefault();
+      this.seek(0);
+      return;
+    }
+    if (e.key === "End") {
+      e.preventDefault();
+      this.end();
+      return;
+    }
+
     // M: toggle metronome
     if (e.key.toLowerCase() === "m") {
       const box = document.getElementById(this.ids.metroToggle);
@@ -1425,6 +1478,9 @@ export class Editor {
       alert("Playtest is unavailable (PF_startGame not found).");
       return;
     }
+    const offset = Math.max(0, Math.min(this.currentTimeMs()|0,
+      (this.chart?.durationMs || (this.audioBuffer ? Math.floor(this.audioBuffer.duration*1000) : 0))));
+
     const notes = Array.isArray(this.chart?.notes) ? [...this.chart.notes].sort((a,b)=>a.tMs-b.tMs) : [];
     const out = {
       bpm: this.chart?.bpm || 120,
@@ -1440,7 +1496,8 @@ export class Editor {
       alert("Load an audio file/URL or a manifest with audio before playtesting.");
       return;
     }
-    window.PF_startGame({ mode: "solo", manifest: out });
+    // Pass startAtMs and allowExit so you can quit the playtest
+    window.PF_startGame({ mode: "solo", manifest: out, startAtMs: offset, allowExit: true });
   }
 
   _syncInputs() {
@@ -1513,8 +1570,4 @@ export class Editor {
     this._volume = vol;
     if (this.masterGain) this.masterGain.gain.value = vol;
   }
-
-  // ===== Lane geometry =====
-  _laneW() { return Math.max(110, Math.min(160, Math.floor((this.canvas.width / (window.devicePixelRatio || 1)) / 10))); }
-  _laneGap() { return Math.max(18, Math.min(28, Math.floor((this.canvas.width / (window.devicePixelRatio || 1)) / 80))); }
 }

@@ -1,3 +1,4 @@
+// public/js/modules/leaderboard.js
 export class Leaderboard {
   constructor(settings = {}) {
     this.settings = settings;
@@ -158,7 +159,6 @@ export class Leaderboard {
         </tr>
       `).join("");
 
-      // optimistic "Load more" if we likely have more
       if (rows.length >= this._limit) this._ensureMoreBtn(trackId, diff);
       else this._removeMoreBtn();
 
@@ -180,7 +180,6 @@ export class Leaderboard {
       await this._loadBoard(trackId, diff);
     });
 
-    // place button after the TABLE element
     const tableEl = this.$table?.parentElement; // TBODY
     const container = tableEl?.nodeName === "TBODY" ? tableEl.parentElement : this.$table;
     container?.insertAdjacentElement("afterend", btn);
@@ -194,6 +193,10 @@ export class Leaderboard {
     }
   }
 
+  /**
+   * Called by our own Play button. We DO NOT submit here.
+   * We only launch the game and let PF_startGame do the single submission.
+   */
   async _playSelected() {
     if (!this.selected) return;
 
@@ -215,18 +218,26 @@ export class Leaderboard {
       chart.audioUrl = this.selected.audio?.wav || this.selected.audio?.mp3;
       chart.title = this.selected.title;
       chart.trackId = this.selected.trackId;
-      chart.difficulty = diff;
+      chart.difficulty = diff; // <<< important: pass difficulty through
 
-      // Let PF_startGame handle running AND submitting.
+      // Let PF_startGame handle running AND the only submission.
       if (typeof window.PF_startGame === "function") {
-        await window.PF_startGame({ mode: "solo", manifest: chart });
-        // Optional: once submission finishes (handled by PF_startGame), refresh the table:
+        await window.PF_startGame({ mode: "solo", manifest: chart, allowExit: false });
+        // After it submits, refresh the visible board for the selected diff
         await this._loadBoard(chart.trackId, diff);
         this._highlightSelf(playerName);
       }
     } catch (e) {
       console.error(e);
       alert("Failed to start: check chart path in console.");
+    }
+  }
+
+  /** Allow main.js to force-refresh when a run finishes for this song. */
+  refreshForTrackId(trackId) {
+    if (this.selected && this.selected.trackId === trackId) {
+      const diff = this.$diff?.value || "normal";
+      this._loadBoard(trackId, diff);
     }
   }
 

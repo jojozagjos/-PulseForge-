@@ -545,7 +545,7 @@ export class Solo {
       chart.trackId = this.selected.trackId;
 
       if (typeof window.PF_startGame === "function") {
-        window.PF_startGame({ mode: "solo", manifest: chart });
+        PF_startGame({ mode: "solo", manifest: chart, allowExit: false });
       }
     } catch (e) {
       console.error(e);

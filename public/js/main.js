@@ -11,14 +11,6 @@ function q(id) { return document.getElementById(id); }
 window.addEventListener("DOMContentLoaded", () => {
   console.log("[PF] main.js build v19");
 
-  // Register the service worker once (prevents repeated 404s if /sw.js is missing)
-  // if ("serviceWorker" in navigator) {
-  //   // Optional: only try if it actually exists to avoid console noise
-  //   fetch("/sw.js", { method: "HEAD" })
-  //     .then((r) => { if (r.ok) navigator.serviceWorker.register("/sw.js").catch(()=>{}); })
-  //     .catch(()=>{ /* ignore */ });
-  // }
-
   const screens = {
     main: q("screen-main"),
     settings: q("screen-settings"),
@@ -48,14 +40,11 @@ window.addEventListener("DOMContentLoaded", () => {
 
     // Teardowns for the screen we're leaving
     if (leavingSettings) {
-      // stop latency tester if running (public or private API)
-      // (Safe even if method doesn't exist)
       settings.stopLatencyTest?.();
       settings.teardown?.();
       settings._stopLatencyTest?.();
     }
     if (leavingSolo) {
-      // destroy Solo so re-entering is clean
       try { soloInstance?.destroy?.(); } catch {}
       soloInstance = null;
     }
@@ -86,7 +75,6 @@ window.addEventListener("DOMContentLoaded", () => {
 
     show("solo");
 
-    // Create once per entry; if you navigate away, show() above destroys it.
     if (!soloInstance) {
       soloInstance = new Solo(settings);
       await soloInstance.mount();
@@ -95,7 +83,6 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Back button from the Solo screen
   q("btn-back-from-solo")?.addEventListener("click", () => {
-    // Important: tear down Solo so preview/context/listeners are cleaned up
     try { soloInstance?.destroy?.(); } catch {}
     soloInstance = null;
     show("main");
@@ -166,8 +153,28 @@ window.addEventListener("DOMContentLoaded", () => {
   const num = (s) => Number(String(s || "0").replace(/[^\d.-]/g, "")) || 0;
   const parseAccPct = (s) => (Number(String(s || "0").replace(/[^\d.]/g, "")) || 0) / 100;
 
-  // Used by Leaderboard module (and Solo) to start a run.
-  // Expects runtime.manifest.trackId to be set (Solo & LB should attach it).
+  // Lightweight overlay for quitting playtest
+  function makeQuitOverlay(onQuit) {
+    const wrap = document.createElement("div");
+    Object.assign(wrap.style, {
+      position: "fixed", inset: "0", pointerEvents: "none"
+    });
+    const btn = document.createElement("button");
+    btn.textContent = "Quit";
+    Object.assign(btn.style, {
+      position: "absolute", right: "16px", top: "16px",
+      padding: "6px 10px", borderRadius: "8px",
+      background: "rgba(0,0,0,0.55)", color: "#fff",
+      border: "1px solid rgba(255,255,255,0.2)",
+      cursor: "pointer", pointerEvents: "auto", zIndex: 9999
+    });
+    btn.addEventListener("click", () => onQuit());
+    wrap.appendChild(btn);
+    document.body.appendChild(wrap);
+    return () => wrap.remove();
+  }
+
+  // Used by Leaderboard/Editor/Solo to start a run.
   window.PF_startGame = function(runtime) {
     const nm = (settings.name || "").trim();
     if (!nm) {
@@ -185,10 +192,48 @@ window.addEventListener("DOMContentLoaded", () => {
     if (canvas) canvas.style.display = "block";
     hud?.classList.remove("hidden");
 
+    // Ensure flags are present
+    runtime = runtime || {};
+    // Prevent any internal self-submit in Game
+    runtime.autoSubmit = false;
+
+    // Create & run the Game
     const game = new Game(runtime, settings);
-    console.log("[PF] Game ctor done, starting run…");
+
+    // If the Game exposes a 'seek' method, honor runtime.startAtMs
+    const startOffset = Math.max(0, Number(runtime.startAtMs || 0) || 0);
+    try { if (startOffset && typeof game.seek === "function") game.seek(startOffset); } catch {}
+
+    // Optional quit overlay (playtests etc.)
+    let removeQuit = null;
+    const allowExit = runtime.allowExit !== false; // default true
+    if (allowExit) {
+      removeQuit = makeQuitOverlay(forceQuit);
+      window.addEventListener("keydown", onEsc);
+    }
+
+    function cleanupOverlay() {
+      try { window.removeEventListener("keydown", onEsc); } catch {}
+      try { removeQuit?.(); } catch {}
+    }
+    function onEsc(e) {
+      if (e.key === "Escape") forceQuit();
+    }
+    async function forceQuit() {
+      cleanupOverlay();
+      // Try to abort/destroy if Game supports it
+      try { game.abort?.(); } catch {}
+      try { game.destroy?.(); } catch {}
+      // Hide canvas/HUD and go back where we came from (editor if visible before)
+      if (canvas) canvas.style.display = "none";
+      hud?.classList.add("hidden");
+      // Return to editor if it exists; else main
+      if (screens.editor) show("editor"); else show("main");
+    }
 
     game.run().then(async (results) => {
+      cleanupOverlay();
+
       // Hide canvas + HUD
       if (canvas) canvas.style.display = "none";
       hud?.classList.add("hidden");
@@ -202,11 +247,25 @@ window.addEventListener("DOMContentLoaded", () => {
 
       // ---------- Auto-submit to leaderboard ----------
       try {
+        // Skip auto-submit if caller asked us to (Leaderboard may do it itself)
+        if (runtime && runtime.autoSubmit === false) {
+          // We handle submission here (main.js), Game itself shouldn't submit.
+          // Continue.
+        }
+
+        // Pull runtime metadata
         const m = runtime?.manifest || {};
         const trackId =
           m.trackId ||
           runtime?.track?.trackId ||
           (m.title ? m.title.toLowerCase().replace(/[^a-z0-9]+/g, "-") : "unknown");
+
+        // Extract difficulty safely from several places
+        const difficulty =
+          m.difficulty ||
+          runtime?.difficulty ||
+          (typeof runtime?.diff === "string" ? runtime.diff : null) ||
+          "normal";
 
         const score = num(results.find(r => r.label === "Score")?.value);
         const acc = parseAccPct(results.find(r => r.label === "Accuracy")?.value);
@@ -221,7 +280,7 @@ window.addEventListener("DOMContentLoaded", () => {
         const res = await fetch("/api/leaderboard/submit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ trackId, name: playerName, score, acc, combo })
+          body: JSON.stringify({ trackId, difficulty, name: playerName, score, acc, combo })
         });
         const j = await res.json().catch(() => ({}));
         console.log("[PF] LB submit:", j);
