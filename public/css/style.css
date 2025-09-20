@@ -33,3 +33,7 @@ input,select{background:#0f1420;border:1px solid #2a3142;color:var(--text);borde
 #screen-editor [data-tool]:hover {
   background: #2a3142;
 }
+
+#lb-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+#lb-table th, #lb-table td { padding: 8px 10px; }
+#lb-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }

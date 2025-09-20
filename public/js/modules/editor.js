@@ -1,5 +1,5 @@
 // public/js/modules/editor.js
-// PulseForge Chart Editor – precise hit testing, no-snap selection, overlap guards, keyboard transport, box-select
+// PulseForge Chart Editor – precise hit testing, zoom-anchored, crisp grid lines
 export class Editor {
   constructor(opts) {
     this.canvas = document.getElementById(opts.canvasId);
@@ -51,11 +51,11 @@ export class Editor {
 
     // View/scroll
     this.zoomY = 1.0;
-    this.scrollY = 0; // px from 0ms
+    this.scrollY = 0; // pixels from time 0 (CSS px)
     this.pxPerMs = 0.35;
 
-    // Optional tiny visual nudge if you perceive flash vs audio offset (ms)
-    this.editorLatencyMs = 0; // try +10 / -10 if you notice a tiny drift
+    // Visual audio offset for perception tuning (ms)
+    this.editorLatencyMs = 0;
 
     // Tools & selection
     this.tool = "create"; // create | select | stretch | delete | copy | paste
@@ -87,11 +87,11 @@ export class Editor {
     this._wiredAudio = false;
     this._wiredFile = false;
 
-    // Placement helpers
-    this.minGapMs = 60;           // minimal lane spacing for heads/tails
-    this.headH = 28;              // draw height of a tap/hold head
-    this.headPad = 10;            // corner radius for head
-    this.tailHandlePadMs = 90;    // click tolerance around tail time to stretch
+    // Placement helpers (note visuals)
+    this.minGapMs = 60;
+    this.headH = 28;           // tap/hold head height (px)
+    this.headPad = 10;         // head corner radius
+    this.tailHandlePadMs = 90; // tail stretch tolerance
 
     // Bind
     this._tick = this._tick.bind(this);
@@ -120,6 +120,28 @@ export class Editor {
 
     // External hooks
     this.onExport = opts.onExport || (() => {});
+  }
+
+  // ---------- Coordinate helpers: single source of truth ----------
+  _pxPerMsNow() { return this.pxPerMs * this.zoomY; } // CSS px per ms
+
+  /** Convert time→screen Y (CSS pixels). Head TOP aligns to this (matches game). */
+  _timeToY(ms) { return ms * this._pxPerMsNow() - this.scrollY; }
+
+  /** Convert screen Y (CSS px) → time (ms). */
+  _yToTime(y) { return (y + this.scrollY) / this._pxPerMsNow(); }
+
+  /** Draw a crisp horizontal line; 1px lines on half-pixels to avoid blur. */
+  _strokeH(y, x0, x1, color, width = 1) {
+    const ctx = this.ctx;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    // 1px -> align to .5, even widths stay integer
+    const yy = (width % 2 === 1) ? Math.round(y) + 0.5 : Math.round(y);
+    ctx.moveTo(x0, yy);
+    ctx.lineTo(x1, yy);
+    ctx.stroke();
   }
 
   /** Start a blank chart without loading a manifest. */
@@ -180,9 +202,9 @@ export class Editor {
     this._wireFileToolbar();
   }
 
-  /** Wire all UI pieces; safe to call even on blank start. */
+  /** Wire basic toolbar. */
   mountToolbar() {
-    // Tool button baseline styling (if no classes provided)
+    // Tool baseline styling (if no classes provided)
     document.querySelectorAll('[data-tool]').forEach(btn => {
       if (!btn.classList.contains("primary") && !btn.classList.contains("secondary") && !btn.classList.contains("ghost")) {
         btn.style.background = "#1e2433";
@@ -405,7 +427,6 @@ export class Editor {
 
     let arrayBuffer;
     if (url.startsWith("blob:")) {
-      // Some servers block fetch() on blob: URLs. Use XHR for reliability.
       arrayBuffer = await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("GET", url);
@@ -436,7 +457,7 @@ export class Editor {
     if (!this.playing) return this.playStartMs;
     const delta = (this.audioCtx.currentTime - this.playStartCtxTime) * 1000;
     return Math.max(0, this.playStartMs + delta);
-  }
+    }
 
   play() {
     if (!this.audioBuffer) return;
@@ -468,9 +489,7 @@ export class Editor {
 
   seek(ms) {
     this.playStartMs = Math.max(0, Math.min(ms, this.chart.durationMs));
-    if (this.playing) {
-      this.pause(); this.play();
-    }
+    if (this.playing) { this.pause(); this.play(); }
   }
 
   // ---------- Placement helpers ----------
@@ -524,9 +543,7 @@ export class Editor {
   }
 
   /** Raw (no-snap) ms from a screen y. */
-  _screenToMsRaw(y) {
-    return (y + this.scrollY) / (this.pxPerMs * this.zoomY) * 1.0;
-  }
+  _screenToMsRaw(y) { return this._yToTime(y); }
 
   _screenToMs(y) {
     return this._snapMs(this._screenToMsRaw(y));
@@ -548,7 +565,7 @@ export class Editor {
     if (!this.drag) return;
 
     if (this.drag.type === "pan") {
-      this.scrollY = Math.max(0, this.drag.startScrollY + (this.drag.startY - this.mouse.y) * 1.0);
+      this.scrollY = Math.max(0, this.drag.startScrollY + (this.drag.startY - this.mouse.y));
 
     } else if (this.drag.type === "createHold") {
       const curMs = this._screenToMs(this.mouse.y);
@@ -599,9 +616,7 @@ export class Editor {
       const box = this._normalizedBox(this.drag.startX, this.drag.startY, this.drag.endX, this.drag.endY);
       const hitSet = this._notesInBox(box);
 
-      // Live preview (don’t commit yet)
       if (this.drag.additive) {
-        // additive preview = union of current selection and hits
         this._previewSelection = new Set([...this.selection, ...hitSet]);
       } else {
         this._previewSelection = hitSet;
@@ -610,7 +625,7 @@ export class Editor {
   }
 
   _pointerDown(e) {
-    e.preventDefault(); // avoid text selection / page drag
+    e.preventDefault();
     this.canvas.setPointerCapture(e.pointerId);
     const lane = this.mouse.lane;
     const tMsSnap = this._screenToMs(this.mouse.y);   // snapped for placement
@@ -659,7 +674,6 @@ export class Editor {
       } else {
         // Empty space:
         if (this.tool === "select") {
-          // Begin marquee selection (Shift => additive)
           this._previewSelection = null;
           this.drag = {
             type: "boxSelect",
@@ -670,7 +684,6 @@ export class Editor {
             additive: !!e.shiftKey
           };
         } else {
-          // Other tools: pan on empty space
           this.drag = { type: "pan", startY: this.mouse.y, startScrollY: this.scrollY };
         }
       }
@@ -712,7 +725,6 @@ export class Editor {
     const laneW = this._laneW(), gap = this._laneGap();
     const totalW = this.chart.lanes * laneW + (this.chart.lanes - 1) * gap;
     const startX = (w - totalW) / 2;
-    const pxPerMs = this.pxPerMs * this.zoomY;
 
     const headW = Math.max(26, laneW - 18);
     const tMsAtPointer = this._screenToMsRaw(mouseY);
@@ -723,7 +735,7 @@ export class Editor {
       const n = this.chart.notes[i];
       const laneX = startX + n.lane * (laneW + gap);
       const x = laneX + (laneW - headW) / 2;
-      const y = n.tMs * pxPerMs - this.scrollY;
+      const y = this._timeToY(n.tMs);
 
       // head rect
       const hx0 = x, hx1 = x + headW;
@@ -734,7 +746,7 @@ export class Editor {
       // body rect (AFTER the head)
       let inBody = false, onTail = false;
       if (n.dMs && n.dMs > 0) {
-        const len = Math.max(6, n.dMs * pxPerMs);
+        const len = Math.max(6, n.dMs * this._pxPerMsNow());
         const bx0 = x + (headW - 12) / 2, bx1 = bx0 + 12;
         const by0 = y + this.headH - 2, by1 = by0 + len; // after the head (downward)
         inBody = (mouseX >= bx0 && mouseX <= bx1 && mouseY >= by0 && mouseY <= by1);
@@ -812,14 +824,13 @@ export class Editor {
     const laneW = this._laneW(), gap = this._laneGap();
     const totalW = this.chart.lanes * laneW + (this.chart.lanes - 1) * gap;
     const startX = (w - totalW) / 2;
-    const pxPerMs = this.pxPerMs * this.zoomY;
     const headW = Math.max(26, laneW - 18);
 
     for (let i = 0; i < this.chart.notes.length; i++) {
       const n = this.chart.notes[i];
       const laneX = startX + n.lane * (laneW + gap);
       const x = laneX + (laneW - headW) / 2;
-      const y = n.tMs * pxPerMs - this.scrollY;
+      const y = this._timeToY(n.tMs);
 
       // head rect
       const hx0 = x, hx1 = x + headW;
@@ -828,7 +839,7 @@ export class Editor {
 
       // body (after the head)
       if (!hit && n.dMs && n.dMs > 0) {
-        const len = Math.max(6, n.dMs * pxPerMs);
+        const len = Math.max(6, n.dMs * this._pxPerMsNow());
         const bx0 = x + (headW - 12) / 2, bx1 = bx0 + 12;
         const by0 = y + this.headH - 2, by1 = by0 + len;
         hit = this._rectsOverlap(bx0, by0, bx1, by1, box.left, box.top, box.right, box.bottom);
@@ -848,6 +859,7 @@ export class Editor {
     const h = this.canvas.clientHeight || 700;
     this.canvas.width = Math.floor(w * ratio);
     this.canvas.height = Math.floor(h * ratio);
+    // Draw using CSS pixel coordinates
     this.ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   }
 
@@ -879,16 +891,16 @@ export class Editor {
       this._roundRect(ctx, x, 16, laneW, h - 32, 16, true);
     }
 
-    // grid
+    // timing/grid
     const bpm = this.chart.bpm || 120;
     const beatMs = 60000 / bpm;
     const stepMs = beatMs / Math.max(1, this.subdiv);
     const pxPerMs = this.pxPerMs * this.zoomY;
 
     const startMs = this.scrollY / pxPerMs * 1.0;
-    const endMs = startMs + h / pxPerMs;
+    const endMs   = startMs + h / pxPerMs;
     const firstBeat = Math.floor(startMs / beatMs);
-    const lastBeat = Math.ceil(endMs / beatMs);
+    const lastBeat  = Math.ceil(endMs / beatMs);
 
     for (let b = firstBeat; b <= lastBeat; b++) {
       const y = Math.floor(b * beatMs * pxPerMs - this.scrollY);
@@ -912,41 +924,44 @@ export class Editor {
       }
     }
 
-    // notes
+    // notes (CENTER-ALIGNED to beat/playhead)
     const headH = this.headH;
     const headW = Math.max(26, laneW - 18);
 
     const now = this.currentTimeMs() + this.editorLatencyMs;
-    const flashWindow = 40; // ms
+    const flashWindow = 40; // ms around the center time
 
     for (let i = 0; i < this.chart.notes.length; i++) {
       const n = this.chart.notes[i];
       const x = startX + n.lane * (laneW + gap) + (laneW - headW) / 2;
-      const y = Math.floor(n.tMs * pxPerMs - this.scrollY);
 
-      // Hold body AFTER the head (downward)
+      // center of the note = exact musical time
+      const yCenter = n.tMs * pxPerMs - this.scrollY;
+      const yHead   = Math.floor(yCenter - headH / 2);  // top of head from center
+
+      // Hold body extends *after* the head (downwards)
       if (n.dMs && n.dMs > 0) {
         const len = Math.max(6, n.dMs * pxPerMs);
         ctx.fillStyle = this.colors.holdBody;
-        this._roundRect(ctx, x + (headW - 12) / 2, y + headH - 2, 12, len, 6, true);
+        this._roundRect(ctx, x + (headW - 12) / 2, yHead + headH - 2, 12, len, 6, true);
       }
 
-      // flash head near playhead
+      // flash head when its *center* is near playhead
       const flash = Math.abs(n.tMs - now) <= flashWindow;
-      ctx.fillStyle = flash ? "#ffffff" : this.colors.noteHead;
+      ctx.fillStyle   = flash ? "#ffffff" : this.colors.noteHead;
       ctx.strokeStyle = flash ? "#ffffff" : this.colors.noteHeadStroke;
       ctx.lineWidth = 2;
-      this._roundRect(ctx, x, y, headW, headH, this.headPad, true);
+      this._roundRect(ctx, x, yHead, headW, headH, this.headPad, true);
 
       const selected = this._previewSelection ? this._previewSelection.has(i) : this.selection.has(i);
       if (selected) {
         ctx.strokeStyle = this.colors.selection;
         ctx.lineWidth = 2;
-        ctx.strokeRect(x - 2, y - 2, headW + 4, headH + 4);
+        ctx.strokeRect(x - 2, yHead - 2, headW + 4, headH + 4);
       }
     }
 
-    // playhead
+    // playhead (also lines up with note centers)
     const phY = Math.floor(now * pxPerMs - this.scrollY);
     ctx.strokeStyle = this.colors.playhead;
     ctx.lineWidth = 2;
@@ -973,6 +988,7 @@ export class Editor {
     if (s && !s.matches(":active")) s.value = String(Math.floor(this.currentTimeMs()));
   }
 
+
   _roundRect(ctx, x, y, w, h, r, fill = true) {
     const rr = Math.min(r, w / 2, h / 2);
     ctx.beginPath();
@@ -989,10 +1005,21 @@ export class Editor {
     e.preventDefault();
     e.stopPropagation();
 
+    // Current mouse Y relative to canvas (fallback to last pointer move)
+    const mouseY = (typeof e.offsetY === "number") ? e.offsetY : this.mouse.y;
+
     if (e.shiftKey) {
+      // Zoom anchored at mouse: keep the time under cursor fixed
+      const oldZoom = this.zoomY;
       const factor = e.deltaY < 0 ? 1.08 : 0.92;
-      this.zoomY = Math.max(0.25, Math.min(3, this.zoomY * factor));
+      const newZoom = Math.max(0.25, Math.min(3, oldZoom * factor));
+
+      const msAtMouse = this._yToTime(mouseY);         // before zoom
+      this.zoomY = newZoom;
+      const newPxPerMs = this._pxPerMsNow();
+      this.scrollY = Math.max(0, msAtMouse * newPxPerMs - mouseY);
     } else {
+      // Vertical scroll (pixels)
       this.scrollY = Math.max(0, this.scrollY + e.deltaY);
     }
   }

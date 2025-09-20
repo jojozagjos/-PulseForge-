@@ -42,7 +42,10 @@ export class Game {
 
     // Core state
     this.app = null;
-    this.state = { score: 0, combo: 0, total: 0, hits: 0, acc: 1, nextIdx: 0, timeMs: 0 };
+    this.state = {
+      score: 0, combo: 0, total: 0, hits: 0, acc: 1, nextIdx: 0, timeMs: 0,
+      judges: { Perfect: 0, Great: 0, Good: 0, Miss: 0 }  // NEW: judgment counters
+    };
     this.maxCombo = 0;
 
     // Tuning
@@ -61,7 +64,16 @@ export class Game {
     this.$acc = null;
     this.$score = null;
     this.$judge = null;
-    this.fxLayer = null;
+
+    // NEW: split FX into ring (ParticleContainer) + text (Container)
+    this.fxRingLayer = null;
+    this.fxTextLayer = null;
+
+    // NEW: progress bar pieces
+    this.progressBg = null;
+    this.progressFill = null;
+    this._progressGeom = null; // cache dims
+
     this.spriteByNote = new Map();
 
     // Caches, pools, and visual elements
@@ -87,6 +99,9 @@ export class Game {
     // Per-lane note indices for hit scanning
     this.notesByLane = [];
     this.nextIdxByLane = [];
+
+    // NEW: ensure we only show results overlay once
+    this._resultsShown = false;
   }
 
   async run() {
@@ -111,12 +126,14 @@ export class Game {
       powerPreference: "high-performance"
     });
     this.app.ticker.maxFPS = this.settings.maxFps || 120;
+    this.app.ticker.minFPS = this.settings.minFps || 50; // NEW: clamp to avoid giant delta spikes
 
     this._buildScene();
 
     if (this.runtime.mode === "solo") await this._playSolo(this.runtime.manifest);
     else await this._playMp(this.runtime);
 
+    // Return classic summary for outside UI
     return [
       { label: "Score", value: this.state.score.toString() },
       { label: "Accuracy", value: Math.round(this.state.acc * 100) + "%" },
@@ -236,8 +253,14 @@ export class Game {
     // Notes and FX layers
     this.noteLayer = new PIXI.Container();
     this.app.stage.addChild(this.noteLayer);
-    this.fxLayer = new PIXI.Container();
-    this.app.stage.addChild(this.fxLayer);
+
+    // NEW: tolerant to Pixi versions / missing plugin
+    this.fxRingLayer = this._makeFxRingLayer();
+    this.app.stage.addChild(this.fxRingLayer);
+
+    // NEW: floating text FX in a separate container
+    this.fxTextLayer = new PIXI.Container();
+    this.app.stage.addChild(this.fxTextLayer);
 
     // HUD refs
     this.$combo = document.getElementById("hud-combo");
@@ -245,6 +268,9 @@ export class Game {
     this.$score = document.getElementById("hud-score");
 
     this._ensureJudgmentElement();
+
+    // NEW: progress bar (static bg + dynamic fill)
+    this._buildProgressBar(totalW);
 
     this._fxStyles = {
       Perfect: new PIXI.TextStyle({
@@ -264,6 +290,24 @@ export class Game {
         dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
       })
     };
+  }
+
+  _buildProgressBar(totalW) {
+    const barW = totalW + 80;
+    const barH = 6;
+    const x = this.startX - 40;
+    const y = this.height - 32;
+
+    this.progressBg = new PIXI.Graphics();
+    this.progressBg.roundRect(x, y, barW, barH, 3);
+    this.progressBg.fill({ color: 0xffffff, alpha: 0.08 });
+    this.app.stage.addChild(this.progressBg);
+    if ("cacheAsBitmap" in this.progressBg) this.progressBg.cacheAsBitmap = true;
+
+    this.progressFill = new PIXI.Graphics();
+    this.app.stage.addChild(this.progressFill);
+
+    this._progressGeom = { x, y, barW, barH };
   }
 
   async _playSolo(manifest) {
@@ -346,6 +390,7 @@ export class Game {
     if (nowMs < hold.endMs - 80) {
       hold.broken = true;
       this.state.combo = 0;
+      this._recordJudge("Miss"); // NEW: count miss
       this._judgment("Miss", true);
       if (hold.bodyRef) {
         hold.bodyRef.__pfHoldActive = false;
@@ -384,14 +429,17 @@ export class Game {
 
   _registerHit(note, lane, label, isHold) {
     note.hit = true;
+
+    // scoring + counters
     const base = label === "Perfect" ? 100 : label === "Great" ? 80 : 50;
     this.state.score += base + Math.floor(this.state.combo * 0.1);
     this.state.combo += 1;
     this.maxCombo = Math.max(this.maxCombo || 0, this.state.combo);
     this.state.hits += 1;
+    this._recordJudge(label);
     this._judgment(label);
 
-    // Pulse receptor and spawn a ring for Great/Perfect
+    // receptor pulse + ring
     const lc = this.vis.laneColors[lane % this.vis.laneColors.length];
     this._flashReceptor(lane, label === "Perfect" ? 1.0 : 0.7);
     if (label === "Perfect" || label === "Great") {
@@ -399,28 +447,39 @@ export class Game {
       this._spawnRing(cx, this.judgeY, lc);
     }
 
+    // visuals for the actual note
     const vis = this.spriteByNote?.get(note);
-    if (vis) {
-      if (isHold) {
-        this._paintHeadWhite(vis.head);
-        if (vis.body) {
-          this._paintBodyWhite(vis, note);
-          vis.body.__pfHoldActive = true;
-        }
-        vis.head.__pfHoldActive = true;
+    if (!vis) return;
 
-        const endMs = note.tMs + (note.dMs || 0);
-        this.activeHoldsByLane.set(lane, {
-          endMs, broken: false,
-          headRef: vis.head,
-          bodyRef: vis.body || null
-        });
-      } else {
-        this._paintHeadWhite(vis.head);
-        vis.head.__pfFlashUntil = (this.state.timeMs >= 0 ? this.state.timeMs : 0) + WHITE_FLASH_MS;
-        vis.head.__pfFadeRate = HIT_FADE_RATE;
-      }
+    if (isHold) {
+      // Start a hold: make white and keep it visible until end or early release
+      this._paintHeadWhite(vis.head);
+      if (vis.body) this._paintBodyWhite(vis, note);
+
+      vis.head.__pfHoldActive = true;
+      if (vis.body) vis.body.__pfHoldActive = true;
+
+      // Do NOT set a timed flash/fade for holds; we keep them until endMs
+      const endMs = (note.tMs || 0) + (note.dMs || 0);
+      this.activeHoldsByLane.set(lane, {
+        endMs,
+        broken: false,
+        headRef: vis.head,
+        bodyRef: vis.body
+      });
+    } else {
+      // Tap: brief white flash, then fade away
+      this._paintHeadWhite(vis.head);
+      const until = (this.state.timeMs || 0) + WHITE_FLASH_MS; // taps only
+      vis.head.__pfFlashUntil = until;
+      vis.head.__pfFadeRate = HIT_FADE_RATE;
+      // taps don't have a body; nothing else to do
     }
+  }
+
+  _recordJudge(label) {
+    if (!this.state.judges) this.state.judges = { Perfect: 0, Great: 0, Good: 0, Miss: 0 };
+    if (label in this.state.judges) this.state.judges[label] += 1;
   }
 
   _paintHeadWhite(head) {
@@ -471,18 +530,22 @@ export class Game {
     t.y = this.judgeY - 42;
     t.alpha = 1;
     t.__pfVelY = -0.7;
-    this.fxLayer.addChild(t);
+    this.fxTextLayer.addChild(t); // NEW: goes to text layer
     t.__pfFade = { rate: 0.03, remove: true, pooled: true };
   }
 
   async _gameLoop(startPerfMs, tickHook) {
     this.noteLayer.removeChildren();
-    this.fxLayer.removeChildren();
+    this.fxRingLayer.removeChildren();
+    this.fxTextLayer.removeChildren();
     this.spriteByNote.clear();
+
+    // reset results flag/counters
+    this._resultsShown = false;
+    this.state.judges = { Perfect: 0, Great: 0, Good: 0, Miss: 0 };
 
     const headH = 32;
     const headW = Math.max(28, this.laneWidth - 16);
-
     this._ensureHeadTextures(headW, headH);
 
     this.noteSprites = this.chart.notes.map(n => {
@@ -512,6 +575,9 @@ export class Game {
         body.y = -(lengthPx - 2);
         body.tint = this.vis.laneColors[n.lane % this.vis.laneColors.length];
         body.alpha = 0.55;
+
+        body.__pfLen = lengthPx;
+
         cont.addChild(body);
       }
 
@@ -545,7 +611,8 @@ export class Game {
       if (this.$judge) this.$judge.style.opacity = "0";
     };
 
-    const offscreenY = this.height + 80;
+    const offscreenBottom = this.height + 120;
+    const offscreenTop = -180;
 
     return await new Promise(resolve => {
       this.app.ticker.add(() => {
@@ -555,10 +622,24 @@ export class Game {
 
         if (tMs < 0) showCountdown(-tMs); else hideCountdown();
 
-        // Update FX texts and FX sprites
-        for (let i = this.fxLayer.children.length - 1; i >= 0; i--) {
-          const child = this.fxLayer.children[i];
+        // ===== FX: text layer (float/fade) =====
+        for (let i = this.fxTextLayer.children.length - 1; i >= 0; i--) {
+          const child = this.fxTextLayer.children[i];
           if (child.__pfVelY) child.y += child.__pfVelY;
+          if (child.__pfFade) {
+            child.alpha = Math.max(0, child.alpha - child.__pfFade.rate);
+            if (child.alpha <= 0.01) {
+              if (child.__pfFade.remove) {
+                if (child.__pfFade.pooled) this._releaseFxText(child);
+                this.fxTextLayer.removeChild(child);
+              }
+              child.__pfFade = null;
+            }
+          }
+        }
+        // ===== FX: ring layer (scale/fade) =====
+        for (let i = this.fxRingLayer.children.length - 1; i >= 0; i--) {
+          const child = this.fxRingLayer.children[i];
           if (child.__pfScaleVel) {
             const nx = child.scale.x + child.__pfScaleVel;
             child.scale.set(nx, nx);
@@ -566,10 +647,7 @@ export class Game {
           if (child.__pfFade) {
             child.alpha = Math.max(0, child.alpha - child.__pfFade.rate);
             if (child.alpha <= 0.01) {
-              if (child.__pfFade.remove) {
-                if (child.__pfFade.pooled) this._releaseFxText(child);
-                this.fxLayer.removeChild(child);
-              }
+              if (child.__pfFade.remove) this.fxRingLayer.removeChild(child);
               child.__pfFade = null;
             }
           }
@@ -591,67 +669,88 @@ export class Game {
           }
         }
 
-        // Notes
+        // ===== Notes =====
         for (let i = 0; i < this.noteSprites.length; i++) {
           const obj = this.noteSprites[i];
           const { n, cont, body, head, gloss } = obj;
           if (!cont.parent && (!body || !body.parent)) continue;
 
-          // Position so head crosses judge line at n.tMs
-          const y = this.judgeY - (n.tMs - tMs) * this.pixelsPerMs;
+          // Position so head CENTER crosses judge line exactly at n.tMs
+          const yAtCenter = this.judgeY - (n.tMs - tMs) * this.pixelsPerMs;
+          const y = yAtCenter - (head.height / 2);
           if (cont.parent) cont.y = y;
 
-          // Miss window for unhit taps (holds get marked on press)
+          // Time-based Miss for unhit taps (holds are judged on key press)
           if (tMs >= 0 && !n.hit) {
             if (tMs - n.tMs > 120) {
               n.hit = true;
               this.state.combo = 0;
+              this._recordJudge("Miss"); // NEW: count miss
               this._judgment("Miss", true);
               cont.parent?.removeChild(cont);
               while (this.state.nextIdx < this.chart.notes.length && this.chart.notes[this.state.nextIdx].hit) this.state.nextIdx++;
               continue;
             }
           }
+          
+          // --- Compute full vertical bounds of this note first ---
+          const bottomCullY = this.height + 80;
 
-          // Timed flash -> fade
-          const now = tMs;
-          if (head.__pfFlashUntil) {
-            if (now >= head.__pfFlashUntil) {
+          let topY = cont.y;            // head top
+          let bottomY = cont.y + headH; // head bottom
+
+          if (body) {
+            const len = body.__pfLen ?? Math.max(10, (n.dMs || 0) * this.pixelsPerMs);
+            const bodyTop = cont.y - (len - 2);   // because body.y = -(len - 2)
+            const bodyBottom = bodyTop + len;
+            topY    = Math.min(topY, bodyTop);
+            bottomY = Math.max(bottomY, bodyBottom);
+          }
+
+          // Cull only when the ENTIRE note (head + tail) is past the bottom edge
+          if (cont.parent && topY > bottomCullY) {
+            cont.parent.removeChild(cont);
+            continue;
+          }
+
+          // Decide if we should skip heavy visuals this frame
+          const farOff = (y < offscreenTop || y > offscreenBottom);
+
+          // --- Heavy per-frame visuals only if near-ish screen ---
+          if (!farOff) {
+            // Timed flash -> fade
+            const now = tMs;
+            if (head.__pfFlashUntil && now >= head.__pfFlashUntil) {
               head.__pfFlashUntil = null;
               this._beginFadeOut(head, head.__pfFadeRate, true);
             }
-          }
-          if (body && body.__pfFlashUntil) {
-            if (now >= body.__pfFlashUntil) {
+            if (body && body.__pfFlashUntil && now >= body.__pfFlashUntil) {
               body.__pfFlashUntil = null;
               this._beginFadeOut(body, body.__pfFadeRate, true);
             }
-          }
 
-          // Per-frame fade progression
-          if (head.parent && head.__pfFade) {
-            head.alpha = Math.max(0, head.alpha - head.__pfFade.rate);
-            if (head.alpha <= 0.01) {
-              if (head.__pfFade.remove) cont.parent?.removeChild(cont);
-              head.__pfFade = null;
+            // Per-frame fade progression
+            if (head.parent && head.__pfFade) {
+              head.alpha = Math.max(0, head.alpha - head.__pfFade.rate);
+              if (head.alpha <= 0.01) {
+                if (head.__pfFade.remove) cont.parent?.removeChild(cont);
+                head.__pfFade = null;
+              }
+            }
+            if (body && body.parent && body.__pfFade) {
+              body.alpha = Math.max(0, body.alpha - body.__pfFade.rate);
+              if (body.alpha <= 0.01) {
+                if (body.__pfFade.remove !== false) cont.removeChild(body);
+                body.__pfFade = null;
+              }
+            }
+
+            // Shimmer the gloss near the judge line
+            if (gloss) {
+              const dy = Math.abs(this.judgeY - (y + head.height / 2));
+              gloss.alpha = 0.25 + Math.max(0, 0.35 - Math.min(0.35, dy / 400));
             }
           }
-          if (body && body.parent && body.__pfFade) {
-            body.alpha = Math.max(0, body.alpha - body.__pfFade.rate);
-            if (body.alpha <= 0.01) {
-              if (body.__pfFade.remove !== false) cont.removeChild(body);
-              body.__pfFade = null;
-            }
-          }
-
-          // Shimmer the gloss more as the head nears the judge line
-          if (gloss) {
-            const dy = Math.abs(this.judgeY - y);
-            gloss.alpha = 0.25 + Math.max(0, 0.35 - Math.min(0.35, dy / 400));
-          }
-
-          // Cull when below screen
-          if (cont.parent && cont.y > offscreenY) cont.parent.removeChild(cont);
         }
 
         // Maintain active holds
@@ -662,6 +761,7 @@ export class Game {
               if (!this.held[lane]) {
                 hold.broken = true;
                 this.state.combo = 0;
+                this._recordJudge("Miss"); // NEW: count miss
                 this._judgment("Miss", true);
                 if (hold.bodyRef) {
                   hold.bodyRef.__pfHoldActive = false;
@@ -689,6 +789,8 @@ export class Game {
 
         // HUD (only when changed)
         this.state.total = this.chart.notes.length;
+
+        // Simple acc: hits/total (unchanged style)
         const acc = this.state.total ? this.state.hits / this.state.total : 1;
         this.state.acc = acc;
 
@@ -706,10 +808,25 @@ export class Game {
           this._lastHud.score = this.state.score;
         }
 
+        // Progress bar
+        if (this._progressGeom) {
+          const { x, y, barW, barH } = this._progressGeom;
+          const p = Math.max(0, Math.min(1, tMs / (this.chart.durationMs || 1)));
+          this.progressFill.clear();
+          this.progressFill.roundRect(x, y, Math.max(0.0001, barW * p), barH, 3);
+          this.progressFill.fill({ color: 0xFFFFFF, alpha: 0.9 * p + 0.05 }); // was 0x25f4ee
+        }
+
         if (tickHook) tickHook();
 
         const endMs = (this.chart.durationMs || 20000) + 1500;
-        if (tMs > endMs) resolve();
+        if (tMs > endMs) {
+          if (!this._resultsShown) {
+            this._resultsShown = true;
+            this._showResultsOverlay(); // NEW: show in-game results
+          }
+          resolve();
+        }
       });
     });
   }
@@ -717,6 +834,36 @@ export class Game {
   _laneX(idx) { return this.startX + idx * (this.laneWidth + this.laneGap); }
 
   // ======== Texture and pool helpers ========
+
+  // Try to create a ParticleContainer (v4/v5/v6/v7 signatures). Fallback to Container.
+  _makeFxRingLayer() {
+    // Possible homes for ParticleContainer across Pixi versions/plugins
+    const PC =
+      PIXI.ParticleContainer ||
+      (PIXI.particles && PIXI.particles.ParticleContainer) ||
+      null;
+
+    if (PC) {
+      // v4–v6 style: new PC(maxSize, properties)
+      try {
+        return new PC(400, { scale: true, alpha: true, position: true, rotation: true, uvs: false });
+      } catch (_) {
+        // v7+ style: new PC({ maxSize, properties })
+        try {
+          return new PC({
+            maxSize: 400,
+            properties: { scale: true, alpha: true, position: true, rotation: true, uvs: false },
+            roundPixels: true
+          });
+        } catch (_) {
+          // fall through to Container
+        }
+      }
+    }
+
+    console.warn("[PulseForge] ParticleContainer not available; using PIXI.Container for FX.");
+    return new PIXI.Container();
+  }
 
   _ensureHeadTextures(headW, headH) {
     if (this._texCache.headNormal && this._texCache._headW === headW && this._texCache._headH === headH) return;
@@ -799,7 +946,83 @@ export class Game {
     s.scale.set(0.55, 0.55);
     s.__pfScaleVel = 0.06;     // expand each frame
     s.__pfFade = { rate: 0.04, remove: true };
-    this.fxLayer.addChild(s);
+    this.fxRingLayer.addChild(s); // NEW: particle container
+  }
+
+  // ======== Results Overlay (HUD & results) ========
+  _showResultsOverlay() {
+    const overlayId = "pf-results-overlay";
+    let el = document.getElementById(overlayId);
+    if (el) el.remove();
+
+    const accPct = Math.round(this.state.acc * 100);
+
+    const counts = this.state.judges || { Perfect:0, Great:0, Good:0, Miss:0 };
+    const totalJudged = counts.Perfect + counts.Great + counts.Good + counts.Miss || 1;
+    const segP = (counts.Perfect / totalJudged) * 360;
+    const segG = (counts.Great   / totalJudged) * 360;
+    const segO = (counts.Good    / totalJudged) * 360;
+    const segM = (counts.Miss    / totalJudged) * 360;
+
+    // Build a conic-gradient pie
+    const pie = `conic-gradient(
+      #25F4EE 0deg ${segP}deg,
+      #C8FF4D ${segP}deg ${segP + segG}deg,
+      #8A5CFF ${segP + segG}deg ${segP + segG + segO}deg,
+      #aa4b5b ${segP + segG + segO}deg ${segP + segG + segO + segM}deg
+    )`;
+
+    el = document.createElement("div");
+    el.id = overlayId;
+    Object.assign(el.style, {
+      position: "absolute",
+      inset: "0",
+      background: "linear-gradient(0deg, rgba(10,12,16,.86), rgba(10,12,16,.86))",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: "2000",
+      color: "#e8eefc",
+      fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto"
+    });
+
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:220px 1fr;gap:20px;max-width:820px;width:90%;border:1px solid #2a3142;border-radius:14px;padding:20px;background:#111827cc;backdrop-filter:blur(4px);">
+        <div style="display:flex;align-items:center;justify-content:center;">
+          <div style="width:180px;height:180px;border-radius:999px;background:${pie};box-shadow:inset 0 0 0 8px rgba(255,255,255,0.06);"></div>
+        </div>
+        <div>
+          <div style="font-size:22px;font-weight:700;margin-bottom:8px;">Results</div>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;">
+            <div><span style="opacity:.9;">Score:</span> <b>${this.state.score.toLocaleString()}</b></div>
+            <div><span style="opacity:.9;">Accuracy:</span> <b>${accPct}%</b></div>
+            <div><span style="opacity:.9;">Max Combo:</span> <b>${this.maxCombo}x</b></div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px;">
+            ${this._resultChip("#25F4EE","Perfect",counts.Perfect)}
+            ${this._resultChip("#C8FF4D","Great",counts.Great)}
+            ${this._resultChip("#8A5CFF","Good",counts.Good)}
+            ${this._resultChip("#aa4b5b","Miss",counts.Miss)}
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button id="pf-results-close" class="primary" style="padding:8px 14px;background:#25f4ee;border:none;border-radius:10px;color:#00222a;font-weight:700;cursor:pointer;">Close</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    el.querySelector("#pf-results-close")?.addEventListener("click", () => el.remove());
+    document.body.appendChild(el);
+  }
+
+  _resultChip(color, label, value) {
+    return `<div style="border:1px solid #2a3142;border-radius:10px;padding:10px;background:#0f1420;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};"></span>
+        <span style="opacity:.9">${label}</span>
+      </div>
+      <div style="font-size:18px;font-weight:700;">${value}</div>
+    </div>`;
   }
 }
 

@@ -1,0 +1,12 @@
+{
+  "trackId": "fallingbehind",
+  "title": "Falling Behind",
+  "artist": "Laufey",
+  "audio": {
+    "wav": "/assets/music/Laufey - Falling Behind (Official Audio).mp3"
+  },
+  "charts": {
+    "easy": "/tracks/fallingbehind/fallingbehind.easy.json"
+  },
+  "cover": "/assets/images/fallingbehind-cover.jpg"
+}

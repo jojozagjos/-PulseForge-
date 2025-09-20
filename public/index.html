@@ -18,7 +18,7 @@
     <div id="screen-main" class="screen active">
       <div class="logo">PULSE<span>FORGE</span></div>
       <div class="menu">
-        <button id="btn-solo" class="primary">Solo Practice</button>
+        <button id="btn-solo" class="primary">Solo</button>
         <button id="btn-view-leaderboard" class="secondary">Leaderboard</button>
         <button id="btn-settings" class="tertiary">Settings</button>
         <button id="btn-editor" class="tertiary">Chart Editor</button>
@@ -40,10 +40,10 @@
     </div>
 
     <div id="screen-solo" class="screen">
-      <h1>Solo Practice</h1>
+      <h1>Solo</h1>
       <div id="track-list" class="track-list"></div>
       <div class="row">
-        <select id="solo-diff"></select>
+        <!-- no more <select id="solo-diff"> -->
         <button id="btn-play-solo" class="primary">Play</button>
         <button id="btn-back-from-solo" class="ghost">Back</button>
       </div>
@@ -51,6 +51,9 @@
 
     <!-- Include this where your other screens live -->
     <section id="screen-leaderboard" class="screen" style="padding:16px;">
+      <div class="row" style="margin-top:10px;">
+        <button id="btn-back-leaderboard" class="ghost">Back</button>
+      </div>
       <div class="row" style="display:flex; align-items:center; gap:12px;">
         <h2 style="margin:0;">Leaderboards</h2>
 
@@ -63,40 +66,39 @@
         <button id="lb-play" class="primary">Play Selected</button>
       </div>
       <div class="row" style="display:flex; gap:16px; margin-top:12px;">
-      <div style="flex:2;">
-        <h3 style="margin:8px 0;">Songs</h3>
-        <div id="lb-track-list"
-            style="display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px;"></div>
-      </div>
+        <div style="flex:2;">
+          <h3 style="margin:8px 0;">Songs</h3>
+          <div id="lb-track-list"
+              style="display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px;"></div>
+        </div>
 
-      <div style="flex:1;">
-        <h3 style="margin:8px 0;">Top Scores</h3>
-        <div class="card" style="background:#111725;border:1px solid #2a3142;border-radius:12px;padding:8px;">
-          <table id="lb-table" style="width:100%; border-collapse:collapse; table-layout:fixed;">
-            <!-- NEW: fixed column layout so header/body align -->
-            <colgroup>
-              <col class="col-rank">
-              <col class="col-name">
-              <col class="col-score">
-              <col class="col-acc">
-            </colgroup>
-            <thead>
-              <tr>
-                <th style="text-align:left;">Rank</th>
-                <th style="text-align:left;">Name</th>
-                <th class="num">Score</th>          <!-- mark numeric -->
-                <th class="num">Acc / Combo</th>    <!-- mark numeric -->
-              </tr>
-            </thead>
-            <tbody id="lb-table-body">
-              <tr><td class="muted" colspan="4">Pick a song</td></tr>
-            </tbody>
-          </table>
+        <div style="flex:1;">
+          <h3 style="margin:8px 0;">Top Scores</h3>
+          <div class="card" style="background:#111725;border:1px solid #2a3142;border-radius:12px;padding:8px;">
+            <table id="lb-table" style="width:100%; border-collapse:collapse; table-layout:fixed;">
+              <!-- NEW: fixed column layout so header/body align -->
+              <colgroup>
+                <col class="col-rank">
+                <col class="col-name">
+                <col class="col-score">
+                <col class="col-acc">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th style="text-align:left;">Rank</th>
+                  <th style="text-align:left;">Name</th>
+                  <th class="num">Score</th>          <!-- mark numeric -->
+                  <th class="num">Acc / Combo</th>    <!-- mark numeric -->
+                </tr>
+              </thead>
+              <tbody id="lb-table-body">
+                <tr><td class="muted" colspan="4">Pick a song</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
-    </div>
-  </section>
-
+    </section>
 
     <div id="screen-editor" class="screen">
       <h1>Chart Editor</h1>

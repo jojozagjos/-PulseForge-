@@ -99,6 +99,7 @@ window.addEventListener("DOMContentLoaded", () => {
       }
     }
   });
+  q("btn-back-leaderboard")?.addEventListener("click", () => show("main"));
 
   // ---------------- Results ----------------
   q("btn-replay")?.addEventListener("click", () => location.reload());
