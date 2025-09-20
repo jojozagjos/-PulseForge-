@@ -6,9 +6,7 @@
     "wav": "/assets/music/birdbrain.mp3"
   },
   "charts": {
-    "easy": "/tracks/birdbrain/birdbrain.easy.json",
-    "normal": "/tracks/birdbrain/birdbrain.normal.json",
-    "hard": "/tracks/birdbrain/birdbrain.hard.json"
+    "normal": "/tracks/birdbrain/birdbrain.normal.json"
   },
   "cover": "/assets/images/birdbrain-cover.jpg"
 }
