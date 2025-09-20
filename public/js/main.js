@@ -11,6 +11,14 @@ function q(id) { return document.getElementById(id); }
 window.addEventListener("DOMContentLoaded", () => {
   console.log("[PF] main.js build v19");
 
+  // Register the service worker once (prevents repeated 404s if /sw.js is missing)
+  // if ("serviceWorker" in navigator) {
+  //   // Optional: only try if it actually exists to avoid console noise
+  //   fetch("/sw.js", { method: "HEAD" })
+  //     .then((r) => { if (r.ok) navigator.serviceWorker.register("/sw.js").catch(()=>{}); })
+  //     .catch(()=>{ /* ignore */ });
+  // }
+
   const screens = {
     main: q("screen-main"),
     settings: q("screen-settings"),
@@ -23,10 +31,35 @@ window.addEventListener("DOMContentLoaded", () => {
   const canvas = q("game-canvas");
   const hud = q("hud");
 
+  // Keep module instances here so we can mount/destroy cleanly.
+  let soloInstance = null;
+  let lbInstance = null;
+  let editorInstance = null;
+
   function hideAllScreens() {
     for (const el of Object.values(screens)) if (el) el.classList.remove("active");
   }
+
+  // Centralized show() that also performs per-screen teardown of the one we're leaving.
   function show(id) {
+    // Which screen are we leaving?
+    const leavingSettings = screens.settings?.classList.contains("active");
+    const leavingSolo = screens.solo?.classList.contains("active");
+
+    // Teardowns for the screen we're leaving
+    if (leavingSettings) {
+      // stop latency tester if running (public or private API)
+      // (Safe even if method doesn't exist)
+      settings.stopLatencyTest?.();
+      settings.teardown?.();
+      settings._stopLatencyTest?.();
+    }
+    if (leavingSolo) {
+      // destroy Solo so re-entering is clean
+      try { soloInstance?.destroy?.(); } catch {}
+      soloInstance = null;
+    }
+
     hideAllScreens();
     if (id && screens[id]) screens[id].classList.add("active");
     if (canvas) canvas.style.display = "none";
@@ -42,7 +75,6 @@ window.addEventListener("DOMContentLoaded", () => {
   q("btn-save-settings")?.addEventListener("click", () => settings.save?.());
 
   // ---------------- Solo ----------------
-  // Replace your existing SOLO button handler in main.js with this:
   q("btn-solo")?.addEventListener("click", async () => {
     const name = (settings.name || "").trim();
     if (!name) {
@@ -53,36 +85,39 @@ window.addEventListener("DOMContentLoaded", () => {
     }
 
     show("solo");
-    const solo = new Solo(settings);
-    await solo.mount();
+
+    // Create once per entry; if you navigate away, show() above destroys it.
+    if (!soloInstance) {
+      soloInstance = new Solo(settings);
+      await soloInstance.mount();
+    }
   });
-  q("btn-back-from-solo")?.addEventListener("click", () => show("main"));
+
+  // Back button from the Solo screen
+  q("btn-back-from-solo")?.addEventListener("click", () => {
+    // Important: tear down Solo so preview/context/listeners are cleaned up
+    try { soloInstance?.destroy?.(); } catch {}
+    soloInstance = null;
+    show("main");
+  });
 
   // ---------------- Leaderboards ----------------
-  let lbInstance = null;
-
   async function openLeaderboard() {
     show("leaderboard");
     if (!lbInstance) {
-      // Mount once; module should populate songs and hook clicks
       lbInstance = new Leaderboard(settings);
       await lbInstance.mount?.();
     }
   }
-
-  // Menu button -> Leaderboards
   q("btn-view-leaderboard")?.addEventListener("click", openLeaderboard);
+  q("btn-back-leaderboard")?.addEventListener("click", () => show("main"));
 
   // Optional: a Play button inside the leaderboard screen.
-  // We let the Leaderboard module prepare a runtime manifest and call PF_startGame itself,
-  // but if it prefers delegating to us, expose a global starter below.
   q("lb-play")?.addEventListener("click", async () => {
-    // Try to ask the module for a ready-to-play runtime if it exposes one.
     if (lbInstance?.getPlayableRuntime) {
       const runtime = await lbInstance.getPlayableRuntime();
       if (runtime) window.PF_startGame(runtime);
     } else {
-      // Fallback: if Leaderboard set window.PF_lb_getSelected, use it.
       const sel = await window.PF_lb_getSelected?.(); // { track, diff, chartUrl }
       if (!sel) return;
       try {
@@ -91,7 +126,7 @@ window.addEventListener("DOMContentLoaded", () => {
         chart.title = sel.track.title;
         chart.bpm = sel.track.bpm;
         chart.difficulty = sel.diff;
-        chart.trackId = sel.track.trackId; // critical for submissions
+        chart.trackId = sel.track.trackId;
         window.PF_startGame({ mode: "solo", manifest: chart });
       } catch (e) {
         console.error(e);
@@ -99,13 +134,11 @@ window.addEventListener("DOMContentLoaded", () => {
       }
     }
   });
-  q("btn-back-leaderboard")?.addEventListener("click", () => show("main"));
 
   // ---------------- Results ----------------
   q("btn-replay")?.addEventListener("click", () => location.reload());
 
   // ---------------- Editor ----------------
-  let editorInstance = null;
   async function openEditor() {
     show("editor");
     if (!editorInstance && typeof Editor !== "undefined") {
@@ -143,6 +176,11 @@ window.addEventListener("DOMContentLoaded", () => {
       setTimeout(() => q("set-name")?.focus(), 0);
       return;
     }
+
+    // If we launch from Solo, make sure we tear it down before the game
+    try { soloInstance?.destroy?.(); } catch {}
+    soloInstance = null;
+
     hideAllScreens();
     if (canvas) canvas.style.display = "block";
     hud?.classList.remove("hidden");
@@ -164,15 +202,12 @@ window.addEventListener("DOMContentLoaded", () => {
 
       // ---------- Auto-submit to leaderboard ----------
       try {
-        // Pull runtime metadata
         const m = runtime?.manifest || {};
         const trackId =
           m.trackId ||
           runtime?.track?.trackId ||
           (m.title ? m.title.toLowerCase().replace(/[^a-z0-9]+/g, "-") : "unknown");
 
-        // Extract numeric values from Game's result list
-        // results: [{label:"Score", value:"12345"}, {label:"Accuracy", value:"97%"}, {label:"Max Combo", value:"123"}]
         const score = num(results.find(r => r.label === "Score")?.value);
         const acc = parseAccPct(results.find(r => r.label === "Accuracy")?.value);
         const combo = num(results.find(r => r.label === "Max Combo")?.value);
@@ -183,7 +218,6 @@ window.addEventListener("DOMContentLoaded", () => {
           localStorage.getItem("pf_name") ||
           "Player";
 
-        // Submit
         const res = await fetch("/api/leaderboard/submit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

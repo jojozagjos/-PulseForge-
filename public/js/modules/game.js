@@ -102,6 +102,13 @@ export class Game {
 
     // NEW: ensure we only show results overlay once
     this._resultsShown = false;
+
+    // NEW: leaderboard snapshot (before/after)
+    this._lbBefore = { pbScore: null, rank: null };
+    this._lbAfter = { pbScore: null, rank: null };
+
+    // NEW: toast holder
+    this._ensureToastHolder();
   }
 
   async run() {
@@ -323,6 +330,9 @@ export class Game {
     this._prepareNotes();
     this._prepareInputs();
 
+    // Snapshot PB/rank BEFORE we start (for comparison later)
+    await this._snapshotLeaderboardBefore();
+
     const audioStartAtSec = player.ctx.currentTime + this.leadInMs / 1000;
     const source = player.playAt(audioStartAtSec);
 
@@ -330,6 +340,10 @@ export class Game {
     const startPerfMs = perfAtAudioZero + audioStartAtSec * 1000;
 
     await this._gameLoop(startPerfMs, () => {});
+
+    // Report results and show PB/rank movement toasts
+    await this._reportScoreAndNotify();
+
     source.stop();
   }
 
@@ -346,12 +360,19 @@ export class Game {
     this._prepareNotes();
     this._prepareInputs();
 
+    // Snapshot PB/rank BEFORE we start
+    await this._snapshotLeaderboardBefore();
+
     const delaySec = Math.max(0, rt.startAt ? (rt.startAt - Date.now()) / 1000 : 0);
     const audioStartAtSec = player.ctx.currentTime + delaySec;
     const source = player.playAt(audioStartAtSec);
     const startPerfMs = performance.now() + delaySec * 1000;
 
     await this._gameLoop(startPerfMs, null);
+
+    // Report results and show PB/rank movement toasts
+    await this._reportScoreAndNotify();
+
     source.stop();
   }
 
@@ -1030,6 +1051,167 @@ export class Game {
       </div>
       <div style="font-size:18px;font-weight:700;">${value}</div>
     </div>`;
+  }
+
+  // ========= NEW: PB / Leaderboard movement =========
+
+  async _snapshotLeaderboardBefore() {
+    try {
+      const rows = await this._fetchLeaderboard(200);
+      const me = this._findMe(rows);
+      this._lbBefore = {
+        pbScore: me?.score ?? null,
+        rank: me ? (rows.indexOf(me) + 1) : null
+      };
+    } catch {
+      this._lbBefore = { pbScore: null, rank: null };
+    }
+  }
+
+  async _reportScoreAndNotify() {
+    const name = this._getUserName();
+    const trackId = this.chart?.trackId || this.runtime?.track?.trackId || this.chart?.title || "unknown";
+    const diff = this.chart?.difficulty || this.runtime?.difficulty || "normal";
+    const payload = {
+      trackId,
+      diff,
+      name,
+      score: this.state.score,
+      acc: Number(this.state.acc || 0),
+      combo: this.maxCombo || this.state.combo || 0
+    };
+
+    let serverSaidBest = false;
+    let serverNewRank = null;
+    let serverDelta = null;
+
+    // 1) Try to POST to server (if endpoint exists)
+    try {
+      const res = await fetch("/api/leaderboard/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (typeof data?.best === "boolean") serverSaidBest = data.best;
+        if (Number.isFinite(data?.rank)) serverNewRank = Number(data.rank);
+        if (Number.isFinite(data?.delta)) serverDelta = Number(data.delta);
+      }
+    } catch {
+      // ignore; fallback below
+    }
+
+    // 2) Fallback / also compute with GET
+    try {
+      const rows = await this._fetchLeaderboard(200);
+      const me = this._findMe(rows);
+      this._lbAfter = {
+        pbScore: me?.score ?? null,
+        rank: me ? (rows.indexOf(me) + 1) : null
+      };
+    } catch {
+      this._lbAfter = { pbScore: null, rank: null };
+    }
+
+    // ---- Decide notifications ----
+    const beforePB = this._lbBefore.pbScore;
+    const afterPB  = this._lbAfter.pbScore;
+
+    const isPB = (serverSaidBest === true) ||
+                 (Number.isFinite(beforePB) ? (this.state.score > beforePB) : (afterPB != null && this.state.score >= afterPB));
+
+    if (isPB) this._toast("🎉 New PB!", "success");
+
+    const rankBefore = this._lbBefore.rank;
+    const rankAfter  = serverNewRank ?? this._lbAfter.rank;
+
+    if (Number.isFinite(rankBefore) && Number.isFinite(rankAfter)) {
+      const moved = rankBefore - rankAfter; // positive means moved up
+      if (moved > 0) {
+        this._toast(`⬆ Up ${moved} place${moved === 1 ? "" : "s"} (now #${rankAfter})`, "info");
+      } else if ((serverDelta ?? 0) > 0 && Number.isFinite(serverNewRank)) {
+        // server reported improvement but we couldn't diff before/after locally
+        this._toast(`⬆ Moved up to #${serverNewRank}`, "info");
+      }
+    }
+  }
+
+  async _fetchLeaderboard(limit = 50) {
+    const trackId = this.chart?.trackId || this.runtime?.track?.trackId || this.chart?.title || "unknown";
+    const diff = this.chart?.difficulty || this.runtime?.difficulty || "normal";
+    const url = `/api/leaderboard/${encodeURIComponent(trackId)}?diff=${encodeURIComponent(diff)}&limit=${encodeURIComponent(limit)}`;
+    const rows = await fetch(url).then(r => r.json());
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  _findMe(rows) {
+    const my = (this._getUserName() || "").trim().toLowerCase();
+    if (!my) return null;
+    return rows.find(r => (String(r?.name || "").trim().toLowerCase() === my)) || null;
+  }
+
+  _getUserName() {
+    const n1 = (this.settings?.name || "").trim();
+    if (n1) return n1;
+    try {
+      const s = JSON.parse(localStorage.getItem("pf-settings") || "{}");
+      if (s?.name && String(s.name).trim()) return String(s.name).trim();
+    } catch {}
+    return "Player";
+  }
+
+  _ensureToastHolder() {
+    if (document.getElementById("pf-toast-holder")) return;
+    const wrap = document.createElement("div");
+    wrap.id = "pf-toast-holder";
+    Object.assign(wrap.style, {
+      position: "fixed",
+      left: "50%",
+      bottom: "24px",
+      transform: "translateX(-50%)",
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px",
+      zIndex: "3000",
+      pointerEvents: "none"
+    });
+    document.body.appendChild(wrap);
+  }
+
+  _toast(text, type = "info") {
+    const holder = document.getElementById("pf-toast-holder");
+    if (!holder) return;
+
+    const el = document.createElement("div");
+    const bg = type === "success" ? "#0f2c2c" : "#0e1a2a";
+    const border = type === "success" ? "#23d3cf" : "#25f4ee";
+    Object.assign(el.style, {
+      background: bg,
+      border: `1px solid ${border}`,
+      color: "#e8eefc",
+      padding: "10px 14px",
+      borderRadius: "10px",
+      boxShadow: "0 6px 20px rgba(0,0,0,.28)",
+      fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto",
+      fontSize: "14px",
+      letterSpacing: ".2px",
+      opacity: "0",
+      transform: "translateY(6px)",
+      transition: "opacity 140ms ease-out, transform 140ms ease-out",
+      pointerEvents: "none"
+    });
+    el.textContent = text;
+    holder.appendChild(el);
+    requestAnimationFrame(() => {
+      el.style.opacity = "1";
+      el.style.transform = "translateY(0)";
+    });
+    setTimeout(() => {
+      el.style.opacity = "0";
+      el.style.transform = "translateY(6px)";
+      setTimeout(() => el.remove(), 260);
+    }, 2600);
   }
 }
 
