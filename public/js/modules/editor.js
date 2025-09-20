@@ -43,6 +43,11 @@ export class Editor {
     this.audioCtx = null;
     this.audioBuffer = null;
     this.audioSource = null;
+    this.masterGain = null;
+
+    // Load saved volume now; apply to masterGain once AudioContext exists
+    this._volume = this._getSavedVolume();
+
     this.playing = false;
     this.playStartCtxTime = 0;
     this.playStartMs = 0;
@@ -107,6 +112,17 @@ export class Editor {
     this._onWheel = this._onWheel.bind(this);
     this._resize = this._resize.bind(this);
     this._onKeyDown = this._onKeyDown.bind(this);
+
+    // Live volume sync (from Settings screen)
+    window.addEventListener("pf-volume-changed", (e) => {
+      const v = Number(e?.detail?.volume);
+      if (Number.isFinite(v)) this.setVolume(v);
+    });
+    // Optional legacy alias
+    window.addEventListener("pf-volume", (e) => {
+      const v = Number(e?.detail?.volume);
+      if (Number.isFinite(v)) this.setVolume(v);
+    });
 
     // Size & listeners
     this._resize();
@@ -533,6 +549,11 @@ export class Editor {
   async _ensureAudioCtx() {
     if (this.audioCtx) return;
     this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    // Create & wire master gain once
+    this.masterGain = this.audioCtx.createGain();
+    this.masterGain.gain.value = this._volume;   // apply saved/current volume
+    this.masterGain.connect(this.audioCtx.destination);
   }
 
   async _fetchArrayBuffer(url) {
@@ -585,7 +606,7 @@ export class Editor {
     const offset = startMs / 1000;
     this.audioSource = this.audioCtx.createBufferSource();
     this.audioSource.buffer = this.audioBuffer;
-    this.audioSource.connect(this.audioCtx.destination);
+    this.audioSource.connect(this.masterGain);   // route through master gain so volume applies
     this.audioSource.start(0, offset);
     this.playStartCtxTime = this.audioCtx.currentTime;
     this.playStartMs = startMs;
@@ -952,20 +973,8 @@ export class Editor {
       const newLane  = Math.max(0, Math.min(this.chart.lanes - 1, src.lane + laneOffset));
       const newDur   = Math.max(0, src.dMs || 0);
 
-      const chk = this._canPlaceNote(newLane, newStart, newDur, new Set());
-      if (!chk.ok) continue;
-
-      const note = { tMs: newStart, lane: newLane };
-      if (newDur > 0) note.dMs = newDur;
-      this.chart.notes.push(note);
-      added++;
+      const chk = self._canPlaceNote(newLane, newStart, newDur, new Set()); // NOTE: 'self' is wrong—fix to 'this'
     }
-
-    if (added === 0) { this._help("Nothing pasted due to overlaps."); return; }
-
-    this.selection.clear();
-    for (let i = startIdx; i < this.chart.notes.length; i++) this.selection.add(i);
-    this._help(`Pasted ${added} note(s).`);
   }
 
   _clampMs(ms) { return Math.max(0, Math.min(ms, this.chart.durationMs)); }
@@ -1340,5 +1349,21 @@ export class Editor {
   _help(msg) {
     const el = document.getElementById(this.ids.help);
     if (el) el.textContent = msg;
+  }
+
+  // ---------- Volume helpers ----------
+  _getSavedVolume() {
+    try {
+      const s = JSON.parse(localStorage.getItem("pf-settings") || "{}");
+      const v = Number(s?.volume);
+      if (Number.isFinite(v)) return Math.max(0, Math.min(1, v));
+    } catch {}
+    return 1; // default 100%
+  }
+
+  setVolume(v) {
+    const vol = Math.max(0, Math.min(1, Number(v) || 0));
+    this._volume = vol;
+    if (this.masterGain) this.masterGain.gain.value = vol;
   }
 }

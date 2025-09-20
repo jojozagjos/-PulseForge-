@@ -141,6 +141,11 @@ export class Game {
     ];
   }
 
+  _applyVolume(player) {
+    const v = Math.max(0, Math.min(1, Number(this.settings?.volume ?? 1)));
+    if (typeof player.setMasterVolume === "function") player.setMasterVolume(v);
+  }
+
   _ensureJudgmentElement() {
     let el = document.getElementById("judgment");
     if (!el) {
@@ -312,6 +317,7 @@ export class Game {
 
   async _playSolo(manifest) {
     const player = new AudioPlayer();
+    this._applyVolume(player);
     await player.load(manifest.audioUrl);
     this.chart = manifest;
     this._prepareNotes();
@@ -334,6 +340,7 @@ export class Game {
     chart.audioUrl = track.audio?.wav || track.audio?.mp3;
 
     const player = new AudioPlayer();
+    this._applyVolume(player);
     await player.load(chart.audioUrl);
     this.chart = chart;
     this._prepareNotes();

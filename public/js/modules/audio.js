@@ -10,7 +10,6 @@ export class AudioPlayer {
     this.master.connect(this.ctx.destination);
     this._unlocked = false;
 
-    // Try to unlock on common user gestures
     const unlock = async () => {
       try {
         if (this.ctx.state === "suspended") await this.ctx.resume();
@@ -25,7 +24,6 @@ export class AudioPlayer {
     window.addEventListener("touchstart", unlock, { once: true });
   }
 
-  /** Ensure the context is running (iOS/Chrome may start suspended). */
   async ensureReady() {
     if (this.ctx.state === "suspended") {
       try { await this.ctx.resume(); } catch {}
@@ -33,7 +31,6 @@ export class AudioPlayer {
     return this.ctx.state === "running";
   }
 
-  /** Load audio from URL or blob URL. Keeps AudioBuffer in memory. */
   async load(url) {
     await this.ensureReady();
     let arrayBuffer;
@@ -55,19 +52,12 @@ export class AudioPlayer {
     return this.buffer.duration;
   }
 
-  /** Optional: load from already-fetched ArrayBuffer. */
   async loadFromArrayBuffer(arrayBuffer) {
     await this.ensureReady();
     this.buffer = await this.ctx.decodeAudioData(arrayBuffer);
     return this.buffer.duration;
   }
 
-  /**
-   * Schedule playback at absolute AudioContext time (seconds).
-   * opts: { gain=1, fadeInMs=0 }
-   *
-   * Returns { source, stop() }.
-   */
   playAt(whenSec, opts = {}) {
     if (!this.buffer) throw new Error("No buffer loaded.");
     const { gain = 1, fadeInMs = 0 } = opts;
@@ -75,18 +65,15 @@ export class AudioPlayer {
     const src = this.ctx.createBufferSource();
     src.buffer = this.buffer;
 
-    // Per-track gain (goes into master)
     const g = this.ctx.createGain();
-    g.gain.value = 0; // start at 0 if we fade in, we’ll ramp
+    g.gain.value = 0;
     src.connect(g);
     g.connect(this.master);
 
-    // Align to context timeline
     const now = this.ctx.currentTime;
     const startTime = Math.max(now, whenSec);
     src.start(startTime);
 
-    // Simple fade-in to avoid click at start
     if (fadeInMs > 0) {
       const t0 = startTime;
       const t1 = t0 + fadeInMs / 1000;
@@ -107,15 +94,7 @@ export class AudioPlayer {
     return handle;
   }
 
-  /**
-   * Helper: map a *future* AudioContext time (seconds) to performance.now() (ms).
-   * Use this to perfectly align your game’s timeline with audio:
-   *
-   * const startAtSec = player.ctx.currentTime + 3; // 3s lead-in
-   * const perfStartMs = player.perfTimeForAudioTime(startAtSec);
-   */
   perfTimeForAudioTime(audioTimeSec) {
-    // performance.now() that corresponds to ctx.currentTime === now
     const perfAtAudioZero = performance.now() - this.ctx.currentTime * 1000;
     return perfAtAudioZero + audioTimeSec * 1000;
   }

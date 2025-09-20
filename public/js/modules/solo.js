@@ -12,7 +12,18 @@ export class Solo {
     this._chartCache = new Map(); // key: `${trackId}::${diff}` -> chart json
     this._pbCache = new Map();    // key: `${trackId}::${diff}` -> pb row or null
     this._observer = null;        // IntersectionObserver for lazy covers
-    this._previewAudio = { ctx: null, src: null, playing: false };
+
+    // Preview audio graph (ctx + master gain + current src)
+    this._previewAudio = {
+      ctx: null,
+      master: null,  // GainNode
+      src: null,     // current BufferSource
+      playing: false,
+      volHandler: null
+    };
+
+    // guard cleanup when leaving Solo
+    this._guards = [];
 
     // restore last pick (if any)
     try {
@@ -20,6 +31,7 @@ export class Solo {
       this._lastPick = saved && typeof saved === "object" ? saved : null;
     } catch { this._lastPick = null; }
 
+    // Service worker is optional. If /sw.js 404s you'll still be fine.
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
@@ -41,6 +53,7 @@ export class Solo {
     this._ensureToolbar(list);
     this._ensurePreview(list);
     this._setupCoverObserver();
+    this._setupAutoStopGuards();   // <-- important
 
     // Load tracks
     const res = await fetch("/api/tracks").then(r => r.json()).catch(() => []);
@@ -54,9 +67,15 @@ export class Solo {
     }
 
     playBtn.addEventListener("click", () => this._startSelected());
+
+    // Also stop preview when user leaves Solo via back
+    backBtn?.addEventListener("click", () => {
+      this._stopPreview("back-btn");
+      this._clearSelection();
+    });
+
     this._wireKeyboard();
     this._wireGamepad();
-    backBtn?.addEventListener("click", () => this._clearSelection());
   }
 
   // ---------- UI skeletons ----------
@@ -251,9 +270,13 @@ export class Solo {
       div.appendChild(cover);
       div.appendChild(meta);
 
-      div.addEventListener("click", () => this._selectTrack(t, { auto: true }));
-      list.appendChild(div);
+      div.addEventListener("click", () => {
+        // stop any ongoing preview before switching track
+        this._stopPreview("switch-track");
+        this._selectTrack(t, { auto: true });
+      });
 
+      list.appendChild(div);
       if (this._observer) this._observer.observe(img);
     }
   }
@@ -475,16 +498,12 @@ export class Solo {
     if (!this.selected) return;
     const btn = this._els.previewBtn;
 
-    // init ctx
-    if (!this._previewAudio.ctx) {
-      try { this._previewAudio.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
-      catch { return; }
-    }
+    // init ctx + master gain and make sure it's active
+    await this._ensurePreviewCtx();
+    await this._resumePreviewCtx();
 
     if (this._previewAudio.playing) {
-      try { this._previewAudio.src?.stop(); } catch {}
-      this._previewAudio.playing = false;
-      btn.textContent = "Preview 10s";
+      this._stopPreview("user-toggle");
       return;
     }
 
@@ -496,20 +515,47 @@ export class Solo {
       const buf = await fetch(url).then(r => r.arrayBuffer());
       const audio = await this._previewAudio.ctx.decodeAudioData(buf);
 
+      // Still on Solo and same track?
+      if (!this._isSoloActive()) { btn.textContent = "Preview 10s"; return; }
+
       // pick a start point that leaves room for 10s
       const start = Math.min(Math.max(0, audio.duration * 0.25), Math.max(0, audio.duration - 10));
       const src = this._previewAudio.ctx.createBufferSource();
       src.buffer = audio;
-      src.connect(this._previewAudio.ctx.destination);
+      src.connect(this._previewAudio.master);
       src.start(0, start, 10.0);
 
+      // track src + flags
       this._previewAudio.src = src;
       this._previewAudio.playing = true;
       btn.textContent = "Stop Preview";
-      src.onended = () => { this._previewAudio.playing = false; btn.textContent = "Preview 10s"; };
-    } catch {
+
+      src.onended = () => {
+        // Cleanly reset so another preview works immediately
+        if (this._previewAudio.src === src) {
+          try { src.disconnect(); } catch {}
+          this._previewAudio.src = null;
+        }
+        this._previewAudio.playing = false;
+        if (this._els.previewBtn) this._els.previewBtn.textContent = "Preview 10s";
+      };
+    } catch (e) {
+      console.error(e);
       btn.textContent = "Preview 10s";
+      this._previewAudio.playing = false;
     }
+  }
+
+  _stopPreview(reason = "") {
+    const a = this._previewAudio;
+    if (a.src) {
+      try { a.src.onended = null; } catch {}
+      try { a.src.stop(); } catch {}
+      try { a.src.disconnect(); } catch {}
+      a.src = null;
+    }
+    a.playing = false;
+    if (this._els.previewBtn) this._els.previewBtn.textContent = "Preview 10s";
   }
 
   _inlineError(msg) {
@@ -564,6 +610,8 @@ export class Solo {
     if (!this.filtered.length) return;
     let i = this.selected ? this.filtered.indexOf(this.selected) : -1;
     i = (i + dir + this.filtered.length) % this.filtered.length;
+    // stop preview between track changes
+    this._stopPreview("cycle-track");
     this._selectTrack(this.filtered[i], { auto: true });
   }
   _cycleDiff(dir) {
@@ -599,6 +647,86 @@ export class Solo {
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
+  }
+
+  // ---------- Preview audio helpers ----------
+  async _ensurePreviewCtx() {
+    if (this._previewAudio.ctx) return;
+
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const master = ctx.createGain();
+
+    // pick up saved volume (0..1) or fall back to settings or 1
+    const vol = _getSavedVolume();
+    master.gain.value = isFiniteNumber(vol) ? vol : 1;
+
+    master.connect(ctx.destination);
+    this._previewAudio.ctx = ctx;
+    this._previewAudio.master = master;
+
+    // react to live volume changes from Settings
+    if (!this._previewAudio.volHandler) {
+      const handler = (e) => {
+        const v = Number(e?.detail?.volume);
+        if (!Number.isFinite(v) || !this._previewAudio.master) return;
+        try {
+          const now = this._previewAudio.ctx.currentTime;
+          this._previewAudio.master.gain.cancelScheduledValues(now);
+          this._previewAudio.master.gain.setValueAtTime(this._previewAudio.master.gain.value, now);
+          this._previewAudio.master.gain.linearRampToValueAtTime(Math.max(0, Math.min(1, v)), now + 0.05);
+        } catch {}
+      };
+      window.addEventListener("pf-volume-changed", handler);
+      this._previewAudio.volHandler = handler;
+    }
+  }
+
+  async _resumePreviewCtx() {
+    try {
+      if (this._previewAudio.ctx?.state === "suspended") {
+        await this._previewAudio.ctx.resume();
+      }
+    } catch {}
+  }
+
+  _isSoloActive() {
+    const scr = document.getElementById("screen-solo");
+    return !!(scr && scr.classList.contains("active"));
+  }
+
+  // ---------- Auto-stop guards ----------
+  _setupAutoStopGuards() {
+    // clear previous guards if mount() called twice
+    this._guards.forEach(fn => { try { fn(); } catch {} });
+    this._guards = [];
+
+    // 1) Stop when #screen-solo loses .active or is removed
+    const screen = document.getElementById("screen-solo");
+    if (screen) {
+      const attrObs = new MutationObserver((mutList) => {
+        for (const m of mutList) {
+          if (m.type === "attributes" && m.attributeName === "class") {
+            if (!screen.classList.contains("active")) this._stopPreview("solo-hidden");
+          }
+        }
+      });
+      attrObs.observe(screen, { attributes: true, attributeFilter: ["class"] });
+      this._guards.push(() => attrObs.disconnect());
+
+      const domObs = new MutationObserver(() => {
+        if (!document.body.contains(screen)) this._stopPreview("solo-removed");
+      });
+      domObs.observe(document.body, { childList: true, subtree: true });
+      this._guards.push(() => domObs.disconnect());
+    }
+
+    // 2) Stop if tab is hidden or page is being unloaded
+    const onVis = () => { if (document.hidden) this._stopPreview("visibility"); };
+    const onHide = () => this._stopPreview("pagehide");
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onHide);
+    this._guards.push(() => document.removeEventListener("visibilitychange", onVis));
+    this._guards.push(() => window.removeEventListener("pagehide", onHide));
   }
 }
 
@@ -653,4 +781,13 @@ function pillActiveStyle() {
     boxShadow: "0 0 0 2px rgba(37,244,238,0.15) inset",
     background: "#0e1824"
   };
+}
+function isFiniteNumber(x) { return typeof x === "number" && Number.isFinite(x); }
+function _getSavedVolume() {
+  try {
+    const s = JSON.parse(localStorage.getItem("pf-settings") || "{}");
+    const v = Number(s?.volume);
+    if (Number.isFinite(v)) return Math.max(0, Math.min(1, v));
+  } catch {}
+  return 1;
 }

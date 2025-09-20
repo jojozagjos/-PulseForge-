@@ -29,10 +29,49 @@
     <div id="screen-settings" class="screen">
       <h1>Settings</h1>
       <div class="panel">
-        <label>Player Name <input id="set-name" type="text" maxlength="16" placeholder="Enter your name" /></label>        
-        <label>Latency Offset (ms) <input id="set-latency" type="number" step="1" /></label>
-        <label>Keys: Lane 1–4 (comma separated) <input id="set-keys" type="text" placeholder="D,F,J,K" /></label>
-        <div class="row">
+        <label>Player Name
+          <input id="set-name" type="text" maxlength="16" placeholder="Enter your name" />
+        </label>
+
+        <label>Latency Offset (ms)
+          <input id="set-latency" type="number" step="1" />
+        </label>
+
+        <label>Keys: Lane 1–4 (comma separated)
+          <input id="set-keys" type="text" placeholder="D,F,J,K" />
+        </label>
+
+        <!-- Volume row -->
+        <label for="set-volume">Master Volume</label>
+        <input id="set-volume" type="range" min="0" max="100" value="100" />
+        <span id="set-volume-label">100%</span>
+
+        <!-- Test buttons -->
+        <div class="row" style="gap:8px; margin-top:8px;">
+          <button id="set-test-beep" class="secondary">Test Beep</button>
+          <button id="set-test-pattern" class="secondary">Test Pattern</button>
+        </div>
+
+        <!-- Latency Tester -->
+        <hr style="border-color:#2a3142;opacity:.5;margin:16px 0;">
+        <div id="latency-ui" style="display:grid;gap:10px;">
+          <div style="font-weight:600;">Latency Test</div>
+
+          <div class="row" style="gap:10px; flex-wrap:wrap;">
+            <!-- <label for="latency-bpm">BPM</label> -->
+            <!-- <input id="latency-bpm" type="number" min="40" max="240" step="1" style="width:80px;"> -->
+            <div class="muted">Testing BPM: <span id="latency-bpm-live">—</span></div>
+            <button id="latency-start" class="secondary">Start</button>
+            <button id="latency-stop" class="secondary">Stop</button>
+            <button id="latency-tap" class="secondary">Tap</button>
+            <button id="latency-apply" class="primary">Apply</button>
+          </div>
+
+          <div id="latency-status" class="muted" style="opacity:.9;">Press Start, then tap Space/Enter (or Tap) on each click.</div>
+          <div id="latency-flash" style="height:8px;border-radius:6px;background:#25f4ee;opacity:0;transition:opacity .12s;"></div>
+        </div>
+
+        <div class="row" style="margin-top:16px;">
           <button id="btn-save-settings" class="primary">Save</button>
           <button id="btn-back-main" class="ghost">Back</button>
         </div>

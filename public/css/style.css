@@ -37,3 +37,18 @@ input,select{background:#0f1420;border:1px solid #2a3142;color:var(--text);borde
 #lb-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
 #lb-table th, #lb-table td { padding: 8px 10px; }
 #lb-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* make sure the bar exists and starts hidden */
+#latency-flash {
+  height: 8px;
+  border-radius: 4px;
+  background: #25f4ee;         /* your blue */
+  opacity: 0;
+  will-change: opacity;
+}
+
+/* one-shot fade-out */
+@keyframes pfFlashBeat { from { opacity: 1 } to { opacity: 0 } }
+#latency-flash.pf-flash {
+  animation: pfFlashBeat 140ms ease-out;
+}
