@@ -33,7 +33,6 @@ export class Editor {
       audioHint: "ed-audio-hint",
 
       // File toolbar
-      fileNew: "ed-new",
       fileOpenUrl: "ed-open-url",
       fileOpenFileInput: "ed-open-file",
       fileOpenUseBtn: "ed-open-use-file",
@@ -486,14 +485,6 @@ export class Editor {
     if (this._wiredFile) return;
     this._wiredFile = true;
 
-    document.getElementById(this.ids.fileNew)?.addEventListener("click", () => {
-      if (!this.chart) this.newChart();
-      this._pushUndo("Clear notes");
-      this.chart.notes = [];
-      this.selection.clear();
-      this._help("New chart: notes cleared.");
-    });
-
     document.getElementById(this.ids.fileClearNotes)?.addEventListener("click", () => {
       if (!this.chart) this.newChart();
       this._pushUndo("Clear notes");
@@ -726,13 +717,13 @@ export class Editor {
 
   /** End the song: stop and jump playhead to the end. */
   end() {
-    const endMs = this.chart?.durationMs || Math.floor(this.audioBuffer?.duration * 1000) || 0;
     this._stopSourceOnly();
     this.playing = false;
-    this.playStartMs = endMs;
+    this.playStartMs = 0;       // reset playback position to start
     this._metroStop();
+
     const s = document.getElementById(this.ids.scrub);
-    if (s) s.value = String(endMs);
+    if (s) s.value = "0";       // reset scrubber UI to 0
   }
 
   /** Internal: stop only the current buffer source (no resets). */
@@ -1455,10 +1446,14 @@ export class Editor {
     // Follow toggle (F)
     if (e.key.toLowerCase() === "f") {
       e.preventDefault();
-      this.follow = !this.follow;
-      const box = document.getElementById(this.ids.followToggle);
-      if (box) { box.checked = this.follow; }
-      this._help(`Follow Playhead: ${this.follow ? "On" : "Off"}`);
+      const pxPerMs = this._pxPerMsNow();
+      const h = this.canvas.height / (window.devicePixelRatio || 1);
+      const now = this.currentTimeMs();
+      // Center scroll so playhead is in the middle of the screen
+      const targetScroll = Math.max(0, now * pxPerMs - h / 2);
+      const maxScroll = Math.max(0, (this.chart?.durationMs || 0) * pxPerMs - h);
+      this.scrollY = Math.max(0, Math.min(maxScroll, targetScroll));
+      this._help("Jumped to playhead");
       return;
     }
 

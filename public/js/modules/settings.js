@@ -31,7 +31,7 @@ export class Settings {
     };
 
     // Persist button may be on the page chrome
-    qs("#btn-save-settings")?.addEventListener("click", () => this.save(true));
+    // qs("#btn-save-settings")?.addEventListener("click", () => this.save(true));
 
     // Let other parts of the app provide the current song tempo.
     // Accept either {bpm} or {beatMs}.

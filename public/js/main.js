@@ -1,4 +1,3 @@
-// public/js/main.js
 import { Boot } from "./modules/boot.js?v=19";
 import { Solo } from "./modules/solo.js?v=19";
 import { Game } from "./modules/game.js?v=19";
@@ -59,7 +58,7 @@ window.PF_forceSilenceAll = function PF_forceSilenceAll() {
 };
 
 window.addEventListener("DOMContentLoaded", () => {
-  console.log("[PF] main.js build v19+quit-audio+editor-startAt");
+  console.log("[PF] main.js build v19+quit-audio+editor-startAt+prevActive");
 
   const screens = {
     main: q("screen-main"),
@@ -209,6 +208,7 @@ window.addEventListener("DOMContentLoaded", () => {
     try { g?.quit?.(); } catch {}
     try { g?.stop?.(); } catch {}
     try { g?.end?.(); } catch {}
+    try { g?.destroy?.(); } catch {}   // <— ensure PIXI + handlers are torn down
 
     // Hard stop: silence *all* audio contexts and <audio> tags
     window.PF_forceSilenceAll?.();
@@ -284,6 +284,13 @@ window.addEventListener("DOMContentLoaded", () => {
     try { soloInstance?.destroy?.(); } catch {}
     soloInstance = null;
 
+    // Figure out which screen is active RIGHT NOW, before we hide everything.
+    const prevActive =
+      Object.entries(screens).find(([_, el]) => el && el.classList.contains("active"))?.[0] || "main";
+
+    // Decide where Quit should take us for this run
+    const returnTo = runtime?.returnTo || (prevActive === "editor" ? "editor" : "main");
+
     hideAllScreens();
     if (canvas) canvas.style.display = "block";
     hud?.classList.remove("hidden");
@@ -299,12 +306,7 @@ window.addEventListener("DOMContentLoaded", () => {
     // Quit handler
     makeQuitOverlay(() => {
       destroyActiveGame();
-      // If editor exists/was open, go back there; otherwise main menu
-      if (screens.editor?.classList.contains("active")) {
-        show("editor");
-      } else {
-        show("main");
-      }
+      show(returnTo);
     });
 
     // Start the run
