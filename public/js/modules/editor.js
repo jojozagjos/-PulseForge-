@@ -55,6 +55,9 @@ export class Editor {
     this.metroGain = null;
     this.audioUrl = null;
 
+    // Keep last decoded bytes so we can re-decode after context recreation (if URL not available)
+    this._lastAudioArrayBuffer = null;
+
     // Load saved volume now; apply to masterGain once AudioContext exists
     this._volume = this._getSavedVolume();
 
@@ -222,6 +225,7 @@ export class Editor {
   _stemWNow() { return Math.max(6, Math.min(24, 12 * this.zoomY)); }
   _timeToY(ms) { return ms * this._pxPerMsNow() - this.scrollY; }
   _yToTime(y) { return (y + this.scrollY) / this._pxPerMsNow(); }
+  // Time under the vertical center of the viewport (in ms)
   _updateZoomIndicator() {
     const label = document.getElementById(this.ids.zoomIndicator);
     if (label) label.textContent = `${Math.round(this.zoomY * 100)}%`;
@@ -432,7 +436,7 @@ export class Editor {
     // Transport (note: Stop ends the song)
     document.getElementById(this.ids.playBtn)?.addEventListener("click", () => this.play());
     document.getElementById(this.ids.pauseBtn)?.addEventListener("click", () => this.pause());
-    document.getElementById(this.ids.stopBtn)?.addEventListener("click", () => this.end()); // END, not reset to zero
+    document.getElementById(this.ids.stopBtn)?.addEventListener("click", () => this.end()); // reset to zero
 
     // Undo/Redo buttons
     this._wireHistoryButtons();
@@ -472,12 +476,7 @@ export class Editor {
     this._wireZoomIndicator();
     this._wireTestButton();
 
-    // Nice, readable shortcuts helper (including F)
-    // const help = document.getElementById(this.ids.help);
-    // if (help) {
-    //   help.innerHTML =
-    //     `Shortcuts:&nbsp; <b>Shift + Wheel</b> Zoom • <b>Space</b> Play/Pause • <b>F</b> Follow • <b>←/→</b> Nudge • <b>M</b> Metronome • <b>Ctrl/Cmd+Z</b> Undo • <b>Ctrl+Shift+Z / Ctrl+Y</b> Redo`;
-    // }
+    // (helper text omitted)
   }
 
   // ===== File toolbar =====
@@ -595,7 +594,11 @@ export class Editor {
       try {
         await this._ensureAudioCtx();
         const blobUrl = URL.createObjectURL(f); // preview
-        await this._loadAudio(blobUrl);
+        // Also stash raw bytes for context recreation
+        const arrBuf = await f.arrayBuffer();
+        this._lastAudioArrayBuffer = arrBuf;
+
+        await this._loadAudio(blobUrl, arrBuf);
         this.audioUrl = blobUrl;
         this._updateScrubMax();
         this._help("Loaded audio from file (preview via blob URL).");
@@ -617,21 +620,21 @@ export class Editor {
 
   // ===== Playback & Metronome =====
   async _ensureAudioCtx() {
-    if (this.audioCtx) return;
-    this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Recreate if missing or closed
+    if (!this.audioCtx || this.audioCtx.state === "closed") {
+      this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-    // Register with the global audio registry (so Quit can silence it)
-    try { window.__PF_audioCtxs?.add(this.audioCtx); } catch {}
+      try { window.__PF_audioCtxs?.add(this.audioCtx); } catch {}
 
-    // Create & wire master gain once
-    this.masterGain = this.audioCtx.createGain();
-    this.masterGain.gain.value = this._volume;
-    this.masterGain.connect(this.audioCtx.destination);
+      // (Re)build gain graph
+      this.masterGain = this.audioCtx.createGain();
+      this.masterGain.gain.value = this._volume;
+      this.masterGain.connect(this.audioCtx.destination);
 
-    // Metronome gain goes through master
-    this.metroGain = this.audioCtx.createGain();
-    this.metroGain.gain.value = 0.5;
-    this.metroGain.connect(this.masterGain);
+      this.metroGain = this.audioCtx.createGain();
+      this.metroGain.gain.value = 0.5;
+      this.metroGain.connect(this.masterGain);
+    }
   }
 
   async _fetchArrayBuffer(url) {
@@ -640,24 +643,31 @@ export class Editor {
     return await res.arrayBuffer();
   }
 
-  async _loadAudio(url) {
+  /**
+   * Load audio from URL. If arrayBuffer is provided, reuse it (useful after picking a local file).
+   */
+  async _loadAudio(url, arrayBuffer = null) {
     if (!this.audioCtx) await this._ensureAudioCtx();
 
-    let arrayBuffer;
-    if (url.startsWith("blob:")) {
-      arrayBuffer = await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("GET", url);
-        xhr.responseType = "arraybuffer";
-        xhr.onload = () => resolve(xhr.response);
-        xhr.onerror = () => reject(new Error("Blob fetch failed"));
-        xhr.send();
-      });
-    } else {
-      arrayBuffer = await this._fetchArrayBuffer(url);
+    let arr = arrayBuffer;
+    if (!arr) {
+      if (url.startsWith("blob:")) {
+        arr = await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("GET", url);
+          xhr.responseType = "arraybuffer";
+          xhr.onload = () => resolve(xhr.response);
+          xhr.onerror = () => reject(new Error("Blob fetch failed"));
+          xhr.send();
+        });
+      } else {
+        arr = await this._fetchArrayBuffer(url);
+      }
     }
 
-    this.audioBuffer = await this.audioCtx.decodeAudioData(arrayBuffer);
+    this._lastAudioArrayBuffer = arr;
+
+    this.audioBuffer = await this.audioCtx.decodeAudioData(arr.slice(0)); // slice to detach
     const audioMs = Math.floor(this.audioBuffer.duration * 1000);
     if (!this.chart) this.newChart({ durationMs: audioMs });
     if (!this.chart.durationMs || audioMs > this.chart.durationMs) {
@@ -673,14 +683,24 @@ export class Editor {
 
   currentTimeMs() {
     if (!this.playing) return this.playStartMs;
+    if (!this.audioCtx || this.audioCtx.state === "closed") return this.playStartMs;
     const delta = (this.audioCtx.currentTime - this.playStartCtxTime) * 1000;
     return Math.max(0, this.playStartMs + delta);
   }
 
   play() {
     if (!this.audioBuffer) return;
-    // resume from scrub/playhead
+
+    // If there's a scrubber, treat its current value as "the playhead".
+    const s = document.getElementById(this.ids.scrub);
+    if (s) {
+      const v = Number(s.value);
+      if (Number.isFinite(v)) this.playStartMs = Math.max(0, Math.min(v, this.chart.durationMs));
+    }
+
+    // If we were already playing, stop the old source first so we don't stack nodes.
     if (this.playing) this._stopSourceOnly();
+
     const startMs = Math.max(0, Math.min(this.playStartMs, this.chart.durationMs));
     const offset = startMs / 1000;
 
@@ -688,21 +708,22 @@ export class Editor {
     this.audioSource.buffer = this.audioBuffer;
     this.audioSource.connect(this.masterGain);
     this.audioSource.start(0, offset);
+
     this.playStartCtxTime = this.audioCtx.currentTime;
     this.playStartMs = startMs;
     this.playing = true;
 
     if (this.metronome.enabled) this._metroStart();
 
-    // when naturally ends, snap to end and stop
+    // When it naturally ends, snap to END (scrubber too) and stop.
     try {
       this.audioSource.onended = () => {
         this.playing = false;
         this._metroStop();
         const endMs = this.chart?.durationMs || Math.floor(this.audioBuffer.duration * 1000) || 0;
-        this.playStartMs = endMs; // snap to end
-        const s = document.getElementById(this.ids.scrub);
-        if (s) s.value = String(endMs);
+        this.playStartMs = endMs;
+        const sEl = document.getElementById(this.ids.scrub);
+        if (sEl) sEl.value = String(endMs);
       };
     } catch {}
   }
@@ -715,7 +736,7 @@ export class Editor {
     this._metroStop();
   }
 
-  /** End the song: stop and jump playhead to the end. */
+  /** End the song: stop and jump playhead to the START (reset to 0). */
   end() {
     this._stopSourceOnly();
     this.playing = false;
@@ -731,7 +752,7 @@ export class Editor {
     if (this.audioSource) {
       try { this.audioSource.onended = null; } catch {}
       try { this.audioSource.stop(); } catch {}
-      this.audioSource.disconnect?.();
+      try { this.audioSource.disconnect?.(); } catch {}
     }
     this.audioSource = null;
   }
@@ -750,7 +771,7 @@ export class Editor {
   }
 
   _metroStart() {
-    if (!this.audioCtx) return;
+    if (!this.audioCtx || this.audioCtx.state === "closed") return;
     const beatMs = 60000 / (this.chart?.bpm || 120);
     const nowMs = this.currentTimeMs();
     this.metronome.nextBeatMs = Math.ceil(nowMs / beatMs) * beatMs;
@@ -762,7 +783,7 @@ export class Editor {
     this.metronome.timer = null;
   }
   _metroSchedulerTick() {
-    if (!this.playing || !this.metronome.enabled || !this.audioCtx) return;
+    if (!this.playing || !this.metronome.enabled || !this.audioCtx || this.audioCtx.state === "closed") return;
     const bpm = this.chart?.bpm || 120;
     const beatMs = 60000 / bpm;
     const lookahead = this.metronome.lookaheadMs;
@@ -890,6 +911,15 @@ export class Editor {
     this.canvas.setPointerCapture(e.pointerId);
     const lane = this.mouse.lane;
     const tMsSnap = this._screenToMs(this.mouse.y);   // snapped for placement
+
+    // Alt+Click anywhere in the lanes: set playhead (scrubber + internal) to that time
+    if (e.altKey) {
+      const tMs = this._screenToMs(this.mouse.y);
+      this.seek(tMs); // this updates playStartMs and restarts if playing
+      const sEl = document.getElementById(this.ids.scrub);
+      if (sEl) sEl.value = String(Math.floor(this.playStartMs));
+      return; // don't create/move notes when Alt is held
+    }
 
     // Middle or Ctrl -> pan
     if (e.button === 1 || e.ctrlKey) {
@@ -1140,7 +1170,7 @@ export class Editor {
 
   // ===== Equal-spacing helpers =====
   _strideFromSelection() {
-    if (!this.selection || this.selection.size < 2) return null;
+    if (this.selection.size < 2) return null;
     const times = [...this.selection].map(i => this.chart.notes[i]?.tMs).filter(v => typeof v === "number").sort((a,b)=>a-b);
     if (times.length < 2) return null;
     const s = Math.abs(times[1] - times[0]);
@@ -1438,6 +1468,9 @@ export class Editor {
       e.preventDefault();
       await this._ensureAudioCtx();
       if (this.audioCtx?.state === "suspended") { try { await this.audioCtx.resume(); } catch {} }
+      if (!this.audioBuffer && (this.audioUrl || this._lastAudioArrayBuffer)) {
+        try { await this._loadAudio(this.audioUrl || "blob://in-memory", this._lastAudioArrayBuffer); } catch {}
+      }
       if (!this.audioBuffer) return;
       if (this.playing) this.pause(); else this.play();
       return;
@@ -1517,7 +1550,7 @@ export class Editor {
       return;
     }
     // Pass startAtMs and allowExit so you can quit the playtest; prevent leaderboard post
-    window.PF_startGame({ mode: "solo", manifest: out, startAtMs: offset, allowExit: true, autoSubmit: false });
+    window.PF_startGame({ mode: "solo", manifest: out, startAtMs: offset, allowExit: true, autoSubmit: false, isEditorPreview: true });
   }
 
   _syncInputs() {

@@ -124,9 +124,44 @@ export class Game {
   }
 
   async run() {
+    // --- fresh canvas + state for each run ---
     this.canvas.style.display = "block";
+
+    // Kill any stale overlays from prior runs and recreate countdown node
+    try { document.getElementById("pf-results-overlay")?.remove(); } catch {}
+    try { document.getElementById("judgment")?.remove(); } catch {}
+    this.$judge = null;
+    this._ensureJudgmentElement();
+    if (this.$judge) {
+      this.$judge.textContent = "";
+      this.$judge.style.opacity = "0";
+      this.$judge.style.display = "block";
+      this.$judge.style.transform = "translate(-50%, -50%) scale(1.0)";
+    }
+
+    // Reset transient state that might persist between runs
+    // Ensure any reused chart has clean note flags before we build sprites
+    this._resetNoteRuntimeFlags();
+    this.keyDown = new Set();
+    this.held = new Array(4).fill(false);
+    this.activeHoldsByLane?.clear?.();
+    this.spriteByNote?.clear?.();
+    this.notesByLane = [];
+    this.nextIdxByLane = [];
+    this.maxCombo = 0;
+    this._resultsShown = false;
+
+    // Re-prime HUD/judge
+    this._ensureJudgmentElement();
+    if (this.$judge) {
+      this.$judge.style.opacity = "0";
+      this.$judge.textContent = "";
+      this.$judge.style.transform = "translate(-50%, 50%) scale(1.0)";
+    }
+
     const clampRes = Math.max(1, Math.min(this.settings.renderScale || 1, (window?.devicePixelRatio || 1)));
 
+    // New PIXI app each run
     this.app = new PIXI.Application();
     await this.app.init({
       canvas: this.canvas,
@@ -140,19 +175,41 @@ export class Game {
     this.app.ticker.maxFPS = this.settings.maxFps || 120;
     this.app.ticker.minFPS = this.settings.minFps || 50;
 
-    // Allow zIndex ordering
-    this.app.stage.sortableChildren = true;
-
     this._buildScene();
 
-    if (this.runtime.mode === "solo") await this._playSolo(this.runtime.manifest);
-    else await this._playMp(this.runtime);
+    await this._playSolo(this.runtime.manifest);
 
     return [
       { label: "Score", value: this.state.score.toString() },
       { label: "Accuracy", value: Math.round(this.state.acc * 100) + "%" },
       { label: "Max Combo", value: this.maxCombo || this.state.combo }
     ];
+  }
+
+  quit() {
+    try { this.app?.ticker?.stop(); } catch {}
+    try { this.app?.destroy(true, { children: true, texture: true, baseTexture: true }); } catch {}
+    this.app = null;
+
+    // Clear note maps and holds
+    try { this.spriteByNote?.clear?.(); } catch {}
+    try { this.activeHoldsByLane?.clear?.(); } catch {}
+
+    // Restore global input handlers
+    if (this._prevOnKeyDown !== undefined) window.onkeydown = this._prevOnKeyDown;
+    if (this._prevOnKeyUp   !== undefined) window.onkeyup   = this._prevOnKeyUp;
+    this._prevOnKeyDown = undefined;
+    this._prevOnKeyUp   = undefined;
+
+    // Remove countdown/Judge node so a fresh one is created next run
+    try {
+      const el = document.getElementById("judgment");
+      if (el) el.remove();
+      this.$judge = null;
+    } catch {}
+
+    // Also remove results overlay if it exists
+    try { document.getElementById("pf-results-overlay")?.remove(); } catch {}
   }
 
   destroy() {
@@ -184,7 +241,7 @@ export class Game {
       el = document.createElement("div");
       el.id = "judgment";
       Object.assign(el.style, {
-        position: "absolute",
+        position: "fixed",                   // fixed so it stays above the canvas
         left: "50%",
         top: "18%",
         transform: "translate(-50%, -50%)",
@@ -199,6 +256,10 @@ export class Game {
         zIndex: "1000"
       });
       document.body.appendChild(el);
+    } else {
+      // make sure it’s on top even after hot reloads
+      el.style.position = "fixed";
+      el.style.zIndex = "1000";
     }
     this.$judge = el;
   }
@@ -393,48 +454,82 @@ export class Game {
     const player = new AudioPlayer();
     this._applyVolume(player);
     await player.load(manifest.audioUrl);
-    this.chart = manifest;
+
+    // Clone so we never mutate the editor’s objects
+    this.chart = {
+      ...manifest,
+      notes: Array.isArray(manifest.notes) ? manifest.notes.map(n => ({ ...n })) : []
+    };
+
+    // NEW: honor editor playhead offset (runtime.startAtMs)
+    const offsetMs = Math.max(0, Number(this.runtime?.startAtMs) || 0);
+    if (offsetMs > 0) this._applyStartOffset(offsetMs);
+
+    // clear per-run flags and build
+    this._resetNoteRuntimeFlags();
     this._prepareNotes();
     this._prepareInputs();
-
     await this._snapshotLeaderboardBefore();
 
-    const audioStartAtSec = player.ctx.currentTime + this.leadInMs / 1000;
-    const source = player.playAt(audioStartAtSec);
+    // Visual lead-in (countdown) stays the same
+    const visualStartPerfMs = performance.now() + this.leadInMs;
 
-    const perfAtAudioZero = performance.now() - player.ctx.currentTime * 1000;
-    const startPerfMs = perfAtAudioZero + audioStartAtSec * 1000;
+    // Start audio after the same lead-in, but at buffer offset = offsetMs
+    const audioStartAtSec = player.ctx.currentTime + (this.leadInMs / 1000);
+    const source = player.playAt(audioStartAtSec, { offsetSec: offsetMs / 1000 });
 
-    await this._gameLoop(startPerfMs, () => {});
+    // Run loop on the visual clock
+    await this._gameLoop(visualStartPerfMs, () => {});
     await this._reportScoreAndNotify();
-
     source.stop();
   }
 
-  async _playMp(rt) {
-    const track = rt.track;
-    const diff = rt.difficulty || "normal";
-    const chart = await fetch(track.charts[diff]).then(r => r.json());
-    chart.audioUrl = track.audio?.wav || track.audio?.mp3;
+  // Clear transient flags on notes between runs
+  _resetNoteRuntimeFlags() {
+    if (!this.chart || !Array.isArray(this.chart.notes)) return;
+    for (const n of this.chart.notes) {
+      if ("hit" in n) delete n.hit;        // main culprit
+      if ("_pf" in n) delete n._pf;        // just in case you add temp fields later
+    }
+  }
+  
+  // Shift notes so that runtime.startAtMs becomes the new zero.
+  // - drops notes that end before the cut
+  // - trims tails that cross the cut
+  // - shortens durationMs so HUD/progress stay correct
+  _applyStartOffset(offsetMs) {
+    offsetMs = Math.max(0, Number(offsetMs) || 0);
+    if (!offsetMs || !this.chart) return;
 
-    const player = new AudioPlayer();
-    this._applyVolume(player);
-    await player.load(chart.audioUrl);
-    this.chart = chart;
-    this._prepareNotes();
-    this._prepareInputs();
+    const inNotes = Array.isArray(this.chart.notes) ? this.chart.notes : [];
+    const out = [];
+    for (const n of inNotes) {
+      const start = n.tMs | 0;
+      const dur   = Math.max(0, n.dMs | 0);
+      const end   = start + dur;
 
-    await this._snapshotLeaderboardBefore();
+      // entirely before the offset → drop
+      if (end <= offsetMs) continue;
 
-    const delaySec = Math.max(0, rt.startAt ? (rt.startAt - Date.now()) / 1000 : 0);
-    const audioStartAtSec = player.ctx.currentTime + delaySec;
-    const source = player.playAt(audioStartAtSec);
-    const startPerfMs = performance.now() + delaySec * 1000;
+      const nn = { ...n };
+      // shift head
+      nn.tMs = Math.max(0, start - offsetMs);
 
-    await this._gameLoop(startPerfMs, null);
-    await this._reportScoreAndNotify();
+      // trim tail if needed
+      if (dur > 0) {
+        const newEnd = end - offsetMs;        // end relative to new zero
+        nn.dMs = Math.max(0, newEnd - nn.tMs);
+      } else {
+        delete nn.dMs;
+      }
 
-    source.stop();
+      out.push(nn);
+    }
+
+    const oldDuration = Number(this.chart.durationMs) || 0;
+    const newDuration = Math.max(0, oldDuration - offsetMs);
+
+    this.chart = { ...this.chart, notes: out, durationMs: newDuration };
   }
 
   _prepareNotes() {
@@ -718,7 +813,11 @@ export class Game {
         const tMs = nowPerf - startPerfMs;
         this.state.timeMs = tMs;
 
-        if (tMs < 0) showCountdown(-tMs); else hideCountdown();
+        if (tMs < 0) {
+          showCountdown(-tMs);
+        } else {
+          hideCountdown();
+        }
 
         // FX: text decay
         for (let i = this.fxTextLayer.children.length - 1; i >= 0; i--) {
@@ -1180,9 +1279,33 @@ export class Game {
   }
 
   async _reportScoreAndNotify() {
+    // --- HARD GUARD: never submit if this is an editor preview or autosubmit is off ---
+    const isEditorPreview =
+      this.runtime?.isEditorPreview === true ||
+      (this.chart?.title === "Editor Preview") ||
+      (this.chart?.trackId === "editor-preview");
+
+    if (this.runtime?.autoSubmit === false || isEditorPreview) {
+      // Still show a results overlay, but don't talk to the server.
+      try {
+        // You can keep the local projection if you want; here we just blank it.
+        this._setProjectedRankText("—");
+        this._setOfficialRankText("—");
+      } catch {}
+      return;
+    }
+
+    // Normal submit path
     const name = this._getUserName();
-    const trackId = this.chart?.trackId || this.runtime?.track?.trackId || (this.chart?.title || "unknown").toString().toLowerCase().replace(/[^a-z0-9]+/g,"-");
+    const trackId =
+      this.chart?.trackId ||
+      this.runtime?.track?.trackId ||
+      (this.chart?.title || "unknown")
+        .toString()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-");
     const difficulty = this.chart?.difficulty || this.runtime?.difficulty || "normal";
+
     const payload = {
       trackId,
       difficulty,
@@ -1195,7 +1318,7 @@ export class Game {
     try {
       const rows = await this._fetchLeaderboard(200);
       const myRow = { name, score: payload.score, acc: payload.acc, combo: payload.combo };
-      const sorted = rows.slice().sort((a,b)=>this._compareRows(a,b));
+      const sorted = rows.slice().sort((a, b) => this._compareRows(a, b));
       const projected = this._projectRank(sorted, myRow);
       this._lbProjected = { rank: projected };
       this._setProjectedRankText(`#${projected} (estimated)`);
@@ -1204,20 +1327,18 @@ export class Game {
     }
 
     let serverNewRank = null, serverTotal = null;
-    if (this.runtime?.autoSubmit !== false) {
-      try {
-        const res = await fetch("/api/leaderboard/submit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        if (res.ok) {
-          const data = await res.json().catch(() => ({}));
-          if (Number.isFinite(data?.rank)) serverNewRank = Number(data.rank);
-          if (Number.isFinite(data?.total)) serverTotal = Number(data.total);
-        }
-      } catch { /* ignore */ }
-    }
+    try {
+      const res = await fetch("/api/leaderboard/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (Number.isFinite(data?.rank)) serverNewRank = Number(data.rank);
+        if (Number.isFinite(data?.total)) serverTotal = Number(data.total);
+      }
+    } catch { /* ignore network/submit errors */ }
 
     try {
       const rows = await this._fetchLeaderboard(200);
@@ -1230,7 +1351,9 @@ export class Game {
     } catch { /* ignore */ }
 
     if (Number.isFinite(this._lbAfter.rank)) {
-      const t = Number.isFinite(this._lbAfter.total) ? `#${this._lbAfter.rank} of ${this._lbAfter.total}` : `#${this._lbAfter.rank}`;
+      const t = Number.isFinite(this._lbAfter.total)
+        ? `#${this._lbAfter.rank} of ${this._lbAfter.total}`
+        : `#${this._lbAfter.rank}`;
       this._setOfficialRankText(t);
     } else {
       this._setOfficialRankText("—");

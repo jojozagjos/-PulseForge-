@@ -60,7 +60,11 @@ export class AudioPlayer {
 
   playAt(whenSec, opts = {}) {
     if (!this.buffer) throw new Error("No buffer loaded.");
-    const { gain = 1, fadeInMs = 0 } = opts;
+    const {
+      gain = 1,
+      fadeInMs = 0,
+      offsetSec = 0, // NEW: start inside the buffer at this offset (seconds)
+    } = opts;
 
     const src = this.ctx.createBufferSource();
     src.buffer = this.buffer;
@@ -72,7 +76,10 @@ export class AudioPlayer {
 
     const now = this.ctx.currentTime;
     const startTime = Math.max(now, whenSec);
-    src.start(startTime);
+
+    // start at buffer offset
+    const off = Math.max(0, Number(offsetSec) || 0);
+    try { src.start(startTime, off); } catch { src.start(startTime); }
 
     if (fadeInMs > 0) {
       const t0 = startTime;
