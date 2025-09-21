@@ -52,3 +52,34 @@ input,select{background:#0f1420;border:1px solid #2a3142;color:var(--text);borde
 #latency-flash.pf-flash {
   animation: pfFlashBeat 140ms ease-out;
 }
+
+/* Better readability + compact responsive grid */
+#ed-help.shortcut-cheatsheet { margin-top: 6px; }
+
+#ed-help.shortcut-cheatsheet ul {
+  margin: 6px 0 0;
+  padding: 0;                         /* remove default left padding */
+  list-style: none;                   /* remove bullets */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 6px 16px;                      /* a touch more breathing room */
+  line-height: 1.35;
+}
+
+#ed-help.shortcut-cheatsheet li {
+  min-height: 24px;
+}
+
+#ed-help.shortcut-cheatsheet kbd {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid #2a3142;
+  border-radius: 4px;
+  background: #111725;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 20px;
+  vertical-align: baseline;
+}
+
+#ed-help.shortcut-cheatsheet .muted { opacity: 0.9; }

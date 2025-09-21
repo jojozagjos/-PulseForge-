@@ -10,7 +10,7 @@ export class Solo {
     // caches & refs
     this._els = {};
     this._chartCache = new Map(); // key: `${trackId}::${diff}` -> chart json
-    this._pbCache = new Map();    // key: `${trackId}::${diff}` -> pb row or null
+    this._topCache = new Map();   // key: `${trackId}::${diff}` -> top row or null
     this._observer = null;        // IntersectionObserver for lazy covers
 
     // Preview audio: ctx + one-shot source + gain
@@ -91,7 +91,6 @@ export class Solo {
     }
 
     this._wireKeyboard();
-    this._wireGamepad();
   }
 
   // Allow main.js to clean us up when leaving the screen
@@ -239,7 +238,9 @@ export class Solo {
       <div id="solo-diff-wrap" role="listbox" aria-label="Difficulties"
            style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:36px;margin:6px 0 4px 0;"></div>
 
-      <div id="tp-stats" class="muted" style="opacity:.9;margin-top:6px;min-height:18px;"></div>
+      <div id="tp-stats" class="muted" style="opacity:.95;margin-top:6px;min-height:18px;">
+        <div id="tp-top">Top: —</div>
+      </div>
 
       <div id="tp-actions" style="display:flex;gap:8px;margin-top:10px;">
         <button id="tp-preview" class="ghost" type="button">Preview 10s</button>
@@ -265,7 +266,10 @@ export class Solo {
     this._els.artist = preview.querySelector("#tp-artist");
     this._els.extra = preview.querySelector("#tp-extra");
     this._els.diffWrap = preview.querySelector("#solo-diff-wrap");
-    this._els.pb = preview.querySelector("#tp-stats");
+    // stats (Top only)
+    this._els.stats = preview.querySelector("#tp-stats");
+    this._els.top = preview.querySelector("#tp-top");
+    // actions
     this._els.previewBtn = preview.querySelector("#tp-preview");
     this._els.playBtn = document.getElementById("btn-play-solo");
   }
@@ -404,8 +408,8 @@ export class Solo {
     // render pills (and optionally activate default)
     this._renderDiffPills(track, diffs, { activate: auto, defaultKey: def });
 
-    // PB teaser if we have an active diff
-    if (auto && def) this._updatePersonalBest(track, def);
+    // Top teaser if we have an active diff
+    if (auto && def) this._updateTop(track, def);
 
     // Save last pick
     try {
@@ -425,7 +429,7 @@ export class Solo {
       wrap.appendChild(msg);
       this.selectedDiff = null;
       this._els.playBtn.disabled = true;
-      this._els.pb.textContent = "";
+      this._els.top.textContent = "Top: —";
       return;
     }
 
@@ -455,7 +459,7 @@ export class Solo {
     } else {
       this.selectedDiff = null;
       this._els.playBtn.disabled = true;
-      this._els.pb.textContent = "";
+      this._els.top.textContent = "Top: —";
     }
   }
 
@@ -472,8 +476,8 @@ export class Solo {
     // preload chart + hint
     this._ensureDiffHint(track, diff, btn);
 
-    // PB teaser
-    this._updatePersonalBest(track, diff);
+    // Top for this selection
+    this._updateTop(track, diff);
 
     // remember last pick
     try {
@@ -504,24 +508,25 @@ export class Solo {
     }
   }
 
-  async _updatePersonalBest(track, diff) {
+  // ---------- Leaderboard Top-only ----------
+  async _updateTop(track, diff) {
     const key = `${track.trackId || track.title}::${diff}`;
-    if (!this._pbCache.has(key)) {
+
+    // Reset UI quickly while fetching
+    if (this._els.top) this._els.top.textContent = "Top: —";
+
+    if (!this._topCache.has(key)) {
       try {
-        const url = `/api/leaderboard/${encodeURIComponent(track.trackId || track.title)}?limit=1&diff=${encodeURIComponent(diff)}`;
-        const rows = await fetch(url).then(r => r.json());
-        this._pbCache.set(key, Array.isArray(rows) && rows.length ? rows[0] : null);
+        const urlTop = `/api/leaderboard/${encodeURIComponent(track.trackId || track.title)}?limit=1&diff=${encodeURIComponent(diff)}`;
+        const rowsTop = await fetch(urlTop).then(r => r.json());
+        const topRow = Array.isArray(rowsTop) && rowsTop.length ? rowsTop[0] : null;
+        this._topCache.set(key, topRow);
       } catch {
-        this._pbCache.set(key, null);
+        this._topCache.set(key, null);
       }
     }
-    const row = this._pbCache.get(key);
-    if (!row) {
-      this._els.pb.textContent = "PB: —";
-    } else {
-      const combo = row.combo ? ` • ${row.combo}x` : "";
-      this._els.pb.textContent = `PB: ${Number(row.score || 0).toLocaleString()} • ${Math.round((row.acc || 0) * 100)}%${combo}`;
-    }
+    const topRow = this._topCache.get(key);
+    if (this._els.top) this._els.top.textContent = formatTopLine(topRow);
   }
 
   // ---------- Actions ----------
@@ -704,7 +709,7 @@ export class Solo {
     this._els.artist.textContent = "";
     this._els.extra.textContent = "";
     this._els.diffWrap.innerHTML = "";
-    this._els.pb.textContent = "";
+    this._els.top.textContent = "Top: —";
     this._els.playBtn.style.display = "none";
     document.querySelectorAll("#track-list .track").forEach(el => {
       el.classList.remove("sel");
@@ -817,3 +822,16 @@ function pillActiveStyle() {
   };
 }
 function clamp01(x){ return Math.max(0, Math.min(1, Number(x) || 0)); }
+
+// ----- leaderboard format helpers -----
+function formatRowBits(row) {
+  const score = Number(row?.score || 0).toLocaleString();
+  const accPct = Math.round((row?.acc || 0) * 100);
+  const combo = row?.combo ? ` • ${row.combo}x` : "";
+  return `${score} • ${accPct}%${combo}`;
+}
+function formatTopLine(row) {
+  if (!row) return "Top: —";
+  const who = row.name ? String(row.name) : "—";
+  return `Top: ${who} — ${formatRowBits(row)}`;
+}

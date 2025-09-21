@@ -1,105 +1,80 @@
-// public/js/modules/audio.js
+// audio.js
+// A small, persistent audio utility that never closes its AudioContext.
+// Use AudioPlayer.resume() before playing and AudioPlayer.suspend() when pausing.
+
 export class AudioPlayer {
-  constructor() {
-    this.ctx = new (window.AudioContext || window.webkitAudioContext)({
-      latencyHint: "interactive",
-    });
-    this.buffer = null;
-    this.master = this.ctx.createGain();
-    this.master.gain.value = 1;
-    this.master.connect(this.ctx.destination);
-    this._unlocked = false;
+  static _ctx = null;
+  static _master = null;
 
-    const unlock = async () => {
+  static get context() {
+    if (!AudioPlayer._ctx) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      AudioPlayer._ctx = new Ctx({ latencyHint: "interactive" });
+      AudioPlayer._master = AudioPlayer._ctx.createGain();
+      AudioPlayer._master.gain.value = 1.0;
+      AudioPlayer._master.connect(AudioPlayer._ctx.destination);
+    }
+    return AudioPlayer._ctx;
+  }
+
+  static isRunning() {
+    return AudioPlayer.context.state === "running";
+  }
+
+  static async resume() {
+    const ctx = AudioPlayer.context;
+    if (ctx.state !== "running") {
       try {
-        if (this.ctx.state === "suspended") await this.ctx.resume();
-        this._unlocked = (this.ctx.state === "running");
-      } catch {}
-      window.removeEventListener("pointerdown", unlock);
-      window.removeEventListener("keydown", unlock);
-      window.removeEventListener("touchstart", unlock);
-    };
-    window.addEventListener("pointerdown", unlock, { once: true });
-    window.addEventListener("keydown", unlock, { once: true });
-    window.addEventListener("touchstart", unlock, { once: true });
-  }
-
-  async ensureReady() {
-    if (this.ctx.state === "suspended") {
-      try { await this.ctx.resume(); } catch {}
-    }
-    return this.ctx.state === "running";
-  }
-
-  async load(url) {
-    await this.ensureReady();
-    let arrayBuffer;
-    if ((url || "").startsWith("blob:")) {
-      arrayBuffer = await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("GET", url);
-        xhr.responseType = "arraybuffer";
-        xhr.onload = () => resolve(xhr.response);
-        xhr.onerror = () => reject(new Error("Blob fetch failed"));
-        xhr.send();
-      });
-    } else {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      arrayBuffer = await res.arrayBuffer();
-    }
-    this.buffer = await this.ctx.decodeAudioData(arrayBuffer);
-    return this.buffer.duration;
-  }
-
-  async loadFromArrayBuffer(arrayBuffer) {
-    await this.ensureReady();
-    this.buffer = await this.ctx.decodeAudioData(arrayBuffer);
-    return this.buffer.duration;
-  }
-
-  playAt(whenSec, opts = {}) {
-    if (!this.buffer) throw new Error("No buffer loaded.");
-    const { gain = 1, fadeInMs = 0 } = opts;
-
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.buffer;
-
-    const g = this.ctx.createGain();
-    g.gain.value = 0;
-    src.connect(g);
-    g.connect(this.master);
-
-    const now = this.ctx.currentTime;
-    const startTime = Math.max(now, whenSec);
-    src.start(startTime);
-
-    if (fadeInMs > 0) {
-      const t0 = startTime;
-      const t1 = t0 + fadeInMs / 1000;
-      g.gain.setValueAtTime(0, t0);
-      g.gain.linearRampToValueAtTime(gain, t1);
-    } else {
-      g.gain.setValueAtTime(gain, startTime);
-    }
-
-    const handle = {
-      source: src,
-      stop: (when = 0) => {
-        try { src.stop(when); } catch {}
-        try { src.disconnect(); } catch {}
-        try { g.disconnect(); } catch {}
+        await ctx.resume();
+      } catch (e) {
+        console.warn("[Audio] resume failed:", e);
       }
-    };
-    return handle;
+    }
   }
 
-  perfTimeForAudioTime(audioTimeSec) {
-    const perfAtAudioZero = performance.now() - this.ctx.currentTime * 1000;
-    return perfAtAudioZero + audioTimeSec * 1000;
+  static async suspend() {
+    const ctx = AudioPlayer.context;
+    if (ctx.state === "running") {
+      try {
+        await ctx.suspend();
+      } catch (e) {
+        console.warn("[Audio] suspend failed:", e);
+      }
+    }
   }
 
-  setMasterVolume(v) {
-    this.master.gain.value = Math.max(0, Math.min(1, Number(v) || 0));
+  static master() {
+    // Ensure the master node exists and is connected
+    AudioPlayer.context;
+    return AudioPlayer._master;
+  }
+
+  // Decode once and cache externally in your loader if needed.
+  static async decode(arrayBuffer) {
+    return await AudioPlayer.context.decodeAudioData(arrayBuffer.slice(0));
+  }
+
+  // Play a buffer at a given absolute AudioContext time offset
+  // Returns { source, gain }
+  static async playAt(audioBuffer, when = 0, { volume = 1.0 } = {}) {
+    const ctx = AudioPlayer.context;
+    await AudioPlayer.resume();
+
+    const gain = ctx.createGain();
+    gain.gain.value = volume;
+    gain.connect(AudioPlayer.master());
+
+    const src = ctx.createBufferSource();
+    src.buffer = audioBuffer;
+    src.connect(gain);
+    const startAt = Math.max(ctx.currentTime, when);
+    src.start(startAt);
+
+    return { source: src, gain };
+  }
+
+  static stopNode(node) {
+    try { node.stop(0); } catch {}
+    try { node.disconnect(); } catch {}
   }
 }

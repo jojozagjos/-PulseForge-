@@ -9,15 +9,18 @@ const GOOD_MS    = 100;
 /** Visual tuning */
 const WHITE_FLASH_MS = 140;      // taps only
 const HIT_FADE_RATE  = 0.05;
-const MISS_FADE_RATE = 0.10;
+const MISS_FADE_RATE = 0.08;
 const HOLD_BODY_FADE = 0.06;
+
+/** Bottom fade band (px) for graceful offscreen exit */
+const BOTTOM_FADE_BAND = 120;
 
 /** Visual options */
 const VIS = {
   laneColors: [0x19cdd0, 0x8A5CFF, 0xC8FF4D, 0xFFA94D], // teal, purple, lime, orange
-  showHitWindows: true,   // translucent guides around the judge line
-  receptorGlow: true,     // glow pulse on key press and on hit
-  ringOnHit: true         // expanding ring on Great/Perfect
+  showHitWindows: true,
+  receptorGlow: true,
+  ringOnHit: true
 };
 
 export class Game {
@@ -25,7 +28,7 @@ export class Game {
     this.runtime = runtime;
     this.settings = settings || {};
 
-    // Find or create canvas safely
+    // Canvas
     this.canvas = document.getElementById("game-canvas");
     if (!this.canvas) {
       this.canvas = document.createElement("canvas");
@@ -34,17 +37,17 @@ export class Game {
       document.body.appendChild(this.canvas);
     }
 
-    // Window-based size; never read clientWidth here
+    // Size
     const w = typeof window !== "undefined" ? (window.innerWidth || 1280) : 1280;
     const h = typeof window !== "undefined" ? (window.innerHeight || 720) : 720;
     this.width  = Math.max(960, Math.min(Math.floor(w), 1920));
     this.height = Math.max(540, Math.min(Math.floor(h), 1080));
 
-    // Core state
+    // State
     this.app = null;
     this.state = {
       score: 0, combo: 0, total: 0, hits: 0, acc: 1, nextIdx: 0, timeMs: 0,
-      judges: { Perfect: 0, Great: 0, Good: 0, Miss: 0 }  // NEW: judgment counters
+      judges: { Perfect: 0, Great: 0, Good: 0, Miss: 0 }
     };
     this.maxCombo = 0;
 
@@ -54,8 +57,7 @@ export class Game {
 
     // Inputs / holds
     this.keyDown = new Set();
-    this.held = []; // lane-held booleans set in _buildScene/_prepareInputs
-    // lane -> { endMs, broken, headRef, bodyRef }
+    this.held = [];
     this.activeHoldsByLane = new Map();
 
     // Layers / HUD refs
@@ -65,18 +67,17 @@ export class Game {
     this.$score = null;
     this.$judge = null;
 
-    // NEW: split FX into ring (ParticleContainer) + text (Container)
     this.fxRingLayer = null;
     this.fxTextLayer = null;
 
-    // NEW: progress bar pieces
+    // Progress bar
     this.progressBg = null;
     this.progressFill = null;
-    this._progressGeom = null; // cache dims
+    this._progressGeom = null;
 
     this.spriteByNote = new Map();
 
-    // Caches, pools, and visual elements
+    // Caches
     this._texCache = {
       headNormal: null,
       headWhite: null,
@@ -91,36 +92,28 @@ export class Game {
     this._lastHud = { combo: null, acc: null, score: null };
 
     this.vis = VIS;
-    this.receptors = [];   // per-lane receptors at the judge line
+    this.receptors = [];
     this.judgeStatic = null;
     this.receptorLayer = null;
-    this._ringTex = null;  // cached ring texture for hit FX
+    this._ringTex = null;
 
-    // Per-lane note indices for hit scanning
     this.notesByLane = [];
     this.nextIdxByLane = [];
 
-    // NEW: ensure we only show results overlay once
     this._resultsShown = false;
 
-    // NEW: leaderboard snapshot (before/after)
+    // Leaderboard snapshots & overlay refs
     this._lbBefore = { pbScore: null, rank: null };
-    this._lbAfter = { pbScore: null, rank: null };
+    this._lbAfter  = { pbScore: null, rank: null, total: null };
+    this._lbProjected = { rank: null };
+    this._resultsOverlay = null;
 
-    // NEW: toast holder
     this._ensureToastHolder();
   }
 
   async run() {
     this.canvas.style.display = "block";
-    // Clamp resolution to reduce fill-rate on high-DPI screens
-    const clampRes = Math.max(
-      1,
-      Math.min(
-        this.settings.renderScale || 1,
-        (window?.devicePixelRatio || 1)
-      )
-    );
+    const clampRes = Math.max(1, Math.min(this.settings.renderScale || 1, (window?.devicePixelRatio || 1)));
 
     this.app = new PIXI.Application();
     await this.app.init({
@@ -133,14 +126,13 @@ export class Game {
       powerPreference: "high-performance"
     });
     this.app.ticker.maxFPS = this.settings.maxFps || 120;
-    this.app.ticker.minFPS = this.settings.minFps || 50; // NEW: clamp to avoid giant delta spikes
+    this.app.ticker.minFPS = this.settings.minFps || 50;
 
     this._buildScene();
 
     if (this.runtime.mode === "solo") await this._playSolo(this.runtime.manifest);
     else await this._playMp(this.runtime);
 
-    // Return classic summary for outside UI
     return [
       { label: "Score", value: this.state.score.toString() },
       { label: "Accuracy", value: Math.round(this.state.acc * 100) + "%" },
@@ -179,7 +171,7 @@ export class Game {
   }
 
   _buildScene() {
-    // Subtle grid (static)
+    // Subtle grid
     const grid = new PIXI.Graphics();
     grid.alpha = 0.22;
     for (let i = 0; i < 44; i++) { grid.moveTo(0, i * 18); grid.lineTo(this.width, i * 18); }
@@ -194,12 +186,12 @@ export class Game {
     const totalW = this.laneCount * this.laneWidth + (this.laneCount - 1) * this.laneGap;
     this.startX = (this.width - totalW) / 2;
 
-    // Higher judge line
+    // Judge line higher
     this.judgeY = this.height - 240;
 
     for (let i = 0; i < this.laneCount; i++) {
       const g = new PIXI.Graphics();
-      g.roundRect(this.startX + i * (this.laneWidth + this.laneGap), 70, this.laneWidth, this.height - 260, 18);
+      g.roundRect(this._laneX(i), 70, this.laneWidth, this.height - 260, 18);
       g.fill({ color: 0x0f1420 });
       g.stroke({ width: 2, color: 0x2a3142 });
       g.alpha = 0.95;
@@ -207,11 +199,9 @@ export class Game {
       if ("cacheAsBitmap" in g) g.cacheAsBitmap = true;
     }
 
-    // ===== Judge line (static) + receptors (dynamic) =====
+    // Judge line + halo
     this.judgeStatic = new PIXI.Container();
     this.app.stage.addChild(this.judgeStatic);
-
-    // Bright core line + faint halo
     {
       const core = new PIXI.Graphics();
       core.moveTo(this.startX - 12, this.judgeY);
@@ -227,14 +217,13 @@ export class Game {
     }
     if ("cacheAsBitmap" in this.judgeStatic) this.judgeStatic.cacheAsBitmap = true;
 
-    // Per-lane receptors (tri-chevrons pointing to the line)
+    // Receptors
     this.receptorLayer = new PIXI.Container();
     this.app.stage.addChild(this.receptorLayer);
 
     this.receptors = [];
     for (let i = 0; i < this.laneCount; i++) {
       const laneCenterX = this._laneX(i) + this.laneWidth / 2;
-
       const rec = new PIXI.Container();
       rec.x = laneCenterX;
       rec.y = this.judgeY;
@@ -262,28 +251,27 @@ export class Game {
       this.receptors.push(rec);
     }
 
-    // Notes and FX layers
+    // Notes & FX
     this.noteLayer = new PIXI.Container();
     this.app.stage.addChild(this.noteLayer);
 
-    // NEW: tolerant to Pixi versions / missing plugin
     this.fxRingLayer = this._makeFxRingLayer();
     this.app.stage.addChild(this.fxRingLayer);
 
-    // NEW: floating text FX in a separate container
     this.fxTextLayer = new PIXI.Container();
     this.app.stage.addChild(this.fxTextLayer);
 
-    // HUD refs
+    // HUD
     this.$combo = document.getElementById("hud-combo");
     this.$acc = document.getElementById("hud-acc");
     this.$score = document.getElementById("hud-score");
 
     this._ensureJudgmentElement();
 
-    // NEW: progress bar (static bg + dynamic fill)
+    // Progress bar
     this._buildProgressBar(totalW);
 
+    // Text styles
     this._fxStyles = {
       Perfect: new PIXI.TextStyle({
         fill: 0x25F4EE, fontSize: 36, fontFamily: "Arial", fontWeight: "bold",
@@ -330,7 +318,6 @@ export class Game {
     this._prepareNotes();
     this._prepareInputs();
 
-    // Snapshot PB/rank BEFORE we start (for comparison later)
     await this._snapshotLeaderboardBefore();
 
     const audioStartAtSec = player.ctx.currentTime + this.leadInMs / 1000;
@@ -341,7 +328,6 @@ export class Game {
 
     await this._gameLoop(startPerfMs, () => {});
 
-    // Report results and show PB/rank movement toasts
     await this._reportScoreAndNotify();
 
     source.stop();
@@ -360,7 +346,6 @@ export class Game {
     this._prepareNotes();
     this._prepareInputs();
 
-    // Snapshot PB/rank BEFORE we start
     await this._snapshotLeaderboardBefore();
 
     const delaySec = Math.max(0, rt.startAt ? (rt.startAt - Date.now()) / 1000 : 0);
@@ -370,7 +355,6 @@ export class Game {
 
     await this._gameLoop(startPerfMs, null);
 
-    // Report results and show PB/rank movement toasts
     await this._reportScoreAndNotify();
 
     source.stop();
@@ -418,15 +402,15 @@ export class Game {
     if (nowMs < hold.endMs - 80) {
       hold.broken = true;
       this.state.combo = 0;
-      this._recordJudge("Miss"); // NEW: count miss
+      this._recordJudge("Miss");
       this._judgment("Miss", true);
       if (hold.bodyRef) {
         hold.bodyRef.__pfHoldActive = false;
-        this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE);
+        this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE, false); // keep until bottom cull
       }
       if (hold.headRef) {
         hold.headRef.__pfHoldActive = false;
-        this._beginFadeOut(hold.headRef, MISS_FADE_RATE);
+        this._beginFadeOut(hold.headRef, MISS_FADE_RATE, false); // keep until bottom cull
       }
       this.activeHoldsByLane.delete(lane);
     }
@@ -448,8 +432,8 @@ export class Game {
       if (adt <= PERFECT_MS) { this._registerHit(n, lane, "Perfect", isHold); idx = i + 1; break; }
       else if (adt <= GREAT_MS) { this._registerHit(n, lane, "Great", isHold); idx = i + 1; break; }
       else if (adt <= GOOD_MS) { this._registerHit(n, lane, "Good", isHold); idx = i + 1; break; }
-      else if (dt < -120) { break; } // too early for this lane
-      else { idx = i + 1; continue; } // late, skip
+      else if (dt < -120) { break; }
+      else { idx = i + 1; continue; }
     }
 
     this.nextIdxByLane[lane] = idx;
@@ -470,24 +454,22 @@ export class Game {
     // receptor pulse + ring
     const lc = this.vis.laneColors[lane % this.vis.laneColors.length];
     this._flashReceptor(lane, label === "Perfect" ? 1.0 : 0.7);
-    if (label === "Perfect" || label === "Great") {
+    if (label === "Perfect") {
       const cx = this._laneX(lane) + this.laneWidth / 2;
       this._spawnRing(cx, this.judgeY, lc);
     }
 
-    // visuals for the actual note
+    // visuals
     const vis = this.spriteByNote?.get(note);
     if (!vis) return;
 
     if (isHold) {
-      // Start a hold: make white and keep it visible until end or early release
       this._paintHeadWhite(vis.head);
       if (vis.body) this._paintBodyWhite(vis, note);
 
       vis.head.__pfHoldActive = true;
       if (vis.body) vis.body.__pfHoldActive = true;
 
-      // Do NOT set a timed flash/fade for holds; we keep them until endMs
       const endMs = (note.tMs || 0) + (note.dMs || 0);
       this.activeHoldsByLane.set(lane, {
         endMs,
@@ -496,12 +478,13 @@ export class Game {
         bodyRef: vis.body
       });
     } else {
-      // Tap: brief white flash, then fade away
+      // Tap: brief white flash; DO NOT remove immediately -> let bottom fade handle
       this._paintHeadWhite(vis.head);
-      const until = (this.state.timeMs || 0) + WHITE_FLASH_MS; // taps only
+      const until = (this.state.timeMs || 0) + WHITE_FLASH_MS;
       vis.head.__pfFlashUntil = until;
       vis.head.__pfFadeRate = HIT_FADE_RATE;
-      // taps don't have a body; nothing else to do
+      // keep sprite; no auto-remove here (bottom fade will cull)
+      // (we intentionally don't call _beginFadeOut here)
     }
   }
 
@@ -532,7 +515,8 @@ export class Game {
     const el = this.$judge;
     if (el) {
       el.textContent = label;
-      el.style.color = miss ? "#aa4b5b" : (label === "Perfect" ? "#25F4EE" : (label === "Great" ? "#C8FF4D" : "#8A5CFF"));
+      el.style.color = miss ? "#aa4b5b" :
+        (label === "Perfect" ? "#25F4EE" : (label === "Great" ? "#C8FF4D" : "#8A5CFF"));
       el.style.opacity = "1";
       el.style.transform = "translate(-50%, 50%) scale(1.0)";
       requestAnimationFrame(() => {
@@ -558,7 +542,7 @@ export class Game {
     t.y = this.judgeY - 42;
     t.alpha = 1;
     t.__pfVelY = -0.7;
-    this.fxTextLayer.addChild(t); // NEW: goes to text layer
+    this.fxTextLayer.addChild(t);
     t.__pfFade = { rate: 0.03, remove: true, pooled: true };
   }
 
@@ -568,7 +552,6 @@ export class Game {
     this.fxTextLayer.removeChildren();
     this.spriteByNote.clear();
 
-    // reset results flag/counters
     this._resultsShown = false;
     this.state.judges = { Perfect: 0, Great: 0, Good: 0, Miss: 0 };
 
@@ -603,9 +586,7 @@ export class Game {
         body.y = -(lengthPx - 2);
         body.tint = this.vis.laneColors[n.lane % this.vis.laneColors.length];
         body.alpha = 0.55;
-
         body.__pfLen = lengthPx;
-
         cont.addChild(body);
       }
 
@@ -635,9 +616,7 @@ export class Game {
       this.$judge.textContent = sLeft > 0 ? String(sLeft) : "Go!";
       this.$judge.style.opacity = "1";
     };
-    const hideCountdown = () => {
-      if (this.$judge) this.$judge.style.opacity = "0";
-    };
+    const hideCountdown = () => { if (this.$judge) this.$judge.style.opacity = "0"; };
 
     const offscreenBottom = this.height + 120;
     const offscreenTop = -180;
@@ -650,7 +629,7 @@ export class Game {
 
         if (tMs < 0) showCountdown(-tMs); else hideCountdown();
 
-        // ===== FX: text layer (float/fade) =====
+        // FX: text decay
         for (let i = this.fxTextLayer.children.length - 1; i >= 0; i--) {
           const child = this.fxTextLayer.children[i];
           if (child.__pfVelY) child.y += child.__pfVelY;
@@ -665,7 +644,7 @@ export class Game {
             }
           }
         }
-        // ===== FX: ring layer (scale/fade) =====
+        // FX: rings
         for (let i = this.fxRingLayer.children.length - 1; i >= 0; i--) {
           const child = this.fxRingLayer.children[i];
           if (child.__pfScaleVel) {
@@ -681,7 +660,7 @@ export class Game {
           }
         }
 
-        // Animate receptor glow pulses
+        // Receptor glow
         for (let i = 0; i < this.receptors.length; i++) {
           const rec = this.receptors[i];
           if (!rec) continue;
@@ -703,80 +682,82 @@ export class Game {
           const { n, cont, body, head, gloss } = obj;
           if (!cont.parent && (!body || !body.parent)) continue;
 
-          // Position so head CENTER crosses judge line exactly at n.tMs
+          // Position so head center hits judge line at n.tMs
           const yAtCenter = this.judgeY - (n.tMs - tMs) * this.pixelsPerMs;
           const y = yAtCenter - (head.height / 2);
           if (cont.parent) cont.y = y;
 
-          // Time-based Miss for unhit taps (holds are judged on key press)
+          // If tap wasn't hit in time, mark Miss but don't remove immediately
           if (tMs >= 0 && !n.hit) {
             if (tMs - n.tMs > 120) {
               n.hit = true;
               this.state.combo = 0;
-              this._recordJudge("Miss"); // NEW: count miss
+              this._recordJudge("Miss");
               this._judgment("Miss", true);
-              cont.parent?.removeChild(cont);
-              while (this.state.nextIdx < this.chart.notes.length && this.chart.notes[this.state.nextIdx].hit) this.state.nextIdx++;
-              continue;
+              // start gentle fade, but keep until bottom cull
+              head && this._beginFadeOut(head, MISS_FADE_RATE, false);
+              body && this._beginFadeOut(body, MISS_FADE_RATE, false);
+              // continue; // let it drop/fade out at bottom
             }
           }
-          
-          // --- Compute full vertical bounds of this note first ---
-          const bottomCullY = this.height + 80;
 
-          let topY = cont.y;            // head top
-          let bottomY = cont.y + headH; // head bottom
-
+          // Compute full vertical bounds of note
+          const headH = head.height;
+          let topY = cont.y;
+          let bottomY = cont.y + headH;
           if (body) {
             const len = body.__pfLen ?? Math.max(10, (n.dMs || 0) * this.pixelsPerMs);
-            const bodyTop = cont.y - (len - 2);   // because body.y = -(len - 2)
+            const bodyTop = cont.y - (len - 2);
             const bodyBottom = bodyTop + len;
             topY    = Math.min(topY, bodyTop);
             bottomY = Math.max(bottomY, bodyBottom);
           }
 
-          // Cull only when the ENTIRE note (head + tail) is past the bottom edge
-          if (cont.parent && topY > bottomCullY) {
+          // Cull only when ENTIRE note is past bottom edge
+          if (cont.parent && topY > this.height + 80) {
             cont.parent.removeChild(cont);
             continue;
           }
 
-          // Decide if we should skip heavy visuals this frame
+          // Skip heavy work if far off
           const farOff = (y < offscreenTop || y > offscreenBottom);
 
-          // --- Heavy per-frame visuals only if near-ish screen ---
           if (!farOff) {
-            // Timed flash -> fade
+            // Flash -> fade
             const now = tMs;
             if (head.__pfFlashUntil && now >= head.__pfFlashUntil) {
               head.__pfFlashUntil = null;
-              this._beginFadeOut(head, head.__pfFadeRate, true);
+              // After flash, begin gentle fade but do not auto-remove; bottom cull will handle.
+              this._beginFadeOut(head, head.__pfFadeRate, false);
             }
             if (body && body.__pfFlashUntil && now >= body.__pfFlashUntil) {
               body.__pfFlashUntil = null;
-              this._beginFadeOut(body, body.__pfFadeRate, true);
+              this._beginFadeOut(body, body.__pfFadeRate, false);
             }
 
-            // Per-frame fade progression
+            // Per-frame fade progression (if any)
             if (head.parent && head.__pfFade) {
               head.alpha = Math.max(0, head.alpha - head.__pfFade.rate);
-              if (head.alpha <= 0.01) {
-                if (head.__pfFade.remove) cont.parent?.removeChild(cont);
-                head.__pfFade = null;
-              }
             }
             if (body && body.parent && body.__pfFade) {
               body.alpha = Math.max(0, body.alpha - body.__pfFade.rate);
-              if (body.alpha <= 0.01) {
-                if (body.__pfFade.remove !== false) cont.removeChild(body);
-                body.__pfFade = null;
-              }
             }
 
-            // Shimmer the gloss near the judge line
+            // Bottom fade band — always fade out near the bottom edge
+            if (bottomY > this.height - BOTTOM_FADE_BAND) {
+              const over = bottomY - (this.height - BOTTOM_FADE_BAND);
+              const factor = Math.max(0, 1 - (over / BOTTOM_FADE_BAND));
+              // apply multiplicatively without resurrecting alpha
+              head.alpha = Math.min(head.alpha, factor);
+              if (body) body.alpha = Math.min(body.alpha, factor);
+              if (gloss) gloss.alpha = Math.min(gloss.alpha, (0.45 * factor));
+            }
+
+            // Gloss shimmer near judge line
             if (gloss) {
               const dy = Math.abs(this.judgeY - (y + head.height / 2));
-              gloss.alpha = 0.25 + Math.max(0, 0.35 - Math.min(0.35, dy / 400));
+              const base = 0.25 + Math.max(0, 0.35 - Math.min(0.35, dy / 400));
+              gloss.alpha = Math.min(gloss.alpha, head.alpha);
             }
           }
         }
@@ -789,36 +770,34 @@ export class Game {
               if (!this.held[lane]) {
                 hold.broken = true;
                 this.state.combo = 0;
-                this._recordJudge("Miss"); // NEW: count miss
+                this._recordJudge("Miss");
                 this._judgment("Miss", true);
                 if (hold.bodyRef) {
                   hold.bodyRef.__pfHoldActive = false;
-                  this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE);
+                  this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE, false);
                 }
                 if (hold.headRef) {
                   hold.headRef.__pfHoldActive = false;
-                  this._beginFadeOut(hold.headRef, MISS_FADE_RATE);
+                  this._beginFadeOut(hold.headRef, MISS_FADE_RATE, false);
                 }
                 this.activeHoldsByLane.delete(lane);
               }
             } else {
               if (hold.bodyRef) {
                 hold.bodyRef.__pfHoldActive = false;
-                this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE);
+                this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE, false);
               }
               if (hold.headRef) {
                 hold.headRef.__pfHoldActive = false;
-                this._beginFadeOut(hold.headRef, HIT_FADE_RATE);
+                this._beginFadeOut(hold.headRef, HIT_FADE_RATE, false);
               }
               this.activeHoldsByLane.delete(lane);
             }
           }
         }
 
-        // HUD (only when changed)
+        // HUD
         this.state.total = this.chart.notes.length;
-
-        // Simple acc: hits/total (unchanged style)
         const acc = this.state.total ? this.state.hits / this.state.total : 1;
         this.state.acc = acc;
 
@@ -842,7 +821,7 @@ export class Game {
           const p = Math.max(0, Math.min(1, tMs / (this.chart.durationMs || 1)));
           this.progressFill.clear();
           this.progressFill.roundRect(x, y, Math.max(0.0001, barW * p), barH, 3);
-          this.progressFill.fill({ color: 0xFFFFFF, alpha: 0.9 * p + 0.05 }); // was 0x25f4ee
+          this.progressFill.fill({ color: 0xFFFFFF, alpha: 0.9 * p + 0.05 });
         }
 
         if (tickHook) tickHook();
@@ -851,7 +830,7 @@ export class Game {
         if (tMs > endMs) {
           if (!this._resultsShown) {
             this._resultsShown = true;
-            this._showResultsOverlay(); // NEW: show in-game results
+            this._showResultsOverlay();
           }
           resolve();
         }
@@ -861,34 +840,26 @@ export class Game {
 
   _laneX(idx) { return this.startX + idx * (this.laneWidth + this.laneGap); }
 
-  // ======== Texture and pool helpers ========
-
-  // Try to create a ParticleContainer (v4/v5/v6/v7 signatures). Fallback to Container.
+  // ===== Textures / FX =====
   _makeFxRingLayer() {
-    // Possible homes for ParticleContainer across Pixi versions/plugins
     const PC =
       PIXI.ParticleContainer ||
       (PIXI.particles && PIXI.particles.ParticleContainer) ||
       null;
 
     if (PC) {
-      // v4–v6 style: new PC(maxSize, properties)
       try {
         return new PC(400, { scale: true, alpha: true, position: true, rotation: true, uvs: false });
       } catch (_) {
-        // v7+ style: new PC({ maxSize, properties })
         try {
           return new PC({
             maxSize: 400,
             properties: { scale: true, alpha: true, position: true, rotation: true, uvs: false },
             roundPixels: true
           });
-        } catch (_) {
-          // fall through to Container
-        }
+        } catch (_) {}
       }
     }
-
     console.warn("[PulseForge] ParticleContainer not available; using PIXI.Container for FX.");
     return new PIXI.Container();
   }
@@ -903,8 +874,6 @@ export class Game {
       g.stroke({ width: 2, color: strokeColor });
       return this.app.renderer.generateTexture(g);
     };
-
-    // Head gloss texture (cached)
     const makeGloss = () => {
       const g = new PIXI.Graphics();
       g.roundRect(4, 4, headW - 8, Math.max(1, Math.floor(headH * 0.42)), 8);
@@ -919,9 +888,7 @@ export class Game {
     this._texCache._headH = headH;
   }
 
-  _getHeadTexture(white = false) {
-    return white ? this._texCache.headWhite : this._texCache.headNormal;
-  }
+  _getHeadTexture(white = false) { return white ? this._texCache.headWhite : this._texCache.headNormal; }
 
   _getBodyTexture(lengthPx, white = false) {
     const key = Math.max(10, Math.floor(lengthPx));
@@ -944,7 +911,6 @@ export class Game {
     t.__pfFade = null;
     return t;
   }
-
   _releaseFxText(t) {
     t.text = "";
     t.__pfVelY = 0;
@@ -954,7 +920,7 @@ export class Game {
 
   _flashReceptor(lane, strength = 1.0) {
     const rec = this.receptors[lane]; if (!rec) return;
-    rec.__pulse = Math.max(rec.__pulse, Math.floor(10 * strength)); // frames
+    rec.__pulse = Math.max(rec.__pulse, Math.floor(10 * strength));
     if (this.vis.receptorGlow) rec.__glow.alpha = 0.22 * strength;
   }
 
@@ -972,19 +938,18 @@ export class Game {
     s.tint = color;
     s.alpha = 0.9;
     s.scale.set(0.55, 0.55);
-    s.__pfScaleVel = 0.06;     // expand each frame
+    s.__pfScaleVel = 0.06;
     s.__pfFade = { rate: 0.04, remove: true };
-    this.fxRingLayer.addChild(s); // NEW: particle container
+    this.fxRingLayer.addChild(s);
   }
 
-  // ======== Results Overlay (HUD & results) ========
+  // ===== Results Overlay =====
   _showResultsOverlay() {
     const overlayId = "pf-results-overlay";
     let el = document.getElementById(overlayId);
     if (el) el.remove();
 
     const accPct = Math.round(this.state.acc * 100);
-
     const counts = this.state.judges || { Perfect:0, Great:0, Good:0, Miss:0 };
     const totalJudged = counts.Perfect + counts.Great + counts.Good + counts.Miss || 1;
     const segP = (counts.Perfect / totalJudged) * 360;
@@ -992,7 +957,6 @@ export class Game {
     const segO = (counts.Good    / totalJudged) * 360;
     const segM = (counts.Miss    / totalJudged) * 360;
 
-    // Build a conic-gradient pie
     const pie = `conic-gradient(
       #25F4EE 0deg ${segP}deg,
       #C8FF4D ${segP}deg ${segP + segG}deg,
@@ -1015,7 +979,7 @@ export class Game {
     });
 
     el.innerHTML = `
-      <div style="display:grid;grid-template-columns:220px 1fr;gap:20px;max-width:820px;width:90%;border:1px solid #2a3142;border-radius:14px;padding:20px;background:#111827cc;backdrop-filter:blur(4px);">
+      <div style="display:grid;grid-template-columns:220px 1fr;gap:20px;max-width:860px;width:92%;border:1px solid #2a3142;border-radius:14px;padding:20px;background:#111827cc;backdrop-filter:blur(4px);">
         <div style="display:flex;align-items:center;justify-content:center;">
           <div style="width:180px;height:180px;border-radius:999px;background:${pie};box-shadow:inset 0 0 0 8px rgba(255,255,255,0.06);"></div>
         </div>
@@ -1026,12 +990,20 @@ export class Game {
             <div><span style="opacity:.9;">Accuracy:</span> <b>${accPct}%</b></div>
             <div><span style="opacity:.9;">Max Combo:</span> <b>${this.maxCombo}x</b></div>
           </div>
+
           <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px;">
             ${this._resultChip("#25F4EE","Perfect",counts.Perfect)}
             ${this._resultChip("#C8FF4D","Great",counts.Great)}
             ${this._resultChip("#8A5CFF","Good",counts.Good)}
             ${this._resultChip("#aa4b5b","Miss",counts.Miss)}
           </div>
+
+          <div id="pf-lb-block" style="border:1px solid #233046;border-radius:10px;padding:10px 12px;background:#0f1420;margin-bottom:16px;">
+            <div style="font-weight:700;margin-bottom:6px;">Leaderboard</div>
+            <div id="pf-lb-projected" class="muted" style="margin-bottom:4px;">Projected rank: <b>…</b></div>
+            <div id="pf-lb-official" class="muted">Official rank: <b>…</b></div>
+          </div>
+
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
             <button id="pf-results-close" class="primary" style="padding:8px 14px;background:#25f4ee;border:none;border-radius:10px;color:#00222a;font-weight:700;cursor:pointer;">Close</button>
           </div>
@@ -1041,6 +1013,16 @@ export class Game {
 
     el.querySelector("#pf-results-close")?.addEventListener("click", () => el.remove());
     document.body.appendChild(el);
+    this._resultsOverlay = el;
+  }
+
+  _setProjectedRankText(text) {
+    const el = this._resultsOverlay?.querySelector("#pf-lb-projected");
+    if (el) el.innerHTML = `Projected rank: <b>${text}</b>`;
+  }
+  _setOfficialRankText(text) {
+    const el = this._resultsOverlay?.querySelector("#pf-lb-official");
+    if (el) el.innerHTML = `Official rank: <b>${text}</b>`;
   }
 
   _resultChip(color, label, value) {
@@ -1053,8 +1035,7 @@ export class Game {
     </div>`;
   }
 
-  // ========= NEW: PB / Leaderboard movement =========
-
+  // ===== Leaderboard helpers =====
   async _snapshotLeaderboardBefore() {
     try {
       const rows = await this._fetchLeaderboard(200);
@@ -1068,77 +1049,102 @@ export class Game {
     }
   }
 
+  _compareRows(a, b) {
+    // server order: score DESC, acc DESC, combo DESC, ts ASC (we ignore ts here)
+    if (a.score !== b.score) return b.score - a.score;
+    if (a.acc !== b.acc) return b.acc - a.acc;
+    if (a.combo !== b.combo) return b.combo - a.combo;
+    return 0;
+  }
+
+  _projectRank(rows, myRow) {
+    // rows already filtered to track+diff, sorted DESC
+    let rank = 1;
+    for (const r of rows) {
+      if (this._compareRows(r, myRow) < 0) break; // we've passed our place
+      if (this._compareRows(r, myRow) > 0) rank++; // r is strictly better
+      else rank++; // equal score/acc/combo -> place after existing
+    }
+    return Math.max(1, rank);
+  }
+
   async _reportScoreAndNotify() {
     const name = this._getUserName();
-    const trackId = this.chart?.trackId || this.runtime?.track?.trackId || this.chart?.title || "unknown";
-    const diff = this.chart?.difficulty || this.runtime?.difficulty || "normal";
+    const trackId = this.chart?.trackId || this.runtime?.track?.trackId || (this.chart?.title || "unknown").toString().toLowerCase().replace(/[^a-z0-9]+/g,"-");
+    const difficulty = this.chart?.difficulty || this.runtime?.difficulty || "normal";
     const payload = {
       trackId,
-      diff,
+      difficulty,
       name,
       score: this.state.score,
       acc: Number(this.state.acc || 0),
       combo: this.maxCombo || this.state.combo || 0
     };
 
-    let serverSaidBest = false;
-    let serverNewRank = null;
-    let serverDelta = null;
-
-    // 1) Try to POST to server (if endpoint exists)
+    // Always compute a projected rank from current table (even if we don't submit)
     try {
-      const res = await fetch("/api/leaderboard/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      if (res.ok) {
-        const data = await res.json().catch(() => ({}));
-        if (typeof data?.best === "boolean") serverSaidBest = data.best;
-        if (Number.isFinite(data?.rank)) serverNewRank = Number(data.rank);
-        if (Number.isFinite(data?.delta)) serverDelta = Number(data.delta);
-      }
+      const rows = await this._fetchLeaderboard(200);
+      const myRow = { name, score: payload.score, acc: payload.acc, combo: payload.combo };
+      const sorted = rows.slice().sort((a,b)=>this._compareRows(a,b));
+      const projected = this._projectRank(sorted, myRow);
+      this._lbProjected = { rank: projected };
+      this._setProjectedRankText(`#${projected} (estimated)`);
     } catch {
-      // ignore; fallback below
+      this._setProjectedRankText(`—`);
     }
 
-    // 2) Fallback / also compute with GET
+    // Only POST if permitted (avoid double-submit if caller disabled)
+    let serverNewRank = null, serverTotal = null, serverDelta = null;
+    if (this.runtime?.autoSubmit !== false) {
+      try {
+        const res = await fetch("/api/leaderboard/submit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (Number.isFinite(data?.rank)) serverNewRank = Number(data.rank);
+          if (Number.isFinite(data?.total)) serverTotal = Number(data.total);
+          if (Number.isFinite(data?.delta)) serverDelta = Number(data.delta);
+        }
+      } catch { /* ignore network errors */ }
+    }
+
+    // Refresh AFTER snapshot
     try {
       const rows = await this._fetchLeaderboard(200);
       const me = this._findMe(rows);
       this._lbAfter = {
         pbScore: me?.score ?? null,
-        rank: me ? (rows.indexOf(me) + 1) : null
+        rank: serverNewRank ?? (me ? (rows.indexOf(me) + 1) : null),
+        total: serverTotal ?? rows.length
       };
     } catch {
-      this._lbAfter = { pbScore: null, rank: null };
+      /* ignore */
     }
 
-    // ---- Decide notifications ----
-    const beforePB = this._lbBefore.pbScore;
-    const afterPB  = this._lbAfter.pbScore;
+    // Overlay texts
+    if (Number.isFinite(this._lbAfter.rank)) {
+      const t = Number.isFinite(this._lbAfter.total) ? `#${this._lbAfter.rank} of ${this._lbAfter.total}` : `#${this._lbAfter.rank}`;
+      this._setOfficialRankText(t);
+    } else {
+      this._setOfficialRankText("—");
+    }
 
-    const isPB = (serverSaidBest === true) ||
-                 (Number.isFinite(beforePB) ? (this.state.score > beforePB) : (afterPB != null && this.state.score >= afterPB));
-
-    if (isPB) this._toast("🎉 New PB!", "success");
-
+    // Movement toast
     const rankBefore = this._lbBefore.rank;
-    const rankAfter  = serverNewRank ?? this._lbAfter.rank;
-
+    const rankAfter  = this._lbAfter.rank;
     if (Number.isFinite(rankBefore) && Number.isFinite(rankAfter)) {
-      const moved = rankBefore - rankAfter; // positive means moved up
+      const moved = rankBefore - rankAfter;
       if (moved > 0) {
         this._toast(`⬆ Up ${moved} place${moved === 1 ? "" : "s"} (now #${rankAfter})`, "info");
-      } else if ((serverDelta ?? 0) > 0 && Number.isFinite(serverNewRank)) {
-        // server reported improvement but we couldn't diff before/after locally
-        this._toast(`⬆ Moved up to #${serverNewRank}`, "info");
       }
     }
   }
 
   async _fetchLeaderboard(limit = 50) {
-    const trackId = this.chart?.trackId || this.runtime?.track?.trackId || this.chart?.title || "unknown";
+    const trackId = this.chart?.trackId || this.runtime?.track?.trackId || (this.chart?.title || "unknown").toString().toLowerCase().replace(/[^a-z0-9]+/g,"-");
     const diff = this.chart?.difficulty || this.runtime?.difficulty || "normal";
     const url = `/api/leaderboard/${encodeURIComponent(trackId)}?diff=${encodeURIComponent(diff)}&limit=${encodeURIComponent(limit)}`;
     const rows = await fetch(url).then(r => r.json());

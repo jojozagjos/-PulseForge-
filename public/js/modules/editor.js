@@ -472,6 +472,13 @@ export class Editor {
     this._wireMetronomeControl();
     this._wireZoomIndicator();
     this._wireTestButton();
+
+    // Nice, readable shortcuts helper (including F)
+    // const help = document.getElementById(this.ids.help);
+    // if (help) {
+    //   help.innerHTML =
+    //     `Shortcuts:&nbsp; <b>Shift + Wheel</b> Zoom • <b>Space</b> Play/Pause • <b>F</b> Follow • <b>←/→</b> Nudge • <b>M</b> Metronome • <b>Ctrl/Cmd+Z</b> Undo • <b>Ctrl+Shift+Z / Ctrl+Y</b> Redo`;
+    // }
   }
 
   // ===== File toolbar =====
@@ -621,6 +628,9 @@ export class Editor {
   async _ensureAudioCtx() {
     if (this.audioCtx) return;
     this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    // Register with the global audio registry (so Quit can silence it)
+    try { window.__PF_audioCtxs?.add(this.audioCtx); } catch {}
 
     // Create & wire master gain once
     this.masterGain = this.audioCtx.createGain();
@@ -1442,6 +1452,16 @@ export class Editor {
       return;
     }
 
+    // Follow toggle (F)
+    if (e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      this.follow = !this.follow;
+      const box = document.getElementById(this.ids.followToggle);
+      if (box) { box.checked = this.follow; }
+      this._help(`Follow Playhead: ${this.follow ? "On" : "Off"}`);
+      return;
+    }
+
     // Home/End: jump to start/end
     if (e.key === "Home") {
       e.preventDefault();
@@ -1478,6 +1498,11 @@ export class Editor {
       alert("Playtest is unavailable (PF_startGame not found).");
       return;
     }
+    // Stop editor audio immediately so it doesn't stack with the game
+    this._stopSourceOnly();
+    this.playing = false;
+    this._metroStop();
+
     const offset = Math.max(0, Math.min(this.currentTimeMs()|0,
       (this.chart?.durationMs || (this.audioBuffer ? Math.floor(this.audioBuffer.duration*1000) : 0))));
 
@@ -1496,8 +1521,8 @@ export class Editor {
       alert("Load an audio file/URL or a manifest with audio before playtesting.");
       return;
     }
-    // Pass startAtMs and allowExit so you can quit the playtest
-    window.PF_startGame({ mode: "solo", manifest: out, startAtMs: offset, allowExit: true });
+    // Pass startAtMs and allowExit so you can quit the playtest; prevent leaderboard post
+    window.PF_startGame({ mode: "solo", manifest: out, startAtMs: offset, allowExit: true, autoSubmit: false });
   }
 
   _syncInputs() {
