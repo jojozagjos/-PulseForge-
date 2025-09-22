@@ -1,4 +1,4 @@
-/* global PIXI */
+/* global PIXI */ 
 import { AudioPlayer } from "./audio.js";
 
 /** Timing windows (ms) */
@@ -25,10 +25,7 @@ export class Game {
     this.runtime = runtime;
     this.settings = settings || {};
 
-    // --- NEW: behavior switch ---
-    // true  => tails are clipped at the judge line (previous "tunnel" look)
-    // false => tails are allowed past judge line and disappear at the column bottom
-    // this.holdTailClipsAtJudge = this.settings.holdTailClipsAtJudge !== false;
+    // tail behavior
     this.holdTailClipsAtJudge = false;
 
     // Canvas
@@ -64,10 +61,10 @@ export class Game {
     this.activeHoldsByLane = new Map();
 
     // Layers / HUD refs
-    this.laneBackboardLayer = null; // visuals behind notes
-    this.noteLayer = null;          // holds lane note containers
-    this.laneNoteLayers = [];       // one container per lane (masked)
-    this.laneMasks = [];            // one mask per lane
+    this.laneBackboardLayer = null;
+    this.noteLayer = null;
+    this.laneNoteLayers = [];
+    this.laneMasks = [];
 
     this.receptorLayer = null;
     this.judgeStatic = null;
@@ -76,10 +73,14 @@ export class Game {
     this.fxTextLayer = null;
     this._ringTex = null;
 
+    // HUD (external counters if present)
     this.$combo = null;
     this.$acc = null;
     this.$score = null;
-    this.$judge = null;
+
+    // Canvas HUD
+    this.hudLayer = null;
+    this.countdownText = null;
 
     // Progress bar
     this.progressBg = null;
@@ -109,38 +110,30 @@ export class Game {
     this.nextIdxByLane = [];
 
     this._resultsShown = false;
+    this._resultsOverlay = null;
+    this._resultsCloseResolver = null;
 
-    // Leaderboard snapshots & overlay refs
+    // Leaderboard snapshots
     this._lbBefore = { pbScore: null, rank: null };
     this._lbAfter  = { pbScore: null, rank: null, total: null };
     this._lbProjected = { rank: null };
-    this._resultsOverlay = null;
 
     this._ensureToastHolder();
 
-    // For restoring global key handlers when destroyed
+    // For restoring global key handlers
     this._prevOnKeyDown = undefined;
     this._prevOnKeyUp = undefined;
   }
 
   async run() {
-    // --- fresh canvas + state for each run ---
+    // fresh canvas + state each run
     this.canvas.style.display = "block";
 
-    // Kill any stale overlays from prior runs and recreate countdown node
+    // nuke stale overlay if any
     try { document.getElementById("pf-results-overlay")?.remove(); } catch {}
-    try { document.getElementById("judgment")?.remove(); } catch {}
-    this.$judge = null;
-    this._ensureJudgmentElement();
-    if (this.$judge) {
-      this.$judge.textContent = "";
-      this.$judge.style.opacity = "0";
-      this.$judge.style.display = "block";
-      this.$judge.style.transform = "translate(-50%, -50%) scale(1.0)";
-    }
+    this._resultsCloseResolver = null;
 
-    // Reset transient state that might persist between runs
-    // Ensure any reused chart has clean note flags before we build sprites
+    // Reset transient state
     this._resetNoteRuntimeFlags();
     this.keyDown = new Set();
     this.held = new Array(4).fill(false);
@@ -150,14 +143,6 @@ export class Game {
     this.nextIdxByLane = [];
     this.maxCombo = 0;
     this._resultsShown = false;
-
-    // Re-prime HUD/judge
-    this._ensureJudgmentElement();
-    if (this.$judge) {
-      this.$judge.style.opacity = "0";
-      this.$judge.textContent = "";
-      this.$judge.style.transform = "translate(-50%, 50%) scale(1.0)";
-    }
 
     const clampRes = Math.max(1, Math.min(this.settings.renderScale || 1, (window?.devicePixelRatio || 1)));
 
@@ -201,15 +186,7 @@ export class Game {
     this._prevOnKeyDown = undefined;
     this._prevOnKeyUp   = undefined;
 
-    // Remove countdown/Judge node so a fresh one is created next run
-    try {
-      const el = document.getElementById("judgment");
-      if (el) el.remove();
-      this.$judge = null;
-    } catch {}
-
-    // Also remove results overlay if it exists
-    try { document.getElementById("pf-results-overlay")?.remove(); } catch {}
+    // Do not remove the results overlay here; user closes it.
   }
 
   destroy() {
@@ -235,35 +212,6 @@ export class Game {
     if (typeof player.setMasterVolume === "function") player.setMasterVolume(v);
   }
 
-  _ensureJudgmentElement() {
-    let el = document.getElementById("judgment");
-    if (!el) {
-      el = document.createElement("div");
-      el.id = "judgment";
-      Object.assign(el.style, {
-        position: "fixed",                   // fixed so it stays above the canvas
-        left: "50%",
-        top: "18%",
-        transform: "translate(-50%, -50%)",
-        fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto",
-        fontSize: "48px",
-        letterSpacing: "1px",
-        color: "#25F4EE",
-        textShadow: "0 2px 12px rgba(0,0,0,0.5)",
-        opacity: "0",
-        transition: "opacity 120ms ease-out, transform 120ms ease-out",
-        pointerEvents: "none",
-        zIndex: "1000"
-      });
-      document.body.appendChild(el);
-    } else {
-      // make sure it’s on top even after hot reloads
-      el.style.position = "fixed";
-      el.style.zIndex = "1000";
-    }
-    this.$judge = el;
-  }
-
   _buildScene() {
     // Subtle grid (behind everything)
     const grid = new PIXI.Graphics();
@@ -277,21 +225,21 @@ export class Game {
     this.laneCount = 4;
     this.held = new Array(this.laneCount).fill(false);
 
-    // ---- LANE SIZE TWEAKS (go further down) ----
+    // Lane sizing
     this.laneWidth = Math.max(120, Math.min(180, Math.floor(this.width / 10)));
     this.laneGap = Math.max(18, Math.min(32, Math.floor(this.width / 70)));
     const totalW = this.laneCount * this.laneWidth + (this.laneCount - 1) * this.laneGap;
     this.startX = (this.width - totalW) / 2;
 
-    // Lower bottom margin so columns extend further down
+    // Column rect
     this._laneTop = 40;
-    this._laneBottomMargin = 56;                      // smaller margin → longer columns
+    this._laneBottomMargin = 56;
     this._laneHeight = this.height - this._laneTop - this._laneBottomMargin;
 
-    // Judge line positioned comfortably above the very bottom
+    // Judge line position
     this.judgeY = this.height - 180;
 
-    // Lane backboards (behind notes)
+    // Lane backboards
     this.laneBackboardLayer = new PIXI.Container();
     this.laneBackboardLayer.zIndex = 1;
     this.app.stage.addChild(this.laneBackboardLayer);
@@ -325,7 +273,7 @@ export class Game {
     }
     if ("cacheAsBitmap" in this.judgeStatic) this.judgeStatic.cacheAsBitmap = true;
 
-    // Per-lane masked note containers to create the tunnel (clip outside the column)
+    // Note containers with per-lane masks
     this.noteLayer = new PIXI.Container();
     this.noteLayer.zIndex = 4;
     this.app.stage.addChild(this.noteLayer);
@@ -343,19 +291,19 @@ export class Game {
 
       const mask = new PIXI.Graphics();
       mask.rect(mx, my, mw, mh);
-      mask.fill(0xffffff);            // IMPORTANT: fill the mask
-      mask.isMask = true;             // so it doesn't render as a white box
+      mask.fill(0xffffff);
+      mask.isMask = true;
 
       laneCont.mask = mask;
 
       this.noteLayer.addChild(laneCont);
-      this.app.stage.addChild(mask);  // mask lives in same space as columns
+      this.app.stage.addChild(mask);
 
       this.laneNoteLayers[i] = laneCont;
       this.laneMasks[i] = mask;
     }
 
-    // Receptors (on top of notes)
+    // Receptors
     this.receptorLayer = new PIXI.Container();
     this.receptorLayer.zIndex = 6;
     this.app.stage.addChild(this.receptorLayer);
@@ -399,12 +347,10 @@ export class Game {
     this.fxTextLayer.zIndex = 7;
     this.app.stage.addChild(this.fxTextLayer);
 
-    // HUD
+    // HUD (external counters if present)
     this.$combo = document.getElementById("hud-combo");
     this.$acc = document.getElementById("hud-acc");
     this.$score = document.getElementById("hud-score");
-
-    this._ensureJudgmentElement();
 
     // Progress bar
     this._buildProgressBar(totalW);
@@ -426,8 +372,23 @@ export class Game {
       Miss: new PIXI.TextStyle({
         fill: 0xaa4b5b, fontSize: 36, fontFamily: "Arial", fontWeight: "bold",
         dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
+      }),
+      Countdown: new PIXI.TextStyle({
+        fill: 0x25F4EE, fontSize: 48, fontFamily: "Arial", fontWeight: "bold",
+        dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
       })
     };
+
+    // Canvas HUD (countdown)
+    this.hudLayer = new PIXI.Container();
+    this.hudLayer.zIndex = 8;
+    this.app.stage.addChild(this.hudLayer);
+
+    this.countdownText = new PIXI.Text({ text: "", style: this._fxStyles.Countdown });
+    this.countdownText.anchor.set(0.5, 0.5);
+    this.countdownText.position.set(this.width / 2, Math.floor(this.height * 0.18));
+    this.countdownText.alpha = 0;
+    this.hudLayer.addChild(this.countdownText);
   }
 
   _buildProgressBar(totalW) {
@@ -461,42 +422,41 @@ export class Game {
       notes: Array.isArray(manifest.notes) ? manifest.notes.map(n => ({ ...n })) : []
     };
 
-    // NEW: honor editor playhead offset (runtime.startAtMs)
+    // honor editor playhead offset (runtime.startAtMs) by trimming notes/time
     const offsetMs = Math.max(0, Number(this.runtime?.startAtMs) || 0);
     if (offsetMs > 0) this._applyStartOffset(offsetMs);
 
-    // clear per-run flags and build
+    // build & inputs
     this._resetNoteRuntimeFlags();
     this._prepareNotes();
     this._prepareInputs();
     await this._snapshotLeaderboardBefore();
 
-    // Visual lead-in (countdown) stays the same
+    // Visual & audio start
     const visualStartPerfMs = performance.now() + this.leadInMs;
-
-    // Start audio after the same lead-in, but at buffer offset = offsetMs
     const audioStartAtSec = player.ctx.currentTime + (this.leadInMs / 1000);
+
+    // NOTE: if your AudioPlayer.playAt doesn't support offset, update it accordingly.
     const source = player.playAt(audioStartAtSec, { offsetSec: offsetMs / 1000 });
 
-    // Run loop on the visual clock
+    // loop
     await this._gameLoop(visualStartPerfMs, () => {});
     await this._reportScoreAndNotify();
+
+    // wait for user to close the results before returning control
+    await this._waitForResultsClose();
+
     source.stop();
   }
 
-  // Clear transient flags on notes between runs
   _resetNoteRuntimeFlags() {
     if (!this.chart || !Array.isArray(this.chart.notes)) return;
     for (const n of this.chart.notes) {
-      if ("hit" in n) delete n.hit;        // main culprit
-      if ("_pf" in n) delete n._pf;        // just in case you add temp fields later
+      if ("hit" in n) delete n.hit;
+      if ("_pf" in n) delete n._pf;
     }
   }
-  
-  // Shift notes so that runtime.startAtMs becomes the new zero.
-  // - drops notes that end before the cut
-  // - trims tails that cross the cut
-  // - shortens durationMs so HUD/progress stay correct
+
   _applyStartOffset(offsetMs) {
     offsetMs = Math.max(0, Number(offsetMs) || 0);
     if (!offsetMs || !this.chart) return;
@@ -508,16 +468,13 @@ export class Game {
       const dur   = Math.max(0, n.dMs | 0);
       const end   = start + dur;
 
-      // entirely before the offset → drop
       if (end <= offsetMs) continue;
 
       const nn = { ...n };
-      // shift head
       nn.tMs = Math.max(0, start - offsetMs);
 
-      // trim tail if needed
       if (dur > 0) {
-        const newEnd = end - offsetMs;        // end relative to new zero
+        const newEnd = end - offsetMs;
         nn.dMs = Math.max(0, newEnd - nn.tMs);
       } else {
         delete nn.dMs;
@@ -576,7 +533,6 @@ export class Game {
     const hold = this.activeHoldsByLane.get(lane);
     if (!hold || hold.broken) return;
 
-    // Early release before end -> break hold; body begins fade now
     if (nowMs < hold.endMs - 80) {
       hold.broken = true;
       this.state.combo = 0;
@@ -690,25 +646,8 @@ export class Game {
     displayObj.__pfFade = { rate: fadeRatePerFrame, remove: removeWhenDone };
   }
 
+  // Canvas-only judgment text (fade while rising)
   _judgment(label, miss = false) {
-    this._ensureJudgmentElement();
-    const el = this.$judge;
-    if (el) {
-      el.textContent = label;
-      el.style.color = miss ? "#aa4b5b" :
-        (label === "Perfect" ? "#25F4EE" : (label === "Great" ? "#C8FF4D" : "#8A5CFF"));
-      el.style.opacity = "1";
-      el.style.transform = "translate(-50%, 50%) scale(1.0)";
-      requestAnimationFrame(() => {
-        el.style.transform = "translate(-50%, 50%) scale(1.08)";
-        el.style.opacity = "1";
-        setTimeout(() => {
-          el.style.opacity = "0";
-          el.style.transform = "translate(-50%, 50%) scale(1.0)";
-        }, 260);
-      });
-    }
-
     const style = miss ? this._fxStyles.Miss
       : label === "Perfect" ? this._fxStyles.Perfect
       : label === "Great" ? this._fxStyles.Great
@@ -757,7 +696,7 @@ export class Game {
         gloss.alpha = 0.45;
       }
 
-      // place in lane container (masked to column)
+      // place in lane container
       cont.x = this._laneX(n.lane) + (this.laneWidth - headW) / 2;
       cont.y = -60;
 
@@ -769,11 +708,10 @@ export class Game {
         body.x = stemX;
         body.y = -(lengthPx - 2);
         body.tint = this.vis.laneColors[n.lane % this.vis.laneColors.length];
-        body.alpha = 1.0; // solid unless hit/miss
+        body.alpha = 1.0;
         body.__pfLen = lengthPx;
         body.__pfHoldActive = false;
 
-        // Optional per-note mask at judge line (only if holdTailClipsAtJudge = true)
         if (this.holdTailClipsAtJudge) {
           const bm = new PIXI.Graphics();
           bm.isMask = true;
@@ -797,15 +735,13 @@ export class Game {
       return rec;
     });
 
-    // Countdown helpers
+    // Canvas countdown helpers
     const showCountdown = (msLeft) => {
-      this._ensureJudgmentElement();
       const sLeft = Math.ceil(msLeft / 1000);
-      this.$judge.style.color = "#25F4EE";
-      this.$judge.textContent = sLeft > 0 ? String(sLeft) : "Go!";
-      this.$judge.style.opacity = "1";
+      this.countdownText.text = sLeft > 0 ? String(sLeft) : "Go!";
+      this.countdownText.alpha = 1;
     };
-    const hideCountdown = () => { if (this.$judge) this.$judge.style.opacity = "0"; };
+    const hideCountdown = () => { if (this.countdownText) this.countdownText.alpha = 0; };
 
     return await new Promise(resolve => {
       this.app.ticker.add(() => {
@@ -900,32 +836,26 @@ export class Game {
             body.__pfMask.isMask = true;
           }
 
-          // Remove whole note once it's well below screen (lane mask also hides it)
-          // ----- compute full visual bounds (head + tail) -----
+          // compute full visual bounds (head + tail)
           const headTop = cont.y;
           const headBottom = cont.y + head.height;
           let topY = headTop;
           let bottomY = headBottom;
 
           if (body) {
-            // Tail is drawn upward from the head (negative Y relative to head)
             const bodyTop = cont.y - (body.__pfLen - 2);
             let bodyBottom = cont.y; // where tail meets head
-
-            // In judge-clip mode, the body is masked at the judge line,
-            // so the visible bottom can't be below judgeY.
             if (this.holdTailClipsAtJudge) {
               bodyBottom = Math.min(bodyBottom, this.judgeY);
             }
-
             topY = Math.min(topY, bodyTop);
             bottomY = Math.max(bottomY, bodyBottom);
           }
 
-          // lane's visual bottom (since lanes are masked to column height)
+          // lane's visual bottom
           const laneBottom = this._laneTop + this._laneHeight;
 
-          // Only cull once the ENTIRE note (including tail) is past the bottom of the column
+          // Only cull once the entire note is past the bottom
           const fullyBelowLane = topY > (laneBottom + 80);
           if (fullyBelowLane) {
             if (body?.__pfMask) { body.mask = null; body.__pfMask.removeFromParent(); }
@@ -940,7 +870,7 @@ export class Game {
             if (!head.__pfFade) this._beginFadeOut(head, head.__pfFadeRate, false);
           }
 
-          // Per-frame fading for head/body (only if hit/miss started a fade)
+          // Per-frame fading
           if (head.parent && head.__pfFade) {
             head.alpha = Math.max(0, head.alpha - head.__pfFade.rate);
           }
@@ -953,14 +883,14 @@ export class Game {
             }
           }
 
-          // Optional gloss near judge line (just clamp to head alpha)
+          // Optional gloss near judge line
           if (gloss) {
             const dy = Math.abs(this.judgeY - (y + head.height / 2));
             gloss.alpha = Math.min(gloss.alpha, head.alpha);
             gloss.visible = dy < 420 && head.alpha > 0.05;
           }
 
-          // Hold miss at head: start fades (no scaling)
+          // Hold miss at head
           if (body && !n.hit && (tMs - n.tMs > 120)) {
             n.hit = true;
             this.state.combo = 0;
@@ -978,7 +908,6 @@ export class Game {
             if (hold.broken) continue;
             if (tMs < hold.endMs) {
               if (!this.held[lane]) {
-                // Early release -> break now; start body fade (masked by lane/optional hold mask)
                 hold.broken = true;
                 this.state.combo = 0;
                 this._recordJudge("Miss");
@@ -994,7 +923,6 @@ export class Game {
                 this.activeHoldsByLane.delete(lane);
               }
             } else {
-              // Hold completed successfully -> fade body/head now (no shrinking)
               if (hold.bodyRef) {
                 hold.bodyRef.__pfHoldActive = false;
                 this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE, true);
@@ -1044,9 +972,20 @@ export class Game {
             this._resultsShown = true;
             this._showResultsOverlay();
           }
-          resolve();
+          // Do NOT resolve here. We’ll resolve after user closes the overlay.
         }
       });
+
+      // if something goes wrong and results never show, soft timeout fallback (very generous)
+      setTimeout(() => {
+        if (!this._resultsShown) {
+          this._resultsShown = true;
+          this._showResultsOverlay();
+        }
+      }, (this.chart?.durationMs || 20000) + 10000);
+
+      // allow external resolver to end the loop
+      this._setResultsCloseResolver(() => resolve());
     });
   }
 
@@ -1223,7 +1162,13 @@ export class Game {
       </div>
     `;
 
-    el.querySelector("#pf-results-close")?.addEventListener("click", () => el.remove());
+    el.querySelector("#pf-results-close")?.addEventListener("click", () => {
+      el.remove();
+      // tell the loop/caller we’re done
+      try { this._resultsCloseResolver?.(); } catch {}
+      this._resultsCloseResolver = null;
+    });
+
     document.body.appendChild(el);
     this._resultsOverlay = el;
   }
@@ -1238,7 +1183,7 @@ export class Game {
   }
 
   _resultChip(color, label, value) {
-    return `<div style="border:1px solid #2a3142;border-radius:10px;padding:10px;background:#0f1420;">
+    return `<div style="border:1px solid ${'#2a3142'};border-radius:10px;padding:10px;background:#0f1420;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
         <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};"></span>
         <span style="opacity:.9">${label}</span>
@@ -1279,23 +1224,19 @@ export class Game {
   }
 
   async _reportScoreAndNotify() {
-    // --- HARD GUARD: never submit if this is an editor preview or autosubmit is off ---
     const isEditorPreview =
       this.runtime?.isEditorPreview === true ||
       (this.chart?.title === "Editor Preview") ||
       (this.chart?.trackId === "editor-preview");
 
     if (this.runtime?.autoSubmit === false || isEditorPreview) {
-      // Still show a results overlay, but don't talk to the server.
       try {
-        // You can keep the local projection if you want; here we just blank it.
         this._setProjectedRankText("—");
         this._setOfficialRankText("—");
       } catch {}
       return;
     }
 
-    // Normal submit path
     const name = this._getUserName();
     const trackId =
       this.chart?.trackId ||
@@ -1338,7 +1279,7 @@ export class Game {
         if (Number.isFinite(data?.rank)) serverNewRank = Number(data.rank);
         if (Number.isFinite(data?.total)) serverTotal = Number(data.total);
       }
-    } catch { /* ignore network/submit errors */ }
+    } catch {}
 
     try {
       const rows = await this._fetchLeaderboard(200);
@@ -1348,7 +1289,7 @@ export class Game {
         rank: serverNewRank ?? (me ? (rows.indexOf(me) + 1) : null),
         total: serverTotal ?? rows.length
       };
-    } catch { /* ignore */ }
+    } catch {}
 
     if (Number.isFinite(this._lbAfter.rank)) {
       const t = Number.isFinite(this._lbAfter.total)
@@ -1445,6 +1386,20 @@ export class Game {
       setTimeout(() => el.remove(), 260);
     }, 2600);
   }
+
+  // Helpers for results-close synchronization
+  _setResultsCloseResolver(fn) {
+    this._resultsCloseResolver = fn;
+  }
+  async _waitForResultsClose() {
+    // If overlay already closed (or never created), resolve immediately
+    if (!document.getElementById("pf-results-overlay")) return;
+    await new Promise(res => {
+      this._resultsCloseResolver = () => { try { res(); } catch {} };
+    });
+  }
+
+  _laneX(idx) { return this.startX + idx * (this.laneWidth + this.laneGap); }
 
   // Helper: find active-hold record for a body sprite (if any)
   _holdInfoForSprite(bodySprite) {
