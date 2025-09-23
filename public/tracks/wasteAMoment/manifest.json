@@ -1,0 +1,11 @@
+{
+  "trackId": "wasteAMoment",
+  "title": "Waste A Moment",
+  "artist": "Kings of Leon",
+  "audio": {
+    "wav": "/assets/music/Kings of Leon - Waste A Moment (Official Audio).mp3"
+  },
+  "charts": {
+  },
+  "cover": "/assets/images/wasteAMoment.jpg"
+}
