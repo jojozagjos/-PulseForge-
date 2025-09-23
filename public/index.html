@@ -139,155 +139,142 @@
       </div>
     </section>
 
-    <!-- ===== Editor Screen (drop-in) ===== -->
-    <div id="screen-editor" class="screen editor-grid">
-      <div class="editor-header">
-        <div class="left">
-          <button id="btn-back-editor" class="ghost">Back</button>
-          <h1>Chart Editor</h1>
+    <div id="screen-editor" class="screen">
+      <h1>Chart Editor</h1>
+
+      <div class="row" style="margin-top:10px;">
+        <button id="btn-back-editor" class="ghost">Back</button>
+      </div>
+
+      <!-- Chart File (collapsible) -->
+      <details id="ed-sec-chart" class="panel" style="margin-top:10px;">
+        <summary style="cursor:pointer; font-weight:600; padding:6px 0;">Chart File</summary>
+        <div class="row" style="gap:10px; flex-wrap:wrap; margin-top:8px;">
+
+          <label style="flex:1 1 320px;">
+            Manifest URL
+            <input id="ed-manifest-url" type="text" placeholder="/tracks/birdbrain/manifest.json" />
+          </label>
+          <label>
+            Difficulty
+            <select id="ed-diff">
+              <option value="easy">easy</option>
+              <option value="normal" selected>normal</option>
+              <option value="hard">hard</option>
+            </select>
+          </label>
+          <button id="ed-open-url" class="secondary">Open Manifest</button>
+
+          <label style="flex:1 1 320px;">
+            Or open chart JSON file
+            <input id="ed-open-file" type="file" accept="application/json" />
+          </label>
+          <button id="ed-open-use-file" class="secondary">Use Chart File</button>
+
+          <button id="ed-save-as" class="primary">Save Chart As…</button>
+          <button id="ed-clear-notes" class="ghost">Clear Notes</button>
         </div>
-        <div class="right">
-          <!-- Transport kept visible in header for quick access -->
+      </details>
+
+      <!-- Audio (collapsible) -->
+      <details id="ed-sec-audio" class="panel" style="margin-top:10px;">
+        <summary style="cursor:pointer; font-weight:600; padding:6px 0;">Audio</summary>
+        <div class="row" style="gap:10px; flex-wrap:wrap; margin-top:8px;">
+          <label style="flex:1 1 360px;">
+            Use existing URL
+            <input id="ed-audio-url" type="text" placeholder="/assets/music/my-song.mp3" />
+          </label>
+          <button id="ed-audio-load-url" class="secondary">Load URL</button>
+
+          <label style="flex:1 1 360px;">
+            Or import file
+            <input id="ed-audio-file" type="file" accept="audio/*" />
+          </label>
+          <button id="ed-audio-use-file" class="secondary">Use File</button>
+
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input id="ed-audio-apply-manifest" type="checkbox" />
+            Update manifest audio fields
+          </label>
+        </div>
+        <div class="muted" id="ed-audio-hint" style="margin-top:6px;">
+          Tip: For URL, use a path under /public, e.g. /assets/music/track.mp3.
+          For file, we preview with a temporary blob URL; remember to copy the file into your project before shipping.
+        </div>
+      </details>
+
+      <!-- Tools (collapsible) -->
+      <details id="ed-sec-tools" open class="panel" style="margin-top:10px;">
+        <summary style="cursor:pointer; font-weight:600; padding:6px 0;">Tools & Parameters</summary>
+
+        <!-- Tools -->
+        <div class="row" style="margin-top:8px; gap:8px; flex-wrap:wrap;">
+          <button data-tool="select" class="secondary">Select/Move</button>
+          <button data-tool="create" class="secondary">Create</button>
+          <button data-tool="delete" class="secondary">Delete</button>
+          <button data-tool="stretch" class="secondary">Stretch</button>
+          <button data-tool="copy" class="secondary">Copy</button>
+          <button data-tool="paste" class="secondary">Paste</button>
+        </div>
+
+        <!-- Parameters -->
+        <div class="row" style="margin-top:6px; gap:12px; flex-wrap:wrap; align-items:center;">
+          <label>BPM <input id="ed-bpm" type="number" value="120" /></label>
+          <label>Subdiv <input id="ed-subdiv" type="number" value="4" /></label>
+          <label>Lanes <input id="ed-lanes" type="number" value="4" /></label>
+          <label style="display:flex; align-items:center; gap:6px;">
+            Zoom
+            <input id="ed-zoom" type="range" min="0.25" max="3" step="0.01" value="1" />
+            <span id="ed-zoom-indicator" class="muted">100%</span>
+          </label>
+        </div>
+
+        <!-- Toggles -->
+        <div class="row" style="margin-top:6px; gap:18px; flex-wrap:wrap; align-items:center;">
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input id="ed-follow" type="checkbox" />
+            Follow Playhead
+          </label>
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input id="ed-metro" type="checkbox" />
+            Metronome
+          </label>
+        </div>
+
+        <!-- Transport -->
+        <div class="row" style="margin-top:8px; gap:10px; flex-wrap:wrap; align-items:center;">
           <button class="secondary" id="ed-play">Play</button>
           <button class="secondary" id="ed-pause">Pause</button>
           <button class="secondary" id="ed-stop">Stop</button>
           <button class="secondary" id="ed-undo">Undo</button>
           <button class="secondary" id="ed-redo">Redo</button>
-          <button class="secondary" id="ed-test">Test in Game</button>
-          <strong style="margin-left:8px;"><span class="secondary" id="ed-time">0s / 0s</span></strong>
+          <button class="secondary" id="ed-import">Import JSON</button>
+          <button class="secondary" id="ed-export">Export JSON</button>
+          <button class="secondary" id="ed-test">Test in Game *Starts At Playhead*</button>
+          <strong><span class="secondary" id="ed-time">0s / 0s</span></strong>
         </div>
+      </details>
+
+      <div id="ed-help" class="muted" style="margin-top:6px;"></div>
+
+      <!-- Scrubber -->
+      <input id="ed-scrub" type="range" min="0" max="180000" step="1" style="width:100%" />
+
+      <div id="help" class="muted" style="margin-top:6px;">
+        <strong>Shortcuts:</strong> 
+        <strong>Shift+Wheel</strong> = Zoom • 
+        <strong>Space</strong> = Play/Pause • 
+        <strong>F</strong> = Focus • 
+        <strong>←/→</strong> = Nudge • 
+        <strong>M</strong> = Metronome • 
+        <strong>Ctrl+Z</strong> = Undo • 
+        <strong>Ctrl+Shift+Z</strong> / <strong>Ctrl+Y</strong> = Redo • 
+        <strong>Alt+Click</strong> = Set Playhead
       </div>
 
-      <div class="editor-split">
-        <!-- Sidebar (tabs + panels) -->
-        <aside id="ed-sidebar">
-          <div class="tabs">
-            <button class="tab active" data-tab="tools">Tools</button>
-            <button class="tab" data-tab="audio">Audio</button>
-            <button class="tab" data-tab="file">File</button>
-            <button class="tab" data-tab="settings">Settings</button>
-          </div>
-
-          <div class="panels">
-            <!-- Tools & Parameters -->
-            <section class="panel tab-pane active" data-tab="tools">
-              <div class="row" style="gap:8px; flex-wrap:wrap;">
-                <button data-tool="select" class="secondary">Select/Move</button>
-                <button data-tool="create" class="secondary">Create</button>
-                <button data-tool="delete" class="secondary">Delete</button>
-                <button data-tool="stretch" class="secondary">Stretch</button>
-                <button data-tool="copy" class="secondary">Copy</button>
-                <button data-tool="paste" class="secondary">Paste</button>
-              </div>
-
-              <hr class="sep">
-
-              <div class="row" style="gap:12px; flex-wrap:wrap; align-items:center;">
-                <label>BPM <input id="ed-bpm" type="number" value="120" /></label>
-                <label>Subdiv <input id="ed-subdiv" type="number" value="4" /></label>
-                <label>Lanes <input id="ed-lanes" type="number" value="4" /></label>
-              </div>
-
-              <div class="row" style="gap:12px; flex-wrap:wrap; align-items:center; margin-top:6px;">
-                <label style="display:flex; align-items:center; gap:6px;">
-                  Zoom
-                  <input id="ed-zoom" type="range" min="0.25" max="3" step="0.01" value="1" />
-                  <span id="ed-zoom-indicator" class="muted">100%</span>
-                </label>
-              </div>
-
-              <div class="row" style="gap:18px; flex-wrap:wrap; align-items:center; margin-top:6px;">
-                <label style="display:flex; align-items:center; gap:8px;">
-                  <input id="ed-follow" type="checkbox" />
-                  Follow Playhead
-                </label>
-                <label style="display:flex; align-items:center; gap:8px;">
-                  <input id="ed-metro" type="checkbox" />
-                  Metronome
-                </label>
-              </div>
-
-              <div id="ed-help" class="muted" style="margin-top:8px;"></div>
-
-              <div class="muted tiny" style="margin-top:8px;">
-                <strong>Shortcuts:</strong> Shift+Wheel = Zoom • Space = Play/Pause • F = Focus • ←/→ = Nudge • M = Metronome • Ctrl+Z / Ctrl+Shift+Z = Undo/Redo • Alt+Click = Set Playhead
-              </div>
-            </section>
-
-            <!-- Audio -->
-            <section class="panel tab-pane" data-tab="audio">
-              <div class="row" style="gap:10px; flex-wrap:wrap;">
-                <label style="flex:1 1 360px;">
-                  Use existing URL
-                  <input id="ed-audio-url" type="text" placeholder="/assets/music/my-song.mp3" />
-                </label>
-                <button id="ed-audio-load-url" class="secondary">Load URL</button>
-
-                <label style="flex:1 1 360px;">
-                  Or import file
-                  <input id="ed-audio-file" type="file" accept="audio/*" />
-                </label>
-                <button id="ed-audio-use-file" class="secondary">Use File</button>
-
-                <label style="display:flex; align-items:center; gap:8px;">
-                  <input id="ed-audio-apply-manifest" type="checkbox" />
-                  Update manifest audio fields
-                </label>
-              </div>
-              <div class="muted" id="ed-audio-hint" style="margin-top:6px;">
-                Tip: For URL, use a path under /public, e.g. /assets/music/track.mp3. For file, we preview with a temporary blob URL; copy the file into your project before shipping.
-              </div>
-            </section>
-
-            <!-- File / Chart -->
-            <section class="panel tab-pane" data-tab="file">
-              <div class="row" style="gap:10px; flex-wrap:wrap;">
-                <label style="flex:1 1 320px;">
-                  Manifest URL
-                  <input id="ed-manifest-url" type="text" placeholder="/tracks/birdbrain/manifest.json" />
-                </label>
-                <label>
-                  Difficulty
-                  <select id="ed-diff">
-                    <option value="easy">easy</option>
-                    <option value="normal" selected>normal</option>
-                    <option value="hard">hard</option>
-                  </select>
-                </label>
-                <button id="ed-open-url" class="secondary">Open Manifest</button>
-
-                <label style="flex:1 1 320px;">
-                  Or open chart JSON file
-                  <input id="ed-open-file" type="file" accept="application/json" />
-                </label>
-                <button id="ed-open-use-file" class="secondary">Use Chart File</button>
-
-                <button id="ed-save-as" class="primary">Save Chart As…</button>
-                <button id="ed-clear-notes" class="ghost">Clear Notes</button>
-              </div>
-            </section>
-
-            <!-- Settings (extras you may add later) -->
-            <section class="panel tab-pane" data-tab="settings">
-              <div class="muted">
-                Add any global editor settings here (theme, grid density, display, etc).
-              </div>
-            </section>
-          </div>
-        </aside>
-
-        <!-- Drag handle -->
-        <div id="ed-gutter" title="Drag to resize"></div>
-
-        <!-- Stage (always full height) -->
-        <main id="ed-stage">
-          <div class="stage-top">
-            <input id="ed-scrub" type="range" min="0" max="180000" step="1" />
-          </div>
-          <div class="stage-canvas-wrap">
-            <canvas id="editor-canvas"></canvas>
-          </div>
-        </main>
+      <!-- Canvas -->
+      <div style="height: 70vh; border:1px solid #2a3142; border-radius:12px; overflow:hidden; margin-top:8px;">
+        <canvas id="editor-canvas" style="width:100%; height:100%; display:block;"></canvas>
       </div>
     </div>
 
@@ -313,65 +300,6 @@
     </div>
   </div>
 
-  <script>
-    // Tabs
-    (function () {
-      const root = document.getElementById('screen-editor');
-      if (!root) return;
-      const tabs = Array.from(root.querySelectorAll('#ed-sidebar .tab'));
-      const panes = Array.from(root.querySelectorAll('#ed-sidebar .tab-pane'));
-
-      function activate(name) {
-        tabs.forEach(b => b.classList.toggle('active', b.dataset.tab === name));
-        panes.forEach(p => p.classList.toggle('active', p.dataset.tab === name));
-        // Persist last tab
-        try { localStorage.setItem('pf-ed-last-tab', name); } catch {}
-      }
-
-      tabs.forEach(b => b.addEventListener('click', () => activate(b.dataset.tab)));
-
-      // Restore last tab or default to 'tools'
-      const last = localStorage.getItem('pf-ed-last-tab') || 'tools';
-      activate(last);
-    })();
-
-    // Resizable sidebar (persists)
-    (function () {
-      const split = document.querySelector('.editor-split');
-      const gutter = document.getElementById('ed-gutter');
-      if (!split || !gutter) return;
-
-      // Restore width
-      const saved = parseInt(localStorage.getItem('pf-ed-sidebar-w') || '360', 10);
-      split.style.setProperty('--sidebar-w', Math.max(260, Math.min(window.innerWidth - 360, saved)) + 'px');
-
-      let dragging = false;
-
-      const onDown = (e) => { dragging = true; document.body.style.userSelect = 'none'; };
-      const onMove = (e) => {
-        if (!dragging) return;
-        const x = e.clientX;
-        const w = Math.max(260, Math.min(window.innerWidth - 360, x));
-        split.style.setProperty('--sidebar-w', w + 'px');
-      };
-      const onUp = () => {
-        if (!dragging) return;
-        dragging = false;
-        document.body.style.userSelect = '';
-        const val = getComputedStyle(split).getPropertyValue('--sidebar-w').trim();
-        try { localStorage.setItem('pf-ed-sidebar-w', parseInt(val,10)); } catch {}
-        // Trigger a resize so your Editor recalculates canvas size accurately
-        window.dispatchEvent(new Event('resize'));
-      };
-
-      gutter.addEventListener('mousedown', onDown);
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
-    })();
-
-    // Optional: make the canvas height recompute on header size changes
-    // (If your header height isn’t ~56px, you can compute and set a CSS var here.)
-  </script>
   <script type="module" defer src="/js/main.js?v=19"></script>
 </body>
 </html>
