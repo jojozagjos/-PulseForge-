@@ -666,11 +666,34 @@ export class Game {
   }
 
   async _gameLoop(startPerfMs, tickHook) {
-    // clear previous
-    for (const lc of this.laneNoteLayers) lc.removeChildren();
-    this.fxRingLayer.removeChildren();
-    this.fxTextLayer.removeChildren();
-    this.spriteByNote.clear();
+    // ===== defensive clear/ensure layers =====
+    // lane note layers
+    if (!Array.isArray(this.laneNoteLayers)) this.laneNoteLayers = [];
+    for (const lc of this.laneNoteLayers) {
+      try { lc?.removeChildren?.(); } catch {}
+    }
+
+    // fx ring layer
+    if (!this.fxRingLayer) {
+      this.fxRingLayer = this._makeFxRingLayer();
+      this.fxRingLayer.zIndex = 7;
+      try { this.app?.stage?.addChild?.(this.fxRingLayer); } catch {}
+    } else {
+      try { this.fxRingLayer.removeChildren(); } catch {}
+    }
+
+    // fx text layer
+    if (!this.fxTextLayer) {
+      this.fxTextLayer = new PIXI.Container();
+      this.fxTextLayer.zIndex = 7;
+      try { this.app?.stage?.addChild?.(this.fxTextLayer); } catch {}
+    } else {
+      try { this.fxTextLayer.removeChildren(); } catch {}
+    }
+
+    // sprite map
+    if (!this.spriteByNote) this.spriteByNote = new Map();
+    else try { this.spriteByNote.clear(); } catch {}
 
     this._resultsShown = false;
     this.state.judges = { Perfect: 0, Great: 0, Good: 0, Miss: 0 };
