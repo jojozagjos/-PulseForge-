@@ -1623,4 +1623,4 @@ export class Editor {
     this._volume = vol;
     if (this.masterGain) this.masterGain.gain.value = vol;
   }
-}
+} 
