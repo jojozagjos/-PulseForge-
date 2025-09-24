@@ -135,23 +135,12 @@ export class Editor {
     this._redo = [];
     this._historyLimit = 100;
 
-    // ====== New lifecycle/loop state ======
-    this._running = true;
-    this._rafId = null;
-    this._lastDrawMs = 0;     // for throttle
-    this._isPlayingForLoop = false; // mirrored from this.playing for loop throttling
-    this._needsDraw = true;
-
-    // ====== Bind handlers so we can remove them in destroy() ======
+    // Bind methods
     this._tick = this._tick.bind(this);
     this._onWheel = this._onWheel.bind(this);
     this._resize = this._resize.bind(this);
     this._onKeyDown = this._onKeyDown.bind(this);
     this._metroSchedulerTick = this._metroSchedulerTick.bind(this);
-    this._onVisibility = this._onVisibility.bind(this);
-    this._boundPointerMove = (e) => this._pointerMove(e);
-    this._boundPointerDown = (e) => this._pointerDown(e);
-    this._boundPointerUp = (e) => this._pointerUp(e);
 
     // Live volume sync (from Settings screen)
     window.addEventListener("pf-volume-changed", (e) => {
@@ -166,34 +155,21 @@ export class Editor {
     // Size & listeners
     this._resize();
     window.addEventListener("resize", this._resize);
-    document.addEventListener("visibilitychange", this._onVisibility);
 
     // Block page scrolling when using the editor canvas
     this.canvas.addEventListener("wheel", this._onWheel, { passive: false });
-    this.canvas.addEventListener("mousedown", (e) => {
+    this.canvas.addEventListener("mousedown", e => {
       if (e.button === 1) e.preventDefault(); // middle-drag pan without autoscroll
     });
 
     window.addEventListener("keydown", this._onKeyDown);
 
     // Pointer
-    this.canvas.addEventListener("pointermove", this._boundPointerMove);
-    this.canvas.addEventListener("pointerdown", this._boundPointerDown);
-    window.addEventListener("pointerup", this._boundPointerUp);
+    this.canvas.addEventListener("pointermove", e => this._pointerMove(e));
+    this.canvas.addEventListener("pointerdown", e => this._pointerDown(e));
+    window.addEventListener("pointerup", e => this._pointerUp(e));
 
-    // Observe screen visibility to auto pause/resume
-    const screen = document.getElementById("screen-editor");
-    if (screen) {
-      this._screenObs = new MutationObserver(() => {
-        const active = screen.classList.contains("active");
-        if (!active) this.pause();
-        else this.resume();
-      });
-      this._screenObs.observe(screen, { attributes: true, attributeFilter: ["class"] });
-    }
-
-    // Start loop (throttled)
-    this._rafId = requestAnimationFrame(this._tick);
+    requestAnimationFrame(this._tick);
 
     // External hooks
     this.onExport = opts.onExport || (() => {});
@@ -218,7 +194,6 @@ export class Editor {
     this.selection = new Set(s.selection || []);
     this._syncInputs();
     this._updateScrubMax();
-    this._needsDraw = true;
   }
   _pushUndo(label) {
     if (!this.chart) return;
@@ -341,7 +316,6 @@ export class Editor {
     this._undo = [];
     this._redo = [];
     this._pushUndo(); // baseline
-    this._needsDraw = true;
   }
 
   /** Load a manifest + chart (optional) and wire toolbars. */
@@ -389,8 +363,6 @@ export class Editor {
     this._wireZoomIndicator();
     this._wireTestButton();
     this._wireHistoryButtons();
-
-    this._needsDraw = true;
   }
 
   /** Wire toolbar & controls already in HTML. */
@@ -453,13 +425,12 @@ export class Editor {
     const zoomEl = document.getElementById(this.ids.zoom);
     const scrubEl = document.getElementById(this.ids.scrub);
 
-    bpmEl?.addEventListener("change", () => { this._pushUndo("BPM change"); this.chart.bpm = Number(bpmEl.value) || 120; this._needsDraw = true; });
-    subEl?.addEventListener("change", () => { this.subdiv = Math.max(1, Number(subEl.value) || 4); this._needsDraw = true; });
-    lanesEl?.addEventListener("change", () => { this._pushUndo("Lanes change"); this.chart.lanes = Math.max(1, Number(lanesEl.value) || 4); this._needsDraw = true; });
+    bpmEl?.addEventListener("change", () => { this._pushUndo("BPM change"); this.chart.bpm = Number(bpmEl.value) || 120; });
+    subEl?.addEventListener("change", () => { this.subdiv = Math.max(1, Number(subEl.value) || 4); });
+    lanesEl?.addEventListener("change", () => { this._pushUndo("Lanes change"); this.chart.lanes = Math.max(1, Number(lanesEl.value) || 4); });
     zoomEl?.addEventListener("input", () => {
       this.zoomY = Math.max(0.25, Math.min(3, Number(zoomEl.value)));
       this._updateZoomIndicator();
-      this._needsDraw = true;
     });
 
     // Transport (note: Stop ends the song)
@@ -482,7 +453,6 @@ export class Editor {
           this._syncInputs();
           this._updateScrubMax();
           this._help("Imported chart.");
-          this._needsDraw = true;
         } else {
           alert("Invalid chart JSON.");
         }
@@ -496,7 +466,6 @@ export class Editor {
     scrubEl?.addEventListener("input", () => {
       const ms = Number(scrubEl.value);
       this.seek(ms); // seek updates playStartMs; if playing, it will restart from here
-      this._needsDraw = true;
     });
 
     // Wire the rest
@@ -506,6 +475,8 @@ export class Editor {
     this._wireMetronomeControl();
     this._wireZoomIndicator();
     this._wireTestButton();
+
+    // (helper text omitted)
   }
 
   // ===== File toolbar =====
@@ -519,7 +490,6 @@ export class Editor {
       this.chart.notes = [];
       this.selection.clear();
       this._help("Cleared all notes.");
-      this._needsDraw = true;
     });
 
     // Open manifest
@@ -559,7 +529,6 @@ export class Editor {
         this._syncInputs();
         this._updateScrubMax();
         this._help(`Opened local chart file: ${f.name}`);
-        this._needsDraw = true;
       } catch (e) {
         console.error(e);
         alert("Failed to open chart file: " + e.message);
@@ -603,17 +572,16 @@ export class Editor {
       if (!url) { alert("Enter an audio URL first."); return; }
       try {
         await this._ensureAudioCtx();
-        await this._loadAudio(encodeURI(url));
-        this.audioUrl = encodeURI(url);
+        await this._loadAudio(url);
+        this.audioUrl = url;
         this._updateScrubMax();
         this._help("Loaded audio from URL.");
         if (applyManifest?.checked) {
           if (!this.manifest) this.manifest = { charts: {} };
           if (!this.manifest.audio) this.manifest.audio = {};
-          if (url.toLowerCase().endsWith(".wav")) this.manifest.audio.wav = this.audioUrl;
-          else this.manifest.audio.mp3 = this.audioUrl;
+          if (url.toLowerCase().endsWith(".wav")) this.manifest.audio.wav = url;
+          else this.manifest.audio.mp3 = url;
         }
-        this._needsDraw = true;
       } catch (e) {
         console.error(e);
         alert("Failed to load audio from URL. Check the path and CORS.");
@@ -643,7 +611,6 @@ export class Editor {
             hint.textContent = "Using a temporary blob URL for preview. Copy your file into /public/assets/music and update the manifest before publishing.";
           }
         }
-        this._needsDraw = true;
       } catch (e) {
         console.error(e);
         alert("Failed to decode audio file.");
@@ -706,7 +673,6 @@ export class Editor {
     if (!this.chart.durationMs || audioMs > this.chart.durationMs) {
       this.chart.durationMs = audioMs;
     }
-    this._needsDraw = true;
   }
 
   _updateScrubMax() {
@@ -746,7 +712,6 @@ export class Editor {
     this.playStartCtxTime = this.audioCtx.currentTime;
     this.playStartMs = startMs;
     this.playing = true;
-    this._isPlayingForLoop = true;
 
     if (this.metronome.enabled) this._metroStart();
 
@@ -754,45 +719,32 @@ export class Editor {
     try {
       this.audioSource.onended = () => {
         this.playing = false;
-        this._isPlayingForLoop = false;
         this._metroStop();
         const endMs = this.chart?.durationMs || Math.floor(this.audioBuffer.duration * 1000) || 0;
         this.playStartMs = endMs;
         const sEl = document.getElementById(this.ids.scrub);
         if (sEl) sEl.value = String(endMs);
-        this._needsDraw = true;
       };
     } catch {}
-    this._needsDraw = true;
   }
 
   pause() {
-    if (!this._running) return; // already paused due to lifecycle; keep logic minimal
-    if (!this.playing) {
-      // lifecycle pause (screen hidden) also lands here; just stop metronome
-      this._metroStop();
-      this._isPlayingForLoop = false;
-      return;
-    }
+    if (!this.playing) return;
     this.playStartMs = this.currentTimeMs();
     this._stopSourceOnly();
     this.playing = false;
-    this._isPlayingForLoop = false;
     this._metroStop();
-    this._needsDraw = true;
   }
 
   /** End the song: stop and jump playhead to the START (reset to 0). */
   end() {
     this._stopSourceOnly();
     this.playing = false;
-    this._isPlayingForLoop = false;
     this.playStartMs = 0;       // reset playback position to start
     this._metroStop();
 
     const s = document.getElementById(this.ids.scrub);
     if (s) s.value = "0";       // reset scrubber UI to 0
-    this._needsDraw = true;
   }
 
   /** Internal: stop only the current buffer source (no resets). */
@@ -809,16 +761,13 @@ export class Editor {
   stop() {
     this._stopSourceOnly();
     this.playing = false;
-    this._isPlayingForLoop = false;
     this.playStartMs = 0;
     this._metroStop();
-    this._needsDraw = true;
   }
 
   seek(ms) {
     this.playStartMs = Math.max(0, Math.min(ms, this.chart.durationMs));
     if (this.playing) { this._stopSourceOnly(); this.play(); } // restart from new offset
-    this._needsDraw = true;
   }
 
   _metroStart() {
@@ -894,7 +843,6 @@ export class Editor {
 
     if (this.drag.type === "pan") {
       this.scrollY = Math.max(0, this.drag.startScrollY + (this.drag.startY - this.mouse.y));
-      this._needsDraw = true;
 
     } else if (this.drag.type === "createHold") {
       const curMs = this._screenToMs(this.mouse.y);
@@ -903,7 +851,6 @@ export class Editor {
       const chkTail = this._canPlaceNote(this.drag.lane, this.drag.baseMs, dMs, ignore);
       if (chkTail.cappedEndMs !== undefined) dMs = Math.max(0, chkTail.cappedEndMs - this.drag.baseMs);
       this.drag.tempNote.dMs = dMs;
-      this._needsDraw = true;
 
     } else if (this.drag.type === "move") {
       const dMs = this._screenToMs(this.mouse.y) - this.drag.startMs;
@@ -927,7 +874,6 @@ export class Editor {
         const nn = this.chart.notes[p.idx];
         nn.lane = p.lane; nn.tMs = p.tMs;
       }
-      this._needsDraw = true;
 
     } else if (this.drag.type === "stretch") {
       const idx = this.drag.stretchIdx;
@@ -937,7 +883,6 @@ export class Editor {
       const chk = this._canPlaceNote(n.lane, n.tMs, proposed, new Set([idx]));
       if (chk.cappedEndMs !== undefined) proposed = Math.max(0, chk.cappedEndMs - n.tMs);
       n.dMs = Math.max(0, Math.min(proposed, this.chart.durationMs - n.tMs));
-      this._needsDraw = true;
 
     } else if (this.drag.type === "boxSelect" || this.drag.type === "boxDelete") {
       // Update marquee end
@@ -953,13 +898,11 @@ export class Editor {
       } else {
         this._previewSelection = hitSet;
       }
-      this._needsDraw = true;
     }
 
     // Edge auto-scroll when dragging across long ranges
     if (this.drag && ["boxSelect", "boxDelete", "move", "createHold", "stretch"].includes(this.drag.type)) {
       this._edgeAutoScroll(this.mouse.y);
-      this._needsDraw = true;
     }
   }
 
@@ -975,7 +918,6 @@ export class Editor {
       this.seek(tMs); // this updates playStartMs and restarts if playing
       const sEl = document.getElementById(this.ids.scrub);
       if (sEl) sEl.value = String(Math.floor(this.playStartMs));
-      this._needsDraw = true;
       return; // don't create/move notes when Alt is held
     }
 
@@ -995,7 +937,6 @@ export class Editor {
       const idx = this.chart.notes.length - 1;
       this.selection.add(idx);
       this.drag = { type: "createHold", baseMs: tMsSnap, tempNote: note, lane };
-      this._needsDraw = true;
 
     } else if (this.tool === "select" || this.tool === "stretch" || this.tool === "delete") {
       const hit = this._hitTestRect(this.mouse.x, this.mouse.y);
@@ -1006,14 +947,12 @@ export class Editor {
           // Fix selection indices and remove deleted from selection
           this.selection = new Set([...this.selection].filter(i => i !== hit.idx).map(i => i > hit.idx ? i - 1 : i));
           this._help("Deleted 1 note.");
-          this._needsDraw = true;
           return;
         }
         // select (click)
         if (!this.selection.has(hit.idx)) {
           if (!e.shiftKey) this.selection.clear();
           this.selection.add(hit.idx);
-          this._needsDraw = true;
         }
 
         if (this.tool === "stretch" || hit.onTail) {
@@ -1063,7 +1002,6 @@ export class Editor {
 
     } else if (this.tool === "paste") {
       this._pasteAt(tMsSnap, lane);
-      this._needsDraw = true;
     }
   }
 
@@ -1071,14 +1009,12 @@ export class Editor {
     if (this.drag?.type === "createHold") {
       const n = this.drag.tempNote;
       if (n.dMs && n.dMs < 10) delete n.dMs; // tiny drag becomes tap
-      this._needsDraw = true;
     } else if (this.drag?.type === "boxSelect") {
       // Commit the marquee selection
       const box = this._normalizedBox(this.drag.startX, this.drag.startY, this.drag.endX, this.drag.endY);
       const hitSet = this._notesInBox(box);
       this.selection = this.drag.additive ? new Set([...this.selection, ...hitSet]) : hitSet;
       this._previewSelection = null;
-      this._needsDraw = true;
     } else if (this.drag?.type === "boxDelete") {
       // Delete everything inside the marquee
       const box = this._normalizedBox(this.drag.startX, this.drag.startY, this.drag.endX, this.drag.endY);
@@ -1088,7 +1024,6 @@ export class Editor {
       this.selection.clear();
       this._previewSelection = null;
       this._help(`Deleted ${idxs.length} note(s).`);
-      this._needsDraw = true;
     }
     this.drag = null;
   }
@@ -1159,7 +1094,6 @@ export class Editor {
       this.chart.notes.splice(i, 1);
     }
     this.selection.clear();
-    this._needsDraw = true;
   }
 
   _pasteAt(tMs, lane) {
@@ -1183,7 +1117,6 @@ export class Editor {
       added++;
     }
     this._help(added ? `Pasted ${added} note(s).` : "Paste blocked by overlaps.");
-    this._needsDraw = true;
   }
 
   _clampMs(ms) { return Math.max(0, Math.min(ms, this.chart.durationMs)); }
@@ -1256,46 +1189,17 @@ export class Editor {
     return { prev, next };
   }
 
-  // ===== Draw loop (throttled) =====
-  _tick(now) {
-    if (!this._running) return;
-
-    // Throttle: ~60 fps while playing, ~30 fps otherwise, always draw if marked dirty
-    const targetMs = this._isPlayingForLoop ? 16 : 33;
-    const due = !this._lastDrawMs || (now - this._lastDrawMs) >= targetMs;
-
-    if (this._isPlayingForLoop || this._needsDraw || due) {
-      this._draw();
-      this._lastDrawMs = now;
-      this._needsDraw = false;
-    }
-
-    this._rafId = requestAnimationFrame(this._tick);
-  }
-
-  _onVisibility() {
-    if (document.hidden) this.pause();
-    else this.resume();
-  }
+  // ===== Draw loop =====
+  _tick() { this._draw(); requestAnimationFrame(this._tick); }
 
   _resize() {
-    // Use real CSS box size to set backing store size, with DPR scale
-    const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2.5));
-    const rect = this.canvas.getBoundingClientRect();
-    const wCss = Math.max(1, Math.floor(rect.width || 1200));
-    const hCss = Math.max(1, Math.floor(rect.height || 700));
-    const wBs = Math.floor(wCss * dpr);
-    const hBs = Math.floor(hCss * dpr);
-
-    if (this.canvas.width !== wBs) this.canvas.width = wBs;
-    if (this.canvas.height !== hBs) this.canvas.height = hBs;
-
-    if (this.canvas.style.width !== `${wCss}px`) this.canvas.style.width = `${wCss}px`;
-    if (this.canvas.style.height !== `${hCss}px`) this.canvas.style.height = `${hCss}px`;
-
+    const ratio = window.devicePixelRatio || 1;
+    const w = this.canvas.clientWidth || 1200;
+    const h = this.canvas.clientHeight || 700;
+    this.canvas.width = Math.floor(w * ratio);
+    this.canvas.height = Math.floor(h * ratio);
     // Draw using CSS pixel coordinates
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    this._needsDraw = true;
+    this.ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   }
 
   _laneW() { return Math.max(110, Math.min(160, Math.floor((this.canvas.width / (window.devicePixelRatio || 1)) / 10))); }
@@ -1525,7 +1429,6 @@ export class Editor {
       // Vertical scroll (pixels)
       this.scrollY = Math.max(0, this.scrollY + e.deltaY);
     }
-    this._needsDraw = true;
   }
 
   async _onKeyDown(e) {
@@ -1584,7 +1487,6 @@ export class Editor {
       const maxScroll = Math.max(0, (this.chart?.durationMs || 0) * pxPerMs - h);
       this.scrollY = Math.max(0, Math.min(maxScroll, targetScroll));
       this._help("Jumped to playhead");
-      this._needsDraw = true;
       return;
     }
 
@@ -1627,7 +1529,6 @@ export class Editor {
     // Stop editor audio immediately so it doesn't stack with the game
     this._stopSourceOnly();
     this.playing = false;
-    this._isPlayingForLoop = false;
     this._metroStop();
 
     const offset = Math.max(0, Math.min(this.currentTimeMs()|0,
@@ -1721,53 +1622,5 @@ export class Editor {
     const vol = Math.max(0, Math.min(1, Number(v) || 0));
     this._volume = vol;
     if (this.masterGain) this.masterGain.gain.value = vol;
-  }
-
-  // ===== New lifecycle API =====
-  /** Pause the editor's draw loop and metronome; safe to call repeatedly. */
-  pause() {
-    if (!this._running) return;
-    this._running = false;
-    if (this._rafId) cancelAnimationFrame(this._rafId);
-    this._rafId = null;
-    this._metroStop(); // ensure scheduler interval is cleared
-    this._isPlayingForLoop = false;
-  }
-
-  /** Resume the editor's draw loop; restarts metronome only if enabled and playing. */
-  resume() {
-    if (this._running) return;
-    this._running = true;
-    // Mirror current play state for loop throttle
-    this._isPlayingForLoop = !!this.playing;
-    this._rafId = requestAnimationFrame(this._tick);
-  }
-
-  /** Full teardown: cancel RAF, clear intervals, and remove all listeners. */
-  destroy() {
-    // Stop loops
-    this.pause();
-    // Stop audio source (if any)
-    this._stopSourceOnly();
-    this.playing = false;
-
-    // Disconnect screen observer
-    if (this._screenObs) {
-      try { this._screenObs.disconnect(); } catch {}
-      this._screenObs = null;
-    }
-
-    // Remove listeners
-    window.removeEventListener("resize", this._resize);
-    document.removeEventListener("visibilitychange", this._onVisibility);
-    this.canvas.removeEventListener("wheel", this._onWheel, { passive: false });
-    this.canvas.removeEventListener("pointermove", this._boundPointerMove);
-    this.canvas.removeEventListener("pointerdown", this._boundPointerDown);
-    window.removeEventListener("pointerup", this._boundPointerUp);
-    window.removeEventListener("keydown", this._onKeyDown);
-
-    // Clear references
-    this.ctx = null;
-    this.canvas = null;
   }
 }
