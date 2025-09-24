@@ -5,10 +5,6 @@ import { AudioPlayer } from "./audio.js";
 const PERFECT_MS = 30;
 const GREAT_MS   = 65;
 const GOOD_MS    = 100;
-/** Early/Late feedback + smooth scoring config */
-const SHOW_EARLY_LATE_THRESHOLD_MS = 8;  // only show “Early/Late” if outside this many ms from center
-const MIN_SCORE_SCALE = 0.70;            // floor for score multiplier at the edge of a window
-const PERFECT_BIAS_MS = 0;               // shift center if you want (e.g., +2 to bias “late” slightly)
 
 /** Visual tuning */
 const WHITE_FLASH_MS = 140;      // taps only
@@ -554,102 +550,40 @@ export class Game {
     }
   }
 
-  /**
-   * Classify a hit given the time difference dt (ms) from the note head:
-   *   dt < 0 => pressed early, dt > 0 => pressed late
-   * Returns null if outside Good window; otherwise an object with:
-   *   { label: 'Perfect'|'Great'|'Good', earlyLate: 'Early'|'Late'|null, scoreScale: 0..1 }
-   */
-  _classifyJudgement(dt) {
-    // apply optional bias to the perceived center
-    dt = dt - PERFECT_BIAS_MS;
-
-    const adt = Math.abs(dt);
-    let label = null;
-    let windowMs = null;
-
-    if (adt <= PERFECT_MS) { label = "Perfect"; windowMs = PERFECT_MS; }
-    else if (adt <= GREAT_MS) { label = "Great"; windowMs = GREAT_MS; }
-    else if (adt <= GOOD_MS) { label = "Good"; windowMs = GOOD_MS; }
-    else { return null; }
-
-    // Smooth score scale within window: 1.0 at center, down to MIN_SCORE_SCALE at the edge
-    const t = Math.min(1, adt / windowMs);
-    const scoreScale = (1 - t) * (1 - MIN_SCORE_SCALE) + MIN_SCORE_SCALE;
-
-    // Early/Late label only if meaningfully off-center
-    let earlyLate = null;
-    if (adt >= SHOW_EARLY_LATE_THRESHOLD_MS) {
-      earlyLate = dt < 0 ? "Early" : "Late";
-    }
-
-    return { label, earlyLate, scoreScale, adt, dt };
-  }
-
-  /**
-   * Compute base score for a judgement label.
-   * Keeping your existing relative weights and combo bonus behavior.
-   */
-  _basePointsFor(label) {
-    if (label === "Perfect") return 100;
-    if (label === "Great")   return 80;
-    if (label === "Good")    return 50;
-    return 0;
-  }
-
   _attemptHit(lane, isDown) {
     if (!isDown) return;
     if (this.state.timeMs < 0) return;
-
     const nowMs = this.state.timeMs + (this.settings.latencyMs || 0);
 
     const arr = this.notesByLane[lane] || [];
     let idx = this.nextIdxByLane[lane] || 0;
 
     for (let i = idx; i < arr.length; i++) {
-      const n = arr[i];
-      if (n.hit) { idx = i + 1; continue; }
-
-      const dt = nowMs - n.tMs;
+      const n = arr[i]; if (n.hit) { idx = i + 1; continue; }
+      const dt = nowMs - n.tMs, adt = Math.abs(dt);
       const isHold = (n.dMs && n.dMs > 0);
 
-      // Use the smoother classification
-      const cj = this._classifyJudgement(dt);
-
-      if (cj) {
-        this._registerHit(n, lane, cj.label, isHold, cj);
-        idx = i + 1;
-        break;
-      } else {
-        // If we are still far before the note, stop scanning
-        if (dt < -GOOD_MS) {
-          break;
-        } else {
-          // We are past this note’s Good window but did not hit it, move to next
-          if (dt > GOOD_MS) { idx = i + 1; continue; }
-        }
-      }
+      if (adt <= PERFECT_MS) { this._registerHit(n, lane, "Perfect", isHold); idx = i + 1; break; }
+      else if (adt <= GREAT_MS) { this._registerHit(n, lane, "Great", isHold); idx = i + 1; break; }
+      else if (adt <= GOOD_MS) { this._registerHit(n, lane, "Good", isHold); idx = i + 1; break; }
+      else if (dt < -120) { break; }
+      else { idx = i + 1; continue; }
     }
 
     this.nextIdxByLane[lane] = idx;
   }
 
-  _registerHit(note, lane, label, isHold, cj /* optional classification */) {
+  _registerHit(note, lane, label, isHold) {
     note.hit = true;
 
     // scoring + counters
-    const base   = this._basePointsFor(label);
-    const mult   = cj?.scoreScale ?? 1; // smooth scale inside the window
-    const comboB = Math.floor(this.state.combo * 0.1);
-
-    this.state.score += Math.floor((base + comboB) * mult);
+    const base = label === "Perfect" ? 100 : label === "Great" ? 80 : 50;
+    this.state.score += base + Math.floor(this.state.combo * 0.1);
     this.state.combo += 1;
     this.maxCombo = Math.max(this.maxCombo || 0, this.state.combo);
     this.state.hits += 1;
     this._recordJudge(label);
-
-    // Show judgment with Early/Late if present
-    this._judgment(label, false, cj?.earlyLate || null, cj?.adt);
+    this._judgment(label);
 
     // receptor pulse + ring
     const lc = this.vis.laneColors[lane % this.vis.laneColors.length];
@@ -683,9 +617,11 @@ export class Game {
         bodyRef: vis.body
       });
 
+      // Head flash then fade
       const until = (this.state.timeMs || 0) + WHITE_FLASH_MS;
       vis.head.__pfFlashUntil = until;
       vis.head.__pfFadeRate   = HIT_FADE_RATE;
+
     } else {
       // Tap: brief head white flash
       this._paintHeadWhite(vis.head);
@@ -711,25 +647,15 @@ export class Game {
   }
 
   // Canvas-only judgment text (fade while rising)
-  // Canvas-only judgment text (fade while rising)
-  // earlyLate: 'Early' | 'Late' | null
-  // adtMs: absolute timing error in ms (optional, for debugging or teaching)
-  _judgment(label, miss = false, earlyLate = null, adtMs = null) {
+  _judgment(label, miss = false) {
     const style = miss ? this._fxStyles.Miss
       : label === "Perfect" ? this._fxStyles.Perfect
       : label === "Great" ? this._fxStyles.Great
       : this._fxStyles.Good;
 
-    let text = label;
-    if (!miss && earlyLate) {
-      text += ` (${earlyLate})`;
-    }
-    // If you want to expose the ms error, uncomment next line:
-    // if (!miss && Number.isFinite(adtMs)) text += `  ${Math.round(adtMs)}ms`;
-
     const t = this._acquireFxText();
     t.style = style;
-    t.text = text;
+    t.text = label;
     t.anchor.set(0.5, 0.5);
     t.x = this.width / 2;
     t.y = this.judgeY - 42;
