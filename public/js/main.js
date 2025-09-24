@@ -294,6 +294,20 @@ window.addEventListener("DOMContentLoaded", () => {
     hideAllScreens();
     if (canvas) canvas.style.display = "block";
     hud?.classList.remove("hidden");
+    // Ensure HUD is reset and visible each run (fixes missing combo/acc after quitting via Editor)
+    try {
+      const comboEl = document.getElementById("hud-combo");
+      const accEl = document.getElementById("hud-acc");
+      const scoreEl = document.getElementById("hud-score");
+      const judgeEl = document.getElementById("judgment");
+      if (comboEl) { comboEl.textContent = "0x"; comboEl.style.display = ""; comboEl.classList.remove("hidden"); }
+      if (accEl)   { accEl.textContent = "100%"; accEl.style.display = ""; accEl.classList.remove("hidden"); }
+      if (scoreEl) { scoreEl.textContent = "0"; scoreEl.style.display = ""; scoreEl.classList.remove("hidden"); }
+      if (judgeEl) { judgeEl.innerHTML = ""; judgeEl.style.display = ""; judgeEl.classList.remove("hidden"); }
+    } catch {}
+    // Remove any stale results overlay that may linger after a prior run
+    try { document.getElementById("pf-results-overlay")?.remove(); } catch {}
+
 
     const game = new Game(runtime, settings);
     PF_activeGame = game;

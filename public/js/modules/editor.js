@@ -1045,40 +1045,51 @@ export class Editor {
     const stemW = this._stemWNow();
 
     const tMsAtPointer = this._screenToMsRaw(mouseY);
+    const lane = this._screenToLane(mouseX);
 
-    let best = { idx: -1, onTail: false, score: 1e9 };
+    const headCandidates = [];
+    const tailCandidates = [];
 
-    for (let i = 0; i < this.chart.notes.length; i++) {
+    for (let i = 0; i < (this.chart.notes?.length || 0); i++) {
       const n = this.chart.notes[i];
-      const laneX = startX + n.lane * (laneW + gap);
-      const x = laneX + (laneW - headW) / 2;
+      if (!n || n.lane !== lane) continue;
 
-      // center of the note = exact musical time
-      const yCenter = n.tMs * this._pxPerMsNow() - this.scrollY;
-      const yHead   = Math.floor(yCenter - headH / 2);  // top of head from center
+      const x0 = startX + lane * (laneW + gap);
+      const cx = x0 + laneW / 2;
 
-      // head rect
-      const hx0 = x, hx1 = x + headW;
-      const hy0 = yHead, hy1 = yHead + headH;
+      // Head rect
+      const hy0 = this._timeToY(n.tMs) - headH / 2;
+      const hy1 = hy0 + headH;
+      const hx0 = cx - headW / 2;
+      const hx1 = cx + headW / 2;
 
       const inHead = (mouseX >= hx0 && mouseX <= hx1 && mouseY >= hy0 && mouseY <= hy1);
-
-      // tail handle near the AFTER time
-      let onTail = false;
-      if (n.dMs && n.dMs > 0) {
-        const tailMs = n.tMs + n.dMs;
-        if (Math.abs(tMsAtPointer - tailMs) <= this.tailHandlePadMs) {
-          onTail = true;
-        }
+      if (inHead) {
+        headCandidates.push({ idx: i, score: Math.abs(n.tMs - tMsAtPointer) });
+        continue;
       }
 
-      if (inHead || onTail) {
-        const score = Math.abs(n.tMs - tMsAtPointer);
-        if (score < best.score) best = { idx: i, onTail };
+      // Tail handle: only if near the end in time AND horizontally near the stem
+      if (n.dMs && n.dMs > 0) {
+        const tailMs = n.tMs + n.dMs;
+        const timeNear = Math.abs(tMsAtPointer - tailMs) <= Math.max(36, Math.min(72, this.tailHandlePadMs)); // slightly tighter
+        const xNear = Math.abs(mouseX - cx) <= Math.max(stemW * 1.2, 18);
+        if (timeNear && xNear) {
+          tailCandidates.push({ idx: i, score: Math.abs(tMsAtPointer - tailMs) });
+        }
       }
     }
 
-    return { idx: best.idx, onTail: best.onTail || false };
+    if (headCandidates.length) {
+      headCandidates.sort((a, b) => a.score - b.score);
+      return { idx: headCandidates[0].idx, onTail: false };
+    }
+    if (tailCandidates.length) {
+      tailCandidates.sort((a, b) => a.score - b.score);
+      return { idx: tailCandidates[0].idx, onTail: true };
+    }
+
+    return { idx: -1, onTail: false };
   }
 
   _copySelection() {
@@ -1190,7 +1201,20 @@ export class Editor {
   }
 
   // ===== Draw loop =====
-  _tick() { this._draw(); requestAnimationFrame(this._tick); }
+  _tick() {
+    // Update seconds readout in the editor previewer
+    try {
+      const label = document.getElementById(this.ids.time);
+      if (label) {
+        const cur = Math.floor(this.currentTimeMs() / 1000);
+        const durTotalMs = this.chart?.durationMs || Math.floor(this.audioBuffer?.duration * 1000) || 0;
+        const dur = Math.floor(durTotalMs / 1000);
+        label.textContent = `${cur}s / ${dur}s`;
+      }
+    } catch {}
+    this._draw();
+    requestAnimationFrame(this._tick);
+  }
 
   _resize() {
     const ratio = window.devicePixelRatio || 1;

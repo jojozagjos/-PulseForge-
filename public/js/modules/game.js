@@ -60,6 +60,10 @@ export class Game {
     this.held = [];
     this.activeHoldsByLane = new Map();
 
+    // Quit state
+    this._quitting = false;
+    this._showResultsTimeout = null;
+
     // Layers / HUD refs
     this.laneBackboardLayer = null;
     this.noteLayer = null;
@@ -133,6 +137,14 @@ export class Game {
     try { document.getElementById("pf-results-overlay")?.remove(); } catch {}
     this._resultsCloseResolver = null;
 
+    const __pfQuitHandler = () => {
+      this._quitting = true;
+      try { if (this._showResultsTimeout) { clearTimeout(this._showResultsTimeout); this._showResultsTimeout = null; } } catch {}
+      try { document.getElementById("pf-results-overlay")?.remove(); } catch {}
+    };
+
+    try { window.addEventListener("pf-quit-game", __pfQuitHandler, { once: true }); } catch {}
+
     // Reset transient state
     this._resetNoteRuntimeFlags();
     this.keyDown = new Set();
@@ -172,6 +184,10 @@ export class Game {
   }
 
   quit() {
+    // Mark quitting and cancel any pending results timers/overlays
+    this._quitting = true;
+    try { if (this._showResultsTimeout) { clearTimeout(this._showResultsTimeout); this._showResultsTimeout = null; } } catch {}
+    try { document.getElementById("pf-results-overlay")?.remove(); } catch {}
     try { this.app?.ticker?.stop(); } catch {}
     try { this.app?.destroy(true, { children: true, texture: true, baseTexture: true }); } catch {}
     this.app = null;
@@ -213,6 +229,7 @@ export class Game {
   }
 
   _buildScene() {
+    this.app.stage.sortableChildren = true;
     // Subtle grid (behind everything)
     const grid = new PIXI.Graphics();
     grid.alpha = 0.22;
@@ -293,6 +310,7 @@ export class Game {
       mask.rect(mx, my, mw, mh);
       mask.fill(0xffffff);
       mask.isMask = true;
+      mask.zIndex = this.noteLayer?.zIndex ?? 4;
 
       laneCont.mask = mask;
 
@@ -389,6 +407,10 @@ export class Game {
     this.countdownText.position.set(this.width / 2, Math.floor(this.height * 0.18));
     this.countdownText.alpha = 0;
     this.hudLayer.addChild(this.countdownText);
+
+    // Ensure all layers sort their children predictably by zIndex
+    ;[this.laneBackboardLayer, this.judgeStatic, this.noteLayer, this.receptorLayer, this.fxRingLayer, this.fxTextLayer, this.hudLayer]
+      .forEach(c => { try { if (c) c.sortableChildren = true; } catch {} });
   }
 
   _buildProgressBar(totalW) {
@@ -990,7 +1012,7 @@ export class Game {
         if (tickHook) tickHook();
 
         const endMs = (this.chart.durationMs || 20000) + 1500;
-        if (tMs > endMs) {
+        if (tMs > endMs && !this._quitting) {
           if (!this._resultsShown) {
             this._resultsShown = true;
             this._showResultsOverlay();
@@ -1000,8 +1022,8 @@ export class Game {
       });
 
       // if something goes wrong and results never show, soft timeout fallback (very generous)
-      setTimeout(() => {
-        if (!this._resultsShown) {
+      this._showResultsTimeout = setTimeout(() => {
+        if (!this._resultsShown && !this._quitting) {
           this._resultsShown = true;
           this._showResultsOverlay();
         }
@@ -1119,6 +1141,7 @@ export class Game {
 
   // ===== Results Overlay =====
   _showResultsOverlay() {
+    if (this._quitting) return;
     const overlayId = "pf-results-overlay";
     let el = document.getElementById(overlayId);
     if (el) el.remove();
