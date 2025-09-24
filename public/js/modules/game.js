@@ -26,7 +26,7 @@ export class Game {
     this.settings = settings || {};
 
     // tail behavior
-    this.holdTailClipsAtJudge = false;
+    this.holdTailClipsAtJudge = true;
 
     // Canvas
     this.canvas = document.getElementById("game-canvas");
