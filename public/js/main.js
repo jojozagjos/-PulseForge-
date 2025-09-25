@@ -173,8 +173,25 @@ window.addEventListener("DOMContentLoaded", () => {
   q("btn-replay")?.addEventListener("click", () => location.reload());
 
   // ---------------- Editor ----------------
-  async function openEditor() {
+  function __wireEditorTabs() {
+  if (window.__pf_editor_tabs_wired) return;
+  window.__pf_editor_tabs_wired = true;
+  try {
+    const nav = document.querySelector('#screen-editor .ed-nav');
+    const panels = document.querySelectorAll('#screen-editor .ed-panel');
+    nav?.addEventListener('click', (e) => {
+      const btn = e.target.closest('.tab');
+      if (!btn) return;
+      const tab = btn.getAttribute('data-tab');
+      nav.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === btn));
+      panels.forEach(p => p.classList.toggle('active', p.getAttribute('data-panel') === tab));
+    });
+  } catch {}
+}
+
+async function openEditor() {
     show("editor");
+    __wireEditorTabs();
     if (!editorInstance && typeof Editor !== "undefined") {
       editorInstance = new Editor({
         canvasId: "editor-canvas",
