@@ -101,7 +101,7 @@ export class Editor {
       bg: "#0a0c10",
       gridMinor: "#223048",
       gridMajor: "#2e405c",
-      gridDecade: "#3fc1c9",
+      gridDecade: "#c93f3fff", //3fc1c9
       laneFill: "#111725",
       laneStroke: "#2a3142",
       noteHead: "#19cdd0",
