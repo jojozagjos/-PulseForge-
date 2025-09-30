@@ -12,7 +12,7 @@
 * { box-sizing:border-box; }
 html,body { height:100%; margin:0; background:var(--bg); color:var(--text); font-family:Inter,system-ui,Arial,sans-serif; }
 
-#ui-root{position:relative;height:100%}.screen{position:absolute;inset:0;display:none;padding:24px}.screen.active{display:block}
+#ui-root{position:relative;height:100%}.screen{position:absolute;inset:0;display:none;padding:24px;overflow:auto}.screen.active{display:block}
 .logo{font-size:48px;letter-spacing:2px;margin-top:8vh;text-align:center}.logo span{color:var(--neon)}
 .menu{display:flex;flex-direction:column;gap:16px;align-items:center;margin-top:40px}
 button{padding:14px 20px;border-radius:14px;border:1px solid transparent;background:var(--panel);color:var(--text);font-size:16px;cursor:pointer;transition:transform .06s ease,box-shadow .2s ease,border-color .2s ease}
@@ -108,11 +108,15 @@ input,select{background:#0f1420;border:1px solid #2a3142;color:var(--text);borde
 
 #screen-editor .ed-body { display:grid; grid-template-columns: 360px 1fr; height:100%; }
 #screen-editor .ed-panels { overflow:auto; padding:12px; background:#0f1420; border-right:1px solid #2a3142; }
+#screen-editor .ed-panels { overflow-x: auto; }
+#screen-editor .ed-panels .row { flex-wrap: wrap; }
+#screen-editor .ed-panels, #screen-editor .ed-canvas-wrap { min-width: 0; }
 #screen-editor .ed-panel { display:none; }
 #screen-editor .ed-panel.active { display:block; }
 #screen-editor .ed-panel h3 { margin: 6px 0 10px; }
 
 #screen-editor .ed-canvas-wrap { position:relative; display:flex; flex-direction:column; padding:12px; gap:10px; overflow:hidden; }
+#screen-editor .ed-canvas-wrap { overflow-x: auto; }
 #screen-editor #editor-canvas { flex:1; width:100%; height:100%; background:#0d111a; border:1px solid #2a3142; border-radius:12px; }
 #screen-editor .ed-transport { display:flex; align-items:center; gap:10px; }
 
@@ -157,6 +161,7 @@ input,select{background:#0f1420;border:1px solid #2a3142;color:var(--text);borde
   cursor: pointer;
   transition: all 0.2s ease;
   font-size: 14px;
+  min-width: 0; /* allow buttons to shrink when space is tight */
 }
 
 .vfx-category-tab:hover {
@@ -208,7 +213,8 @@ input,select{background:#0f1420;border:1px solid #2a3142;color:var(--text);borde
   margin: 0;
   font-size: 13px;
   color: var(--muted);
-  white-space: nowrap;
+  white-space: normal; /* allow wrapping so controls don't overflow */
+  min-width: 0; /* allow labels to shrink in flex rows */
 }
 
 .vfx-property-group input[type="color"] {
@@ -260,7 +266,7 @@ input,select{background:#0f1420;border:1px solid #2a3142;color:var(--text);borde
   background: #111725;
   border: 1px solid #2a3142;
   border-radius: 8px;
-  height: 200px;
+  height: clamp(160px, 22vh, 260px);
   position: relative;
   overflow: hidden;
   margin: 12px 0;
@@ -284,6 +290,35 @@ input,select{background:#0f1420;border:1px solid #2a3142;color:var(--text);borde
   color: #FF2E88;
   font-size: 16px;
   font-weight: 600;
+}
+
+/* Mini reset buttons (tiny ↺ buttons next to controls) */
+button.mini-reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;             /* smaller than normal buttons */
+  margin: 0;                     /* rely on label gap */
+  border-radius: 6px;
+  border: 1px solid #2a3142;
+  background: #0f1420;
+  color: var(--muted);
+  font-size: 11px;               /* compact text */
+  line-height: 1.1;
+  min-width: 0;
+  cursor: pointer;
+  box-shadow: none;
+  transform: none;               /* override global button hover lift */
+}
+button.mini-reset:hover {
+  background: #1a2132;
+  color: #e7f0ff;
+  border-color: rgba(37,244,238,.35);
+  box-shadow: none;
+  transform: none;
+}
+button.mini-reset:active {
+  transform: none;
 }
 
 /* VFX Value indicators */

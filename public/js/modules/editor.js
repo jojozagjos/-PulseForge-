@@ -181,61 +181,24 @@ export class Editor {
   // ===== VFX Editor System =====
   _initVFXSystem() {
     const vfx = {
-      // Current VFX data structure
-      data: {
-        background: {
-          color1: "#0d111a",
-          color2: "#1a1f2e", 
-          gradient: false,
-          angle: 0,
-          flashEnable: false,
-          flashColor: "#ffffff",
-          flashIntensity: 30,
-          flashDuration: 200
-        },
-        camera: {
-          x: 0,
-          y: 0,
-          z: 0,
-          zoom: 1.0,
-          angle: 0,
-          perspective: 50
-        },
-        view: {
-          mode: "2D"
-        },
-        notes: {
-          colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"],
-          glow: 20,
-          size: 1.0,
-          trails: false
-        },
-        lanes: {
-          opacity: 100,
-          pulsing: false,
-          glow: 0
-        }
-      },
-
-      // Keyframes for each property
-      keyframes: {
-        // Example structure:
-        // "background.color1": [
-        //   { time: 0, value: "#0d111a", easing: "instant" },
-        //   { time: 30000, value: "#ff0000", easing: "linear" }
-        // ]
-      },
+      // Per-difficulty storage; vfx.data & vfx.keyframes are dynamic getters for active difficulty
+      _sets: null,
+      activeDiff: this.difficulty || "normal",
 
       // Current timeline state
       timeline: {
         currentProperty: "background.color1",
-        currentEasing: "linear",
+        // new easing model
+        easingCurve: "linear",   // linear|quad|cubic|quart|quint|sine|expo|circ|back|elastic|bounce|bezier|instant
+        easingStyle: "inOut",    // in|out|inOut (ignored for instant/linear/bezier)
         zoom: 1.0,
         selectedKeyframe: null,
         playheadTime: 0,
         currentCategory: "background",
+        lastPropByCategory: {},   // remember last-used property per category
         offsetMs: 0,           // left edge time of the visible window
-        hoverKeyframe: null    // { property, index } when hovering
+        hoverKeyframe: null,    // { property, index } when hovering
+        follow: true            // auto-follow playhead during playback
       },
 
       // VFX timeline canvas
@@ -244,10 +207,44 @@ export class Editor {
 
       // Wiring flags
       _wiredVFX: false,
-      _wiredVFXTimeline: false
+      _wiredVFXTimeline: false,
+      previewCamera: false
     };
 
-    // Initialize VFX canvas
+    // Build default VFX set factory
+    const makeDefaultData = () => ({
+      background: {
+        color1: "#0d111a",
+        color2: "#1a1f2e",
+        gradient: false,
+        angle: 0,
+        flashEnable: false,
+        flashColor: "#ffffff",
+        flashIntensity: 30,
+        flashDuration: 200
+      },
+      camera: { x: 0, y: 0, z: 0, zoom: 1.0, angle: 0, perspective: 50 },
+  view: { mode: "2D", amount: 0 },
+      notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 20, size: 1.0, trails: false },
+      lanes: { opacity: 100, pulsing: false, glow: 0 }
+    });
+    const makeDefaultSet = () => ({ data: makeDefaultData(), keyframes: {} });
+    vfx._sets = {
+      easy: makeDefaultSet(),
+      normal: makeDefaultSet(),
+      hard: makeDefaultSet()
+    };
+    // Dynamic getters/setters so existing code keeps working against vfx.data/keyframes
+    Object.defineProperty(vfx, "data", {
+      get: () => vfx._sets[vfx.activeDiff]?.data,
+      set: (val) => { if (!vfx._sets[vfx.activeDiff]) vfx._sets[vfx.activeDiff] = makeDefaultSet(); vfx._sets[vfx.activeDiff].data = val; }
+    });
+    Object.defineProperty(vfx, "keyframes", {
+      get: () => vfx._sets[vfx.activeDiff]?.keyframes,
+      set: (val) => { if (!vfx._sets[vfx.activeDiff]) vfx._sets[vfx.activeDiff] = makeDefaultSet(); vfx._sets[vfx.activeDiff].keyframes = val || {}; }
+    });
+
+  // Initialize VFX canvas
     this._initVFXCanvas(vfx);
     
     // Wire VFX controls
@@ -257,11 +254,27 @@ export class Editor {
     window.addEventListener("pf-editor-tab-activated", (e) => {
       if (e?.detail?.tab === "vfx") {
         this._resizeVFXCanvas(vfx);
-        this._rebuildVFXPropertySelect(vfx.timeline.currentCategory, vfx);
         this._updateVFXTimeline(vfx);
       }
     });
 
+    // Watch difficulty selector to switch VFX set
+    try {
+      const diffSel = document.getElementById("ed-diff");
+      if (diffSel) {
+        diffSel.addEventListener("change", () => {
+          const d = diffSel.value || "normal";
+          this.difficulty = d;
+          vfx.activeDiff = d;
+          this._syncVFXToUI(vfx);
+          this._updateVFXTimeline(vfx);
+        });
+      }
+    } catch {}
+
+    // Default preview on so changes are visible immediately
+    vfx.previewEnabled = true;
+    try { const btn = document.getElementById("vfx-play-preview"); if (btn) btn.textContent = "Preview: On"; } catch {}
     return vfx;
   }
 
@@ -274,6 +287,8 @@ export class Editor {
       // Add event listeners for VFX timeline
       vfx.timelineCanvas.addEventListener("click", (e) => this._vfxTimelineClick(e, vfx));
       vfx.timelineCanvas.addEventListener("mousemove", (e) => this._vfxTimelineMouseMove(e, vfx));
+      vfx.timelineCanvas.addEventListener("mousedown", (e) => this._vfxTimelineMouseDown(e, vfx));
+      window.addEventListener("mouseup", (e) => this._vfxTimelineMouseUp(e, vfx));
       
       window.addEventListener("resize", () => this._resizeVFXCanvas(vfx));
     }
@@ -314,17 +329,37 @@ export class Editor {
         if (categoryPanel) categoryPanel.classList.add("active");
 
         // Track current category
-        vfx.timeline.currentCategory = tab.dataset.vfxCategory || "background";
-        // Rebuild property dropdown for this category
-        this._rebuildVFXPropertySelect(vfx.timeline.currentCategory, vfx);
+        const cat = tab.dataset.vfxCategory || "background";
+        vfx.timeline.currentCategory = cat;
+
+        // Choose an appropriate property for this category
+        const props = this._getVFXPropertiesByCategory(cat) || [];
+        const remembered = vfx.timeline.lastPropByCategory?.[cat];
+        const inList = (p) => props.some(pp => pp.value === p);
+        let pick = null;
+        if (remembered && inList(remembered)) {
+          pick = remembered;
+        } else {
+          // find first property in this category with keyframes
+          for (const p of props) {
+            if (Array.isArray(vfx.keyframes[p.value]) && vfx.keyframes[p.value].length) { pick = p.value; break; }
+          }
+          // else default to first in category
+          if (!pick && props.length) pick = props[0].value;
+        }
+        if (pick) {
+          vfx.timeline.currentProperty = pick;
+          vfx.timeline.lastChangedProperty = pick; // ensure timeline uses this
+          // remember per-category
+          if (!vfx.timeline.lastPropByCategory) vfx.timeline.lastPropByCategory = {};
+          vfx.timeline.lastPropByCategory[cat] = pick;
+          try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${pick}`; } catch {}
+        }
         // Ensure canvas sized and redraw
         this._resizeVFXCanvas(vfx);
         this._updateVFXTimeline(vfx);
       });
     });
-
-    // Initial property list for default category
-    this._rebuildVFXPropertySelect(vfx.timeline.currentCategory, vfx);
 
     // Ensure a VFX category panel is active on first mount
     const anyActive = document.querySelector('.vfx-category.active');
@@ -352,8 +387,17 @@ export class Editor {
     this._wireVFXProperty("vfx-camera-zoom", "camera.zoom", vfx, "vfx-camera-zoom-value", "x");
     this._wireVFXProperty("vfx-camera-angle", "camera.angle", vfx, "vfx-camera-angle-value", "°");
     this._wireVFXProperty("vfx-camera-perspective", "camera.perspective", vfx, "vfx-camera-perspective-value", "%");
+
+    // Camera preview toggle in editor
+    try {
+      const camPrev = document.getElementById("vfx-preview-camera");
+      if (camPrev) {
+        camPrev.checked = !!vfx.previewCamera;
+        camPrev.addEventListener("change", () => { vfx.previewCamera = !!camPrev.checked; });
+      }
+    } catch {}
     
-    this._wireVFXProperty("vfx-view-mode", "view.mode", vfx);
+  this._wireVFXProperty("vfx-view-amount", "view.amount", vfx, "vfx-view-amount-value", "%");
 
     // Wire individual note colors
     for (let i = 1; i <= 4; i++) {
@@ -373,6 +417,16 @@ export class Editor {
 
     // Wire file management
     this._wireVFXFileControls(vfx);
+  }
+
+  _propertyCategory(prop) {
+    if (!prop || typeof prop !== 'string') return 'background';
+    if (prop.startsWith('background.')) return 'background';
+    if (prop.startsWith('camera.')) return 'camera';
+    if (prop.startsWith('view.')) return 'camera'; // view mode grouped with camera category
+    if (prop.startsWith('notes.')) return 'notes';
+    if (prop.startsWith('lanes.')) return 'lanes';
+    return 'background';
   }
 
   _wireVFXProperty(elementId, propertyPath, vfx, valueDisplayId = null, unit = "") {
@@ -402,6 +456,14 @@ export class Editor {
           display.textContent = value + unit;
         }
       }
+
+  // Auto-keyframe on change
+  this._autoKeyframe(propertyPath, vfx);
+  // Track this as the last changed property
+  vfx.timeline.lastChangedProperty = propertyPath;
+  vfx.timeline.currentProperty = propertyPath; // fallback usage
+  try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
+      this._updateVFXTimeline(vfx);
     };
 
     element.addEventListener("input", updateValue);
@@ -427,29 +489,45 @@ export class Editor {
 
     element.addEventListener("input", () => {
       vfx.data.notes.colors[laneIndex] = element.value;
+      const prop = `notes.colors.${laneIndex+1}`;
+      this._autoKeyframe(prop, vfx);
+  vfx.timeline.lastChangedProperty = prop;
+  vfx.timeline.currentProperty = prop;
+  try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
+      this._updateVFXTimeline(vfx);
     });
 
     element.addEventListener("change", () => {
       vfx.data.notes.colors[laneIndex] = element.value;
+      const prop = `notes.colors.${laneIndex+1}`;
+      this._autoKeyframe(prop, vfx);
+  vfx.timeline.lastChangedProperty = prop;
+  vfx.timeline.currentProperty = prop;
+  try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
+      this._updateVFXTimeline(vfx);
     });
   }
 
   _wireVFXTimelineControls(vfx) {
-    const currentPropertySelect = document.getElementById("vfx-current-property");
-    const easingTypeSelect = document.getElementById("vfx-easing-type");
+  const currentPropertySelect = null; // property dropdown removed
+  const easingCurveSelect = document.getElementById("vfx-easing-curve");
+  const easingStyleSelect = document.getElementById("vfx-easing-style");
     const timelineZoomRange = document.getElementById("vfx-timeline-zoom");
     const timelineZoomValue = document.getElementById("vfx-timeline-zoom-value");
 
-    if (currentPropertySelect) {
-      currentPropertySelect.addEventListener("change", () => {
-        vfx.timeline.currentProperty = currentPropertySelect.value;
+    // property selection is automatic now (lastChangedProperty)
+
+    if (easingCurveSelect) {
+      easingCurveSelect.value = vfx.timeline.easingCurve;
+      easingCurveSelect.addEventListener("change", () => {
+        vfx.timeline.easingCurve = easingCurveSelect.value;
         this._updateVFXTimeline(vfx);
       });
     }
-
-    if (easingTypeSelect) {
-      easingTypeSelect.addEventListener("change", () => {
-        vfx.timeline.currentEasing = easingTypeSelect.value;
+    if (easingStyleSelect) {
+      easingStyleSelect.value = vfx.timeline.easingStyle;
+      easingStyleSelect.addEventListener("change", () => {
+        vfx.timeline.easingStyle = easingStyleSelect.value;
         this._updateVFXTimeline(vfx);
       });
     }
@@ -471,10 +549,12 @@ export class Editor {
     }
 
     // Keyframe action buttons
-    const addKeyframeBtn = document.getElementById("vfx-add-keyframe");
+  const addKeyframeBtn = document.getElementById("vfx-add-keyframe");
     const deleteKeyframeBtn = document.getElementById("vfx-delete-keyframe");
     const duplicateKeyframeBtn = document.getElementById("vfx-duplicate-keyframe");
     const clearKeyframesBtn = document.getElementById("vfx-clear-keyframes");
+  const prevKeyframeBtn = document.getElementById("vfx-prev-keyframe");
+  const nextKeyframeBtn = document.getElementById("vfx-next-keyframe");
 
     if (addKeyframeBtn) {
       addKeyframeBtn.addEventListener("click", () => this._addVFXKeyframe(vfx));
@@ -492,17 +572,171 @@ export class Editor {
       clearKeyframesBtn.addEventListener("click", () => this._clearVFXKeyframes(vfx));
     }
 
+    // Generic per-control reset buttons
+    try {
+      document.querySelectorAll('[data-vfx-reset]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const prop = btn.getAttribute('data-vfx-reset');
+          this._resetVFXProperty(prop, vfx);
+        });
+      });
+    } catch {}
+
+    if (prevKeyframeBtn) {
+      prevKeyframeBtn.addEventListener("click", () => this._jumpToAdjacentVFXKeyframe(vfx, -1));
+    }
+    if (nextKeyframeBtn) {
+      nextKeyframeBtn.addEventListener("click", () => this._jumpToAdjacentVFXKeyframe(vfx, +1));
+    }
+
     // Preview buttons
     const previewBtn = document.getElementById("vfx-play-preview");
     const testInGameBtn = document.getElementById("vfx-test-in-game");
+  const followChk = document.getElementById("vfx-timeline-follow");
 
     if (previewBtn) {
-      previewBtn.addEventListener("click", () => this._previewVFX(vfx));
+      previewBtn.addEventListener("click", () => {
+        vfx.previewEnabled = !vfx.previewEnabled;
+        // Update button label to reflect state
+        try { previewBtn.textContent = vfx.previewEnabled ? "Preview: On" : "Preview: Off"; } catch {}
+        // When global preview is OFF, also disable camera preview and uncheck the box.
+        try {
+          const camPrev = document.getElementById("vfx-preview-camera");
+          if (camPrev) {
+            if (!vfx._camPreviewRemember) vfx._camPreviewRemember = false;
+            if (!vfx.previewEnabled) {
+              // remember prior state and force off
+              vfx._camPreviewRemember = !!vfx.previewCamera;
+              vfx.previewCamera = false;
+              camPrev.checked = false;
+              camPrev.disabled = true;
+            } else {
+              // restore prior state and re-enable control
+              camPrev.disabled = false;
+              vfx.previewCamera = !!vfx._camPreviewRemember;
+              camPrev.checked = vfx.previewCamera;
+            }
+          }
+        } catch {}
+      });
     }
 
     if (testInGameBtn) {
       testInGameBtn.addEventListener("click", () => this._testVFXInGame(vfx));
     }
+
+    if (followChk) {
+      followChk.checked = true;
+      followChk.addEventListener("change", () => {
+        vfx.timeline.follow = !!followChk.checked;
+      });
+    }
+
+    // no separate checkbox any more; button toggles preview
+  }
+
+  _defaultVFXFor(property) {
+    const defaults = {
+      'background.color1': '#0d111a',
+      'background.color2': '#1a1f2e',
+      'background.gradient': false,
+      'background.angle': 0,
+      'background.flashEnable': false,
+      'background.flashColor': '#ffffff',
+      'background.flashIntensity': 30,
+      'background.flashDuration': 200,
+      'camera.x': 0,
+      'camera.y': 0,
+      'camera.z': 0,
+      'camera.zoom': 1,
+      'camera.angle': 0,
+      'camera.perspective': 50,
+  'view.amount': 0,
+      'notes.colors.1': '#19cdd0',
+      'notes.colors.2': '#8A5CFF',
+      'notes.colors.3': '#C8FF4D',
+      'notes.colors.4': '#FFA94D',
+      'notes.glow': 20,
+      'notes.size': 1,
+      'notes.trails': false,
+      'lanes.opacity': 100,
+      'lanes.pulsing': false,
+      'lanes.glow': 0,
+    };
+    return defaults[property];
+  }
+
+  _resetVFXProperty(property, vfx) {
+    if (!property) return;
+    const def = this._defaultVFXFor(property);
+    if (def === undefined) return;
+    // Set value in vfx.data
+    const keys = property.split('.')
+    let target = vfx.data;
+    for (let i=0;i<keys.length-1;i++) {
+      const k = keys[i];
+      if (k.match(/^\d+$/)) {
+        // array index step (e.g., notes.colors.1)
+        const idx = parseInt(k)-1; // our UI uses 1-based for colors
+        if (Array.isArray(target)) target = target[idx];
+        else if (Array.isArray(target[keys[i-1]])) target = target[keys[i-1]][idx];
+      } else {
+        target = target[k];
+      }
+    }
+    const lastKey = keys[keys.length-1];
+    if (property.startsWith('notes.colors.')) {
+      const idx = parseInt(lastKey) - 1; // colors are 1-based in property path
+      if (Array.isArray(vfx.data.notes.colors) && idx >= 0 && idx < vfx.data.notes.colors.length) {
+        vfx.data.notes.colors[idx] = def;
+      }
+    } else {
+      target[lastKey] = def;
+    }
+    // Auto-keyframe at playhead
+    this._autoKeyframe(property, vfx);
+    vfx.timeline.lastChangedProperty = property;
+    vfx.timeline.currentProperty = property;
+    try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${property}`; } catch {}
+    // Sync labels and redraw timeline
+    this._syncVFXToUI(vfx);
+    this._updateVFXTimeline(vfx);
+  }
+
+  _activeVfxProperty(vfx) {
+    return vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
+  }
+
+  _jumpToAdjacentVFXKeyframe(vfx, dir = +1) {
+    const property = this._activeVfxProperty(vfx);
+    const list = vfx.keyframes[property] || [];
+    if (!list.length) return;
+
+    // Use current playhead as reference
+    const t = this.currentTimeMs();
+    // Find index of previous (< t) or next (> t) keyframe
+    let targetIdx = -1;
+    if (dir < 0) {
+      // previous
+      for (let i = list.length - 1; i >= 0; i--) { if (list[i].time < t - 1) { targetIdx = i; break; } }
+      if (targetIdx === -1) targetIdx = list.length - 1; // wrap to last
+    } else {
+      // next
+      for (let i = 0; i < list.length; i++) { if (list[i].time > t + 1) { targetIdx = i; break; } }
+      if (targetIdx === -1) targetIdx = 0; // wrap to first
+    }
+
+    // Seek and select
+    const target = list[targetIdx];
+    if (!target) return;
+    this.seek(Math.max(0, target.time|0));
+    try { const s = document.getElementById(this.ids.scrub); if (s) s.value = String(Math.floor(this.playStartMs)); } catch {}
+    vfx.timeline.selectedKeyframe = { property, index: targetIdx };
+    vfx.timeline.lastChangedProperty = property;
+    vfx.timeline.currentProperty = property;
+  try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
+    this._centerVFXTimelineOnPlayhead(vfx);
+    this._updateVFXTimeline(vfx);
   }
 
   _wireVFXFileControls(vfx) {
@@ -543,7 +777,7 @@ export class Editor {
       const v = Number(scrub.value);
       if (Number.isFinite(v)) time = v;
     }
-    const easing = vfx.timeline.currentEasing;
+    const easing = this._packEasing(vfx.timeline.easingCurve, vfx.timeline.easingStyle);
     
     // Get current value from the UI
     const value = this._getCurrentVFXPropertyValue(property, vfx);
@@ -564,11 +798,8 @@ export class Editor {
       vfx.keyframes[property].sort((a, b) => a.time - b.time);
     }
 
-    // Select the just-added/updated keyframe and ensure timeline shows this property
-    const currentSelect = document.getElementById("vfx-current-property");
-    if (currentSelect && currentSelect.value !== property) {
-      currentSelect.value = property;
-    }
+    // Select the just-added/updated keyframe and set property context
+    vfx.timeline.lastChangedProperty = property;
     vfx.timeline.currentProperty = property;
     // Select the nearest keyframe at that time
     const idx = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
@@ -585,6 +816,10 @@ export class Editor {
     if (vfx.keyframes[property] && vfx.keyframes[property][index]) {
       vfx.keyframes[property].splice(index, 1);
       vfx.timeline.selectedKeyframe = null;
+      // If no keyframes remain for this property, revert to default value
+      if (!vfx.keyframes[property] || vfx.keyframes[property].length === 0) {
+        this._assignVFXDefault(property, vfx);
+      }
       this._updateVFXTimeline(vfx);
     }
   }
@@ -608,6 +843,8 @@ export class Editor {
     if (vfx.keyframes[property]) {
       vfx.keyframes[property] = [];
       vfx.timeline.selectedKeyframe = null;
+      // Revert this property to its default when no keyframes are set
+      this._assignVFXDefault(property, vfx);
       this._updateVFXTimeline(vfx);
     }
   }
@@ -615,17 +852,50 @@ export class Editor {
   _getCurrentVFXPropertyValue(property, vfx) {
     const keys = property.split(".");
     let value = vfx.data;
-    
-    for (const key of keys) {
-      if (key.match(/^\d+$/)) {
-        // Handle array indices like "notes.colors.0"
-        value = value[parseInt(key)];
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (value == null) return undefined;
+      if (/^\d+$/.test(key)) {
+        // Our property format for colors is 1-based (e.g., notes.colors.1)
+        const idx = parseInt(key, 10) - 1;
+        if (!Array.isArray(value)) return undefined;
+        value = value[idx];
       } else {
+        if (typeof value !== 'object') return undefined;
         value = value[key];
       }
     }
-    
     return value;
+  }
+
+  // Assign a property's default value into vfx.data without creating a keyframe
+  _assignVFXDefault(property, vfx) {
+    if (!property) return;
+    const def = this._defaultVFXFor(property);
+    if (def === undefined) return;
+    const keys = property.split('.');
+    let target = vfx.data;
+    for (let i = 0; i < keys.length - 1; i++) {
+      const k = keys[i];
+      if (/^\d+$/.test(k)) {
+        const idx = parseInt(k, 10) - 1;
+        if (Array.isArray(target)) target = target[idx];
+        else if (Array.isArray(target[keys[i - 1]])) target = target[keys[i - 1]][idx];
+      } else {
+        target = target[k];
+      }
+    }
+    const lastKey = keys[keys.length - 1];
+    if (property.startsWith('notes.colors.')) {
+      const idx = parseInt(lastKey, 10) - 1;
+      if (Array.isArray(vfx.data.notes.colors) && idx >= 0 && idx < vfx.data.notes.colors.length) {
+        vfx.data.notes.colors[idx] = def;
+      }
+    } else {
+      target[lastKey] = def;
+    }
+    // Ensure UI shows the default immediately
+    this._syncVFXToUI(vfx);
   }
 
   // VFX Timeline Drawing
@@ -636,6 +906,26 @@ export class Editor {
     const ctx = vfx.timelineCtx;
     const rect = canvas.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return; // hidden
+    
+  // While playing (and follow enabled), keep the playhead within the visible window; re-center near edges
+    try {
+      const duration = this.chart?.durationMs || 180000;
+      const timelineWidth = rect.width - 40;
+      const pixelsPerMs = (timelineWidth / duration) * Math.max(0.0001, vfx.timeline.zoom);
+      const viewportMs = duration / Math.max(0.0001, vfx.timeline.zoom);
+      const leftTime = vfx.timeline.offsetMs || 0;
+      const rightTime = Math.min(duration, leftTime + viewportMs);
+ 
+  const p = this.currentTimeMs();
+      const pad = viewportMs * 0.2;
+      if (this.playing && vfx.timeline.follow) {
+        if (p < leftTime + pad || p > rightTime - pad) {
+          let offset = p - viewportMs / 2;
+          const maxOffset = Math.max(0, duration - viewportMs);
+          vfx.timeline.offsetMs = Math.max(0, Math.min(maxOffset, offset));
+        }
+      }
+    } catch { }
     
     // Clear canvas
     ctx.fillStyle = "#111725";
@@ -649,28 +939,23 @@ export class Editor {
     
     // Draw playhead and current value at playhead
     this._drawVFXPlayhead(ctx, rect, vfx);
+
+    // Orientation markers for VFX timeline (Top/Bottom)
+    try {
+      ctx.save();
+      ctx.fillStyle = "#9bb0c9";
+      ctx.font = "11px Inter";
+      ctx.textBaseline = "top";
+      ctx.textAlign = "left";
+      ctx.fillText("TOP", 6, 4);
+      ctx.textBaseline = "bottom";
+      ctx.textAlign = "right";
+      ctx.fillText("BOTTOM", rect.width - 6, rect.height - 4);
+      ctx.restore();
+    } catch {}
   }
 
-  // Build property select options per category
-  _rebuildVFXPropertySelect(category, vfx) {
-    const select = document.getElementById("vfx-current-property");
-    if (!select) return;
-    const opts = this._getVFXPropertiesByCategory(category);
-    // Rebuild options
-    select.innerHTML = "";
-    for (const { value, label } of opts) {
-      const opt = document.createElement("option");
-      opt.value = value;
-      opt.textContent = label;
-      select.appendChild(opt);
-    }
-    // Keep current if it exists in this category; otherwise pick first
-    const hasCurrent = opts.some(o => o.value === vfx.timeline.currentProperty);
-    if (!hasCurrent) {
-      vfx.timeline.currentProperty = opts[0]?.value || "";
-    }
-    select.value = vfx.timeline.currentProperty;
-  }
+  // Property dropdown removed — selection is automatic based on lastChangedProperty
 
   _getVFXPropertiesByCategory(category) {
     switch (category) {
@@ -693,14 +978,14 @@ export class Editor {
           { value: "camera.zoom", label: "Camera Zoom" },
           { value: "camera.angle", label: "Camera Angle" },
           { value: "camera.perspective", label: "Camera Perspective" },
-          { value: "view.mode", label: "View Mode (2D/3D)" },
+          { value: "view.amount", label: "3D Amount" },
         ];
       case "notes":
         return [
-          { value: "notes.color.1", label: "Note Color Lane 1" },
-          { value: "notes.color.2", label: "Note Color Lane 2" },
-          { value: "notes.color.3", label: "Note Color Lane 3" },
-          { value: "notes.color.4", label: "Note Color Lane 4" },
+          { value: "notes.colors.1", label: "Note Color Lane 1" },
+          { value: "notes.colors.2", label: "Note Color Lane 2" },
+          { value: "notes.colors.3", label: "Note Color Lane 3" },
+          { value: "notes.colors.4", label: "Note Color Lane 4" },
           { value: "notes.glow", label: "Note Glow" },
           { value: "notes.size", label: "Note Size" },
           { value: "notes.trails", label: "Note Trails" },
@@ -762,7 +1047,7 @@ export class Editor {
   }
 
   _drawVFXKeyframes(ctx, rect, vfx) {
-    const property = vfx.timeline.currentProperty;
+    const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
     const keyframes = vfx.keyframes[property] || [];
     const duration = this.chart?.durationMs || 180000;
     const timelineWidth = rect.width - 40;
@@ -776,20 +1061,12 @@ export class Editor {
       // Skip if outside visible area
       if (x < 20 || x > rect.width - 20) return;
 
-      // Draw keyframe dot
+      // Draw keyframe marker (shape based on easing type/style)
       const isSelected = vfx.timeline.selectedKeyframe?.property === property && 
                         vfx.timeline.selectedKeyframe?.index === index;
       const isHover = vfx.timeline.hoverKeyframe?.property === property &&
                       vfx.timeline.hoverKeyframe?.index === index;
-      
-      ctx.fillStyle = isSelected ? "#C8FF4D" : (isHover ? "#FF2E88" : "#25F4EE");
-      ctx.strokeStyle = isSelected ? "#8A5CFF" : "#0d111a";
-      ctx.lineWidth = 2;
-
-      ctx.beginPath();
-      ctx.arc(x, y, 6, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
+      this._drawKeyframeMarker(ctx, x, y, keyframe.easing, { selected: isSelected, hover: isHover });
 
       // Draw easing indicator
       if (index < keyframes.length - 1) {
@@ -799,14 +1076,126 @@ export class Editor {
         this._drawEasingCurve(ctx, x, y, nextX, y, keyframe.easing);
       }
 
-      // Tooltip for value/time when hovered or selected
+      // Diff vs previous
+      const prevKf = keyframes[index - 1];
+      if (prevKf) {
+        const diff = this._formatVFXDelta(property, prevKf.value, keyframe.value);
+        if (diff) {
+          if (diff.type === "color" && diff.a && diff.b) {
+            this._drawColorSwatches(ctx, x - 10, y + 10, diff.a, diff.b);
+          } else if (diff.text) {
+            ctx.fillStyle = "#9bb0c9";
+            ctx.font = "10px Inter";
+            ctx.textAlign = "center";
+            ctx.fillText(diff.text, x, y - 12);
+          }
+        }
+      }
+
+      // Tooltip for value/time and delta when hovered or selected
       if (isHover || isSelected) {
         const valStr = this._formatVFXValue(property, keyframe.value);
         const timeStr = this._fmtTimeMsShort(keyframe.time);
-        const label = `${timeStr} • ${valStr}`;
-        this._drawTooltip(ctx, x, y - 12, label);
+        let label = `${timeStr} • ${valStr}`;
+        const prev = keyframes[index - 1]?.value;
+        const d = this._formatVFXDelta(property, prev, keyframe.value);
+        if (d && d.text) label += `  (Δ ${d.text})`;
+        this._drawTooltip(ctx, x, y - 18, label);
       }
     });
+
+    // Update selected keyframe diff label in UI
+    try {
+      const sel = vfx.timeline.selectedKeyframe;
+      const out = document.getElementById("vfx-selected-diff");
+      if (out) {
+        if (sel && keyframes[sel.index]) {
+          const cur = keyframes[sel.index];
+          const prev = keyframes[sel.index - 1];
+          const d = prev ? this._formatVFXDelta(property, prev.value, cur.value) : null;
+          const dText = d?.text || (d?.type === "color" ? `${cur.value}` : "");
+          const vStr = this._formatVFXValue(property, cur.value);
+          out.textContent = `Selected: ${this._fmtTimeMsShort(cur.time)} • ${vStr}${dText ? ` (Δ ${dText})` : ""}`;
+        } else {
+          out.textContent = "—";
+        }
+      }
+    } catch {}
+  }
+
+  _drawKeyframeMarker(ctx, x, y, easing, opts = {}) {
+    const { selected, hover } = opts;
+    const ez = this._unpackEasing(easing || this._packEasing(this.vfx?.timeline?.easingCurve, this.vfx?.timeline?.easingStyle));
+    const c = ez.curve, s = ez.style;
+    const baseFill = selected ? "#C8FF4D" : (hover ? "#FF2E88" : "#25F4EE");
+    const baseStroke = selected ? "#8A5CFF" : "#0d111a";
+    ctx.fillStyle = baseFill;
+    ctx.strokeStyle = baseStroke;
+    ctx.lineWidth = 2;
+    const r = 7;
+
+    const drawTriUp = () => { ctx.beginPath(); ctx.moveTo(x, y - r); ctx.lineTo(x + r, y + r); ctx.lineTo(x - r, y + r); ctx.closePath(); ctx.fill(); ctx.stroke(); };
+    const drawTriDown = () => { ctx.beginPath(); ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y - r); ctx.lineTo(x, y + r); ctx.closePath(); ctx.fill(); ctx.stroke(); };
+    const drawDiamond = () => { ctx.beginPath(); ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y); ctx.closePath(); ctx.fill(); ctx.stroke(); };
+    const drawCircle = () => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); };
+    const drawPill = () => { ctx.beginPath(); const w = r*2, h = r*1.4; const rx = x - w/2, ry = y - h/2; ctx.roundRect(rx, ry, w, h, Math.min(h/2, 6)); ctx.fill(); ctx.stroke(); };
+    const drawStar = () => { this._drawStar(ctx, x, y, r, r*0.5, 5); };
+    const drawHex = () => { this._drawPolygon(ctx, x, y, r, 6); };
+    const drawNotch = () => { const w=r*2, h=r*1.6, rx=x-w/2, ry=y-h/2; ctx.beginPath(); ctx.moveTo(rx + w*0.1, ry); ctx.lineTo(rx + w*0.9, ry); ctx.lineTo(rx + w, ry + h*0.6); ctx.lineTo(rx + w*0.5, ry + h); ctx.lineTo(rx, ry + h*0.6); ctx.closePath(); ctx.fill(); ctx.stroke(); };
+
+    if (c === "linear") return drawCircle();
+    if (c === "instant") { ctx.save(); ctx.fillStyle = baseFill; ctx.strokeStyle = baseStroke; ctx.beginPath(); ctx.rect(x - r, y - r, r*2, r*2); ctx.fill(); ctx.stroke(); ctx.restore(); return; }
+    if (c === "quad" || c === "cubic") {
+      if (s === "in") return drawTriUp();
+      if (s === "out") return drawTriDown();
+      return drawDiamond();
+    }
+    if (c === "sine" || c === "circ") return drawPill();
+    if (c === "bounce") return drawStar();
+    if (c === "elastic") return drawHex();
+    if (c === "back") return drawNotch();
+    if (c === "bezier") return drawDiamond();
+    return drawCircle();
+  }
+
+  _formatVFXDelta(property, prev, curr) {
+    if (prev === undefined || curr === undefined) return null;
+    if (typeof prev === "number" && typeof curr === "number") {
+      const unit = (() => {
+        if (property.endsWith("angle")) return "°";
+        if (property.endsWith("zoom") || property.endsWith("size")) return "x";
+        if (/(perspective|glow|opacity|Intensity)$/.test(property)) return "%";
+        return "";
+      })();
+      const d = curr - prev;
+      if (Math.abs(d) < 1e-6) return { text: "0" + unit };
+      const txt = (d > 0 ? "+" : "") + (Number.isInteger(d) ? d : d.toFixed(2)) + unit;
+      return { text: txt };
+    }
+    if (typeof prev === "boolean" && typeof curr === "boolean") {
+      if (prev === curr) return { text: "unchanged" };
+      return { text: (prev ? "On" : "Off") + " → " + (curr ? "On" : "Off") };
+    }
+    if (typeof prev === "string" && /^#/.test(prev) && typeof curr === "string" && /^#/.test(curr)) {
+      if (prev.toLowerCase() === curr.toLowerCase()) return { type: "color", a: prev, b: curr };
+      return { type: "color", a: prev, b: curr };
+    }
+    if (typeof prev === "string" && typeof curr === "string") {
+      if (prev === curr) return { text: "unchanged" };
+      const a = prev.length > 8 ? prev.slice(0,8) + "…" : prev;
+      const b = curr.length > 8 ? curr.slice(0,8) + "…" : curr;
+      return { text: `${a} → ${b}` };
+    }
+    return null;
+  }
+
+  _drawColorSwatches(ctx, x, y, a, b) {
+    const w = 8, h = 8;
+    ctx.save();
+    ctx.strokeStyle = "#0d111a"; ctx.lineWidth = 1;
+    ctx.fillStyle = a; ctx.fillRect(x - w - 2, y, w, h); ctx.strokeRect(x - w - 2, y, w, h);
+    ctx.fillStyle = b; ctx.fillRect(x + 2, y, w, h); ctx.strokeRect(x + 2, y, w, h);
+    ctx.restore();
   }
 
   _drawEasingCurve(ctx, x1, y1, x2, y2, easing) {
@@ -816,26 +1205,23 @@ export class Editor {
     ctx.beginPath();
     ctx.moveTo(x1, y1);
 
-    switch (easing) {
-      case "instant":
-        ctx.lineTo(x1, y2);
-        ctx.lineTo(x2, y2);
-        break;
-      case "linear":
-        ctx.lineTo(x2, y2);
-        break;
-      case "easeIn":
-        ctx.bezierCurveTo(x1 + (x2 - x1) * 0.42, y1, x1 + (x2 - x1) * 1, y2, x2, y2);
-        break;
-      case "easeOut":
-        ctx.bezierCurveTo(x1, y1, x1 + (x2 - x1) * 0.58, y2, x2, y2);
-        break;
-      case "easeInOut":
-        ctx.bezierCurveTo(x1 + (x2 - x1) * 0.42, y1, x1 + (x2 - x1) * 0.58, y2, x2, y2);
-        break;
-      default:
-        ctx.lineTo(x2, y2);
-        break;
+    const { curve, style } = this._unpackEasing(easing);
+    if (curve === "instant") {
+      ctx.lineTo(x1, y2); ctx.lineTo(x2, y2);
+    } else if (curve === "linear") {
+      ctx.lineTo(x2, y2);
+    } else {
+      const map = {
+        in:  [[0.42,0.0],[1.0,1.0]],
+        out: [[0.0,0.0],[0.58,1.0]],
+        inOut: [[0.42,0.0],[0.58,1.0]]
+      };
+      const pts = map[style] || map.inOut;
+      ctx.bezierCurveTo(
+        x1 + (x2 - x1) * pts[0][0], y1 + (y2 - y1) * pts[0][1],
+        x1 + (x2 - x1) * pts[1][0], y1 + (y2 - y1) * pts[1][1],
+        x2, y2
+      );
     }
 
     ctx.stroke();
@@ -846,7 +1232,8 @@ export class Editor {
     const timelineWidth = rect.width - 40;
     const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
     const leftTime = vfx.timeline.offsetMs || 0;
-    const x = 20 + ((this.playStartMs - leftTime) * pixelsPerMs);
+    const nowMs = this.currentTimeMs();
+    const x = 20 + ((nowMs - leftTime) * pixelsPerMs);
 
     if (x >= 20 && x <= rect.width - 20) {
       ctx.strokeStyle = "#FF2E88";
@@ -856,10 +1243,10 @@ export class Editor {
       ctx.lineTo(x, rect.height);
       ctx.stroke();
     }
-      // Show current value at playhead for the selected property
-      const prop = vfx.timeline.currentProperty;
-      const val = this._getVFXPropertyAtTime(prop, this.playStartMs, vfx);
-      const label = `${this._fmtTimeMsShort(this.playStartMs)} • ${this._formatVFXValue(prop, val)}`;
+  // Show current value at playhead for the active property (auto)
+  const prop = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
+      const val = this._getVFXPropertyAtTime(prop, nowMs, vfx);
+      const label = `${this._fmtTimeMsShort(nowMs)} • ${this._formatVFXValue(prop, val)}`;
       this._drawTooltip(ctx, Math.min(rect.width - 20, x + 8), 16, label, true);
   }
 
@@ -869,8 +1256,8 @@ export class Editor {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // Check if clicking on a keyframe
-    const property = vfx.timeline.currentProperty;
+  // Check if clicking on a keyframe
+  const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
     const keyframes = vfx.keyframes[property] || [];
   const duration = this.chart?.durationMs || 180000;
   const timelineWidth = rect.width - 40;
@@ -893,8 +1280,10 @@ export class Editor {
     } else {
       // Click on timeline to set playhead
       const timeMs = Math.max(0, Math.min(duration, leftTime + (x - 20) / pixelsPerMs));
-      this.playStartMs = timeMs;
-      this._syncInputs();
+      // Seek updates internal playhead and restarts audio if already playing
+      this.seek(timeMs);
+      // Sync scrubber UI
+      try { const s = document.getElementById(this.ids.scrub); if (s) s.value = String(Math.floor(this.playStartMs)); } catch {}
       vfx.timeline.selectedKeyframe = null;
       // Center the view on the new playhead
       this._centerVFXTimelineOnPlayhead(vfx);
@@ -908,7 +1297,7 @@ export class Editor {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    const property = vfx.timeline.currentProperty;
+  const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
     const keyframes = vfx.keyframes[property] || [];
     const duration = this.chart?.durationMs || 180000;
     const timelineWidth = rect.width - 40;
@@ -925,6 +1314,71 @@ export class Editor {
     const changed = JSON.stringify(hover) !== JSON.stringify(vfx.timeline.hoverKeyframe);
     vfx.timeline.hoverKeyframe = hover;
     if (changed) this._updateVFXTimeline(vfx);
+
+    // Handle dragging of playhead for scrubbing
+  if (vfx._drag && vfx._drag.type === 'playhead') {
+      const timeMs = Math.max(0, Math.min(duration, leftTime + (x - 20) / pixelsPerMs));
+      // Update local playhead and scrubber while dragging
+      this.playStartMs = timeMs;
+      try { const s = document.getElementById(this.ids.scrub); if (s) s.value = String(Math.floor(this.playStartMs)); } catch {}
+      // Keep view centered as you drag
+      this._centerVFXTimelineOnPlayhead(vfx);
+      this._updateVFXTimeline(vfx);
+    } else if (vfx._drag && vfx._drag.type === 'keyframe' && vfx._drag.property === property) {
+      // Drag selected keyframe horizontally to change its time
+      const idx = vfx._drag.index;
+      const moved = vfx._drag.ref || keyframes[idx];
+      if (moved) {
+        const newTime = Math.max(0, Math.min(duration, leftTime + (x - 20) / pixelsPerMs));
+        moved.time = newTime;
+        // Keep keyframes sorted and track the moved index by identity
+        keyframes.sort((a,b)=>a.time-b.time);
+        const newIdx = keyframes.findIndex(k=>k===moved);
+        if (newIdx >= 0) vfx.timeline.selectedKeyframe = { property, index: newIdx };
+        this._updateVFXTimeline(vfx);
+      }
+    }
+  }
+
+  _vfxTimelineMouseDown(e, vfx) {
+    // Start dragging playhead if not clicking a keyframe
+    const rect = vfx.timelineCanvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+  const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
+    const keyframes = vfx.keyframes[property] || [];
+    const duration = this.chart?.durationMs || 180000;
+    const timelineWidth = rect.width - 40;
+    const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
+    const leftTime = vfx.timeline.offsetMs || 0;
+
+    let onKeyframe = false;
+    let hitIdx = -1;
+    for (let i = 0; i < keyframes.length; i++) {
+      const kfX = 20 + ((keyframes[i].time - leftTime) * pixelsPerMs);
+      const kfY = rect.height / 2;
+      if (Math.abs(x - kfX) < 8 && Math.abs(y - kfY) < 8) { onKeyframe = true; hitIdx = i; break; }
+    }
+
+    if (!onKeyframe) {
+      vfx._drag = { type: 'playhead', wasPlaying: !!this.playing };
+      if (this.playing) {
+        // Pause during drag so we don't rapidly recreate sources; resume on mouseup
+        this.pause();
+      }
+    } else {
+      // Start dragging this keyframe
+      vfx.timeline.selectedKeyframe = { property, index: hitIdx };
+      vfx._drag = { type: 'keyframe', property, index: hitIdx, ref: keyframes[hitIdx] };
+    }
+  }
+
+  _vfxTimelineMouseUp(_e, vfx) {
+    if (vfx._drag && (vfx._drag.type === 'playhead' || vfx._drag.type === 'keyframe')) {
+      const resume = vfx._drag.wasPlaying;
+      vfx._drag = null;
+      if (resume) this.play();
+    }
   }
 
   // Center the visible window on the playhead time
@@ -993,18 +1447,84 @@ export class Editor {
     return nstr + unit;
   }
 
-    // VFX Easing Functions
+    // VFX Easing Functions (curve + style)
     _easingFunctions = {
-      instant: (t) => t >= 1 ? 1 : 0,
-      linear: (t) => t,
-      easeIn: (t) => t * t * t,
-      easeOut: (t) => 1 - Math.pow(1 - t, 3),
-      easeInOut: (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2,
-      bezier: (t, p1x = 0.25, p1y = 0.1, p2x = 0.25, p2y = 1.0) => {
-        // Simplified cubic bezier implementation for demo
-        return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      linear: () => (t) => t,
+      quad: {
+        in: (t) => t*t,
+        out: (t) => 1 - (1 - t)*(1 - t),
+        inOut: (t) => t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2) / 2
+      },
+      cubic: {
+        in: (t) => t*t*t,
+        out: (t) => 1 - Math.pow(1 - t, 3),
+        inOut: (t) => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2
+      },
+      quart: {
+        in: (t) => t*t*t*t,
+        out: (t) => 1 - Math.pow(1 - t, 4),
+        inOut: (t) => t < 0.5 ? 8*Math.pow(t,4) : 1 - Math.pow(-2*t + 2, 4) / 2
+      },
+      quint: {
+        in: (t) => Math.pow(t,5),
+        out: (t) => 1 - Math.pow(1 - t, 5),
+        inOut: (t) => t < 0.5 ? 16*Math.pow(t,5) : 1 - Math.pow(-2*t + 2, 5) / 2
+      },
+      sine: {
+        in: (t) => 1 - Math.cos((t * Math.PI) / 2),
+        out: (t) => Math.sin((t * Math.PI) / 2),
+        inOut: (t) => -(Math.cos(Math.PI * t) - 1) / 2
+      },
+      expo: {
+        in: (t) => (t === 0 ? 0 : Math.pow(2, 10 * t - 10)),
+        out: (t) => (t === 1 ? 1 : 1 - Math.pow(2, -10 * t)),
+        inOut: (t) => (t === 0 ? 0 : t === 1 ? 1 : t < 0.5 ? Math.pow(2, 20 * t - 10) / 2 : (2 - Math.pow(2, -20 * t + 10)) / 2)
+      },
+      circ: {
+        in: (t) => 1 - Math.sqrt(1 - Math.pow(t, 2)),
+        out: (t) => Math.sqrt(1 - Math.pow(t - 1, 2)),
+        inOut: (t) => t < 0.5 ? (1 - Math.sqrt(1 - Math.pow(2*t,2))) / 2 : (Math.sqrt(1 - Math.pow(-2*t + 2,2)) + 1) / 2
+      },
+      back: {
+        in: (t) => { const c1 = 1.70158; const c3 = c1 + 1; return c3 * t * t * t - c1 * t * t; },
+        out: (t) => { const c1 = 1.70158; const c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); },
+        inOut: (t) => { const c1 = 1.70158; const c2 = c1 * 1.525; return t < 0.5 ? (Math.pow(2*t, 2) * ((c2 + 1) * 2*t - c2)) / 2 : (Math.pow(2*t - 2, 2) * ((c2 + 1) * (t*2 - 2) + c2) + 2) / 2; }
+      },
+      elastic: {
+        in: (t) => { const c4 = (2 * Math.PI) / 3; return t === 0 ? 0 : t === 1 ? 1 : -Math.pow(2, 10 * t - 10) * Math.sin((t * 10 - 10.75) * c4); },
+        out: (t) => { const c4 = (2 * Math.PI) / 3; return t === 0 ? 0 : t === 1 ? 1 : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1; },
+        inOut: (t) => { const c5 = (2 * Math.PI) / 4.5; return t === 0 ? 0 : t === 1 ? 1 : t < 0.5 ? -(Math.pow(2, 20 * t - 10) * Math.sin((20 * t - 11.125) * c5)) / 2 : (Math.pow(2, -20 * t + 10) * Math.sin((20 * t - 11.125) * c5)) / 2 + 1; }
+      },
+      bounce: {
+        out: (t) => {
+          const n1 = 7.5625, d1 = 2.75; if (t < 1/d1) return n1*t*t; else if (t < 2/d1) return n1*(t-=1.5/d1)*t + 0.75; else if (t < 2.5/d1) return n1*(t-=2.25/d1)*t + 0.9375; else return n1*(t-=2.625/d1)*t + 0.984375;
+        },
+        in: (t) => 1 - this._easingFunctions.bounce.out(1 - t),
+        inOut: (t) => t < 0.5 ? (1 - this._easingFunctions.bounce.out(1 - 2*t)) / 2 : (1 + this._easingFunctions.bounce.out(2*t - 1)) / 2
+      },
+      bezier: (p1x=0.25,p1y=0.1,p2x=0.25,p2y=1.0) => (t) => {
+        const cx = 3 * p1x, bx = 3 * (p2x - p1x) - cx, ax = 1 - cx - bx;
+        const cy = 3 * p1y, by = 3 * (p2y - p1y) - cy, ay = 1 - cy - by;
+        const y = ((ay * t + by) * t + cy) * t; // assuming x≈t for editor preview
+        return y;
       }
     };
+
+    _packEasing(curve, style) {
+      if (!curve) return "linear";
+      if (curve === "instant" || curve === "linear" || curve === "bezier") return curve;
+      return `${curve}:${style || "inOut"}`;
+    }
+    _unpackEasing(easing) {
+      if (!easing) return { curve: "linear", style: "inOut" };
+      if (easing.includes(":")) {
+        const [curve, style] = easing.split(":");
+        return { curve, style: style || "inOut" };
+      }
+      const map = { easeIn: {curve:"cubic",style:"in"}, easeOut: {curve:"cubic",style:"out"}, easeInOut: {curve:"cubic",style:"inOut"} };
+      if (map[easing]) return map[easing];
+      return { curve: easing, style: "inOut" };
+    }
 
     _interpolateVFXValue(keyframes, time, easing = "linear") {
       if (!keyframes || keyframes.length === 0) return null;
@@ -1036,9 +1556,14 @@ export class Editor {
     
       const t = Math.max(0, Math.min(1, (time - startKf.time) / duration));
     
-      // Apply easing function
-      const easedT = this._easingFunctions[startKf.easing || easing] || this._easingFunctions.linear;
-      const factor = easedT(t);
+  // Apply easing function
+  const ez = this._unpackEasing(startKf.easing || easing);
+  let fn;
+  if (ez.curve === "linear") fn = this._easingFunctions.linear();
+  else if (ez.curve === "instant") fn = () => 0;
+  else if (ez.curve === "bezier") fn = this._easingFunctions.bezier();
+  else fn = this._easingFunctions[ez.curve]?.[ez.style || "inOut"] || this._easingFunctions.cubic.inOut;
+  const factor = fn(t);
     
       // Interpolate based on value type
       if (typeof startKf.value === "number") {
@@ -1097,16 +1622,43 @@ export class Editor {
   }
 
   _testVFXInGame(vfx) {
-    // Export VFX and test in game runtime
-    const vfxData = this._generateVFXExport(vfx);
-    
-    // Trigger test in game - this would integrate with your game system
-    if (this.onExport) {
-      this.onExport({
-        type: "vfx-test",
-        data: vfxData,
-        chart: this.chart
+    // Build a manifest like playtest(), but attach VFX and startAtMs
+    try {
+      const offset = Math.max(0, Math.min(this.currentTimeMs()|0,
+        (this.chart?.durationMs || (this.audioBuffer ? Math.floor(this.audioBuffer.duration*1000) : 0))));
+
+      const notes = Array.isArray(this.chart?.notes) ? [...this.chart.notes].sort((a,b)=>a.tMs-b.tMs) : [];
+      const out = {
+        bpm: this.chart?.bpm || 120,
+        lanes: this.chart?.lanes || 4,
+        durationMs: this.chart?.durationMs || (this.audioBuffer ? Math.floor(this.audioBuffer.duration * 1000) : 180000),
+        notes,
+        title: this.manifest?.title || "Editor Preview",
+        difficulty: this.difficulty || "normal",
+        trackId: (this.manifest?.title ? this.manifest.title.toLowerCase().replace(/[^a-z0-9]+/g, "-") : "editor-preview"),
+        audioUrl: this.audioUrl || this.manifest?.audio?.wav || this.manifest?.audio?.mp3
+      };
+      if (!out.audioUrl) {
+        alert("Load an audio file/URL or a manifest with audio before testing in game.");
+        return;
+      }
+
+      const vfxExport = this._generateVFXExport(vfx);
+      window.PF_startGame?.({
+        mode: "solo",
+        manifest: out,
+        difficulty: this.difficulty || out.difficulty || "normal",
+        startAtMs: offset,
+        allowExit: true,
+        autoSubmit: false,
+        isEditorPreview: true,
+        returnTo: "editor",
+        vfx: vfxExport.vfx,
+        byDifficulty: vfxExport.byDifficulty
       });
+    } catch (e) {
+      console.error("VFX Test in Game failed:", e);
+      alert("Failed to start Test in Game with VFX.");
     }
   }
 
@@ -1154,28 +1706,10 @@ export class Editor {
         flashIntensity: 30,
         flashDuration: 200
       },
-      camera: {
-        x: 0,
-        y: 0,
-        z: 0,
-        zoom: 1.0,
-        angle: 0,
-        perspective: 50
-      },
-      view: {
-        mode: "2D"
-      },
-      notes: {
-        colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"],
-        glow: 20,
-        size: 1.0,
-        trails: false
-      },
-      lanes: {
-        opacity: 100,
-        pulsing: false,
-        glow: 0
-      }
+      camera: { x: 0, y: 0, z: 0, zoom: 1.0, angle: 0, perspective: 50 },
+      view: { mode: "2D", amount: 0 },
+      notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 20, size: 1.0, trails: false },
+      lanes: { opacity: 100, pulsing: false, glow: 0 }
     };
     
     vfx.keyframes = {};
@@ -1186,30 +1720,71 @@ export class Editor {
   }
 
   _generateVFXExport(vfx) {
+    // Build byDifficulty export
+    const buildSet = (set) => ({ properties: JSON.parse(JSON.stringify(set.data)), keyframes: JSON.parse(JSON.stringify(set.keyframes)) });
+    const byDifficulty = {
+      easy: buildSet(vfx._sets.easy),
+      normal: buildSet(vfx._sets.normal),
+      hard: buildSet(vfx._sets.hard)
+    };
+    // Back-compat: include active set as legacy vfx
+    const legacy = buildSet(vfx._sets[vfx.activeDiff] || vfx._sets.normal);
     return {
-      version: "1.0",
+      version: "1.1",
       metadata: {
         title: this.manifest?.title || "Untitled",
         artist: this.manifest?.artist || "Unknown",
-        difficulty: this.difficulty,
+        activeDifficulty: this.difficulty,
         duration: this.chart?.durationMs || 0,
         exportedAt: new Date().toISOString()
       },
-      vfx: {
-        properties: vfx.data,
-        keyframes: vfx.keyframes
-      }
+      vfx: legacy,
+      byDifficulty
     };
   }
 
   _loadVFXData(vfxData, vfx) {
-    if (vfxData.vfx) {
-      if (vfxData.vfx.properties) {
-        Object.assign(vfx.data, vfxData.vfx.properties);
+    const applySet = (setObj) => {
+      if (!setObj) return;
+      if (setObj.properties) {
+        vfx.data = JSON.parse(JSON.stringify(setObj.properties));
       }
-      if (vfxData.vfx.keyframes) {
-        vfx.keyframes = vfxData.vfx.keyframes;
+      if (setObj.keyframes) {
+        vfx.keyframes = JSON.parse(JSON.stringify(setObj.keyframes));
+        try {
+          for (const prop of Object.keys(vfx.keyframes)) {
+            const arr = vfx.keyframes[prop];
+            if (!Array.isArray(arr)) continue;
+            for (const kf of arr) {
+              if (!kf) continue;
+              if (!kf.easing) kf.easing = "linear";
+              const ez = this._unpackEasing(kf.easing);
+              kf.easing = this._packEasing(ez.curve, ez.style);
+            }
+          }
+        } catch {}
       }
+    };
+
+    // Prefer byDifficulty if present
+    if (vfxData.byDifficulty && typeof vfxData.byDifficulty === 'object') {
+      const diffs = ["easy","normal","hard"];
+      for (const d of diffs) {
+        const setObj = vfxData.byDifficulty[d];
+        if (!setObj) continue;
+        const prevActive = vfx.activeDiff;
+        vfx.activeDiff = d;
+        applySet(setObj);
+        vfx.activeDiff = prevActive;
+      }
+      // If metadata has activeDifficulty, switch to it
+      const ad = vfxData.metadata?.activeDifficulty;
+      if (ad && ["easy","normal","hard"].includes(ad)) {
+        vfx.activeDiff = ad;
+      }
+    } else if (vfxData.vfx) {
+      // Legacy single-set import: apply to current difficulty set only
+      applySet(vfxData.vfx);
     }
     
     this._syncVFXToUI(vfx);
@@ -1268,9 +1843,13 @@ export class Editor {
     if (cameraPerspective) cameraPerspective.value = vfx.data.camera.perspective;
     if (cameraPerspectiveValue) cameraPerspectiveValue.textContent = vfx.data.camera.perspective + "%";
 
-    // View mode
-    const viewMode = document.getElementById("vfx-view-mode");
-    if (viewMode) viewMode.value = vfx.data.view.mode;
+  // View controls (legacy mode retained for back-compat; amount is primary)
+  const viewMode = document.getElementById("vfx-view-mode");
+  if (viewMode) viewMode.value = vfx.data.view.mode;
+  const viewAmount = document.getElementById("vfx-view-amount");
+  const viewAmountValue = document.getElementById("vfx-view-amount-value");
+  if (viewAmount) viewAmount.value = vfx.data.view.amount ?? 0;
+  if (viewAmountValue) viewAmountValue.textContent = `${vfx.data.view.amount ?? 0}%`;
 
     // Note colors
     for (let i = 0; i < 4; i++) {
@@ -1598,6 +2177,11 @@ export class Editor {
     scrubEl?.addEventListener("input", () => {
       const ms = Number(scrubEl.value);
       this.seek(ms); // seek updates playStartMs; if playing, it will restart from here
+      // Recenter VFX timeline if present
+      if (this.vfx) {
+        this._centerVFXTimelineOnPlayhead(this.vfx);
+        this._updateVFXTimeline(this.vfx);
+      }
     });
 
     // Wire the rest
@@ -1984,6 +2568,18 @@ export class Editor {
       if (chkTail.cappedEndMs !== undefined) dMs = Math.max(0, chkTail.cappedEndMs - this.drag.baseMs);
       this.drag.tempNote.dMs = dMs;
 
+    } else if (this.drag.type === "maybeMove") {
+      // Only start moving after cursor travels beyond a tiny threshold
+      const dx = Math.abs(this.mouse.x - (this.drag.startX || 0));
+      const dy = Math.abs(this.mouse.y - (this.drag.startY || 0));
+      const tol = Math.max(2, this.drag.threshold || 4);
+      if (dx > tol || dy > tol) {
+        this.drag.type = "move";
+        // Record undo now that we're actually moving
+        this._pushUndo("Move notes");
+      } else {
+        return; // keep waiting for more movement
+      }
     } else if (this.drag.type === "move") {
       const dMs = this._screenToMs(this.mouse.y) - this.drag.startMs;
       const dLane = this.mouse.lane - this.drag.startLane;
@@ -2094,10 +2690,18 @@ export class Editor {
           this.selection.clear(); this.selection.add(hit.idx);
           this.drag = { type: "stretch", stretchIdx: hit.idx };
         } else if (this.tool === "select") {
-          this._pushUndo("Move notes");
+          // Start as a 'maybeMove' so a click selects without instantly dragging
           const orig = {};
           for (const i of this.selection) orig[i] = { tMs: this.chart.notes[i].tMs, lane: this.chart.notes[i].lane };
-          this.drag = { type: "move", startMs: tMsSnap, startLane: lane, orig };
+          this.drag = {
+            type: "maybeMove",
+            startMs: tMsSnap,
+            startLane: lane,
+            startX: this.mouse.x,
+            startY: this.mouse.y,
+            orig,
+            threshold: 4
+          };
         } else {
           this.drag = { type: "pan", startY: this.mouse.y, startScrollY: this.scrollY };
         }
@@ -2141,6 +2745,9 @@ export class Editor {
     if (this.drag?.type === "createHold") {
       const n = this.drag.tempNote;
       if (n.dMs && n.dMs < 10) delete n.dMs; // tiny drag becomes tap
+    } else if (this.drag?.type === "maybeMove") {
+      // Treat as a simple click-select (no movement)
+      // Selection was already updated on pointerDown; nothing else to do.
     } else if (this.drag?.type === "boxSelect") {
       // Commit the marquee selection
       const box = this._normalizedBox(this.drag.startX, this.drag.startY, this.drag.endX, this.drag.endY);
@@ -2375,9 +2982,13 @@ export class Editor {
     const w = this.canvas.width / (window.devicePixelRatio || 1);
     const h = this.canvas.height / (window.devicePixelRatio || 1);
 
-    // bg
-    ctx.fillStyle = this.colors.bg;
-    ctx.fillRect(0, 0, w, h);
+    // bg (optionally overridden by VFX preview)
+    if (this.vfx?.previewEnabled) {
+      this._drawEditorVfxBackground(ctx, w, h);
+    } else {
+      ctx.fillStyle = this.colors.bg;
+      ctx.fillRect(0, 0, w, h);
+    }
 
     if (!this.chart) return;
 
@@ -2387,13 +2998,78 @@ export class Editor {
     const totalW = L * laneW + (L - 1) * gap;
     const startX = (w - totalW) / 2;
 
+    // Apply camera transform (preview) around gameplay elements
+    let camSaved = false;
+    if (this.vfx?.previewEnabled && this.vfx?.previewCamera) {
+      try {
+        const t = this.currentTimeMs();
+        const cx = Number(this._getVFXPropertyAtTime('camera.x', t, this.vfx) ?? this.vfx?.data?.camera?.x ?? 0);
+        const cy = Number(this._getVFXPropertyAtTime('camera.y', t, this.vfx) ?? this.vfx?.data?.camera?.y ?? 0);
+        const zoomBase = Number(this._getVFXPropertyAtTime('camera.zoom', t, this.vfx) ?? this.vfx?.data?.camera?.zoom ?? 1);
+        const zVal = Number(this._getVFXPropertyAtTime('camera.z', t, this.vfx) ?? this.vfx?.data?.camera?.z ?? 0);
+        const angDeg = Number(this._getVFXPropertyAtTime('camera.angle', t, this.vfx) ?? this.vfx?.data?.camera?.angle ?? 0);
+        const ang = angDeg * Math.PI / 180;
+        // Map Z to an additional zoom contribution (editor-only preview)
+        // +100 Z ≈ +100% zoom, -50 Z ≈ -50% zoom; clamp to reasonable range
+        const zoomZ = Math.max(0.1, Math.min(5, zoomBase * (1 + (zVal / 100))));
+        ctx.save();
+        camSaved = true;
+        // Pivot around screen center similar to runtime cameraLayer
+        ctx.translate(w/2 + cx, h/2 + cy);
+        ctx.scale(zoomZ, zoomZ);
+        ctx.rotate(ang);
+        ctx.translate(-w/2, -h/2);
+      } catch {}
+    }
+
+    // If VFX preview is enabled, apply lane opacity to backboards
+    let saved = false;
+    if (this.vfx?.previewEnabled) {
+      try {
+        const t = this.currentTimeMs();
+        const op = Number(this._getVFXPropertyAtTime('lanes.opacity', t, this.vfx) ?? this.vfx?.data?.lanes?.opacity ?? 100);
+        const alpha = Math.max(0, Math.min(1, op / 100));
+        if (!Number.isNaN(alpha)) { ctx.save(); ctx.globalAlpha = alpha; saved = true; }
+      } catch {}
+    }
+
+  // Gate 3D/perspective effects behind global Preview
+  let viewBlend = 0, perspStrength = 0;
+  if (this.vfx?.previewEnabled) {
+    const legacyMode = (this._getVFXPropertyAtTime('view.mode', this.currentTimeMs(), this.vfx) || this.vfx?.data?.view?.mode);
+    const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
+    const viewAmtPct = Number(this._getVFXPropertyAtTime('view.amount', this.currentTimeMs(), this.vfx) ?? this.vfx?.data?.view?.amount ?? legacyBoost);
+    viewBlend = Math.max(0, Math.min(1, viewAmtPct/100));
+    const persp = Number(this._getVFXPropertyAtTime('camera.perspective', this.currentTimeMs(), this.vfx) ?? this.vfx?.data?.camera?.perspective ?? 50);
+    perspStrength = Math.max(0, Math.min(1, persp/100));
+  }
+  const depth = viewBlend * perspStrength; // blend 2D↔3D smoothly
     for (let i = 0; i < L; i++) {
       const x = startX + i * (laneW + gap);
       ctx.fillStyle = this.colors.laneFill;
       ctx.strokeStyle = this.colors.laneStroke;
       ctx.lineWidth = 2;
-      this._roundRect(ctx, x, 16, laneW, h - 32, 16, true);
+  if (viewBlend > 0) {
+        // Draw trapezoid: top width narrower by depth factor
+        const topShrink = laneW * (0.5 * depth);
+        const topX = x + topShrink/2;
+        const topY = 16;
+        const bottomX = x;
+        const bottomY = h - 16;
+        ctx.beginPath();
+        ctx.moveTo(topX, topY);
+        ctx.lineTo(topX + laneW - topShrink, topY);
+        ctx.lineTo(bottomX + laneW, bottomY);
+        ctx.lineTo(bottomX, bottomY);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        this._roundRect(ctx, x, 16, laneW, h - 32, 16, true);
+      }
     }
+
+    if (saved) ctx.restore();
 
     // timing/grid
     const bpm = this.chart.bpm || 120;
@@ -2452,7 +3128,7 @@ export class Editor {
     const headW = Math.max(26, laneW - 18);
     const stemW = this._stemWNow();
 
-    const now = this.currentTimeMs() + this.editorLatencyMs;
+  const now = this.currentTimeMs() + this.editorLatencyMs;
 
     // Follow: keep playhead centered when playing
     if (this.follow && this.playing) {
@@ -2474,33 +3150,99 @@ export class Editor {
       // Hold body extends *after* the head (downwards)
       if (n.dMs && n.dMs > 0) {
         const len = Math.max(6, n.dMs * pxPerMs);
-        ctx.fillStyle = this.colors.holdBody;
+        // Tail flash: turn body white when playhead is near the head OR near the tail end
+        const tailTime = n.tMs + n.dMs;
+        const flashTail = flash || Math.abs(tailTime - now) <= flashWindow;
+        ctx.fillStyle = flashTail ? "#ffffff" : this.colors.holdBody;
         this._roundRect(ctx, x + (headW - stemW) / 2, yHead + headH - 2, stemW, len, Math.min(6 * this.zoomY, stemW/2), true);
       }
 
       // flash head when its *center* is near playhead
       const flash = Math.abs(n.tMs - now) <= flashWindow;
-      ctx.fillStyle   = flash ? "#ffffff" : this.colors.noteHead;
+      // VFX preview: per-lane note colors if enabled (shape stays normal; VFX easing shapes do NOT affect chart notes)
+      let headColor = this.colors.noteHead;
+      if (this.vfx?.previewEnabled) {
+        const prop = `notes.colors.${n.lane+1}`;
+        const val = this._getVFXPropertyAtTime(prop, this.currentTimeMs(), this.vfx);
+        const fallback = this.vfx?.data?.notes?.colors && Array.isArray(this.vfx.data.notes.colors) ? this.vfx.data.notes.colors[n.lane] : undefined;
+        const useVal = val ?? fallback;
+        if (typeof useVal === 'string' && /^#/.test(useVal)) headColor = useVal;
+      }
+      // Note size & glow previews
+      let noteSize = 1;
+      let glowPx = 0;
+      if (this.vfx?.previewEnabled) {
+        try {
+          const tNow = this.currentTimeMs();
+          noteSize = Number(this._getVFXPropertyAtTime('notes.size', tNow, this.vfx) ?? this.vfx?.data?.notes?.size ?? 1);
+          const glowPct = Number(this._getVFXPropertyAtTime('notes.glow', tNow, this.vfx) ?? this.vfx?.data?.notes?.glow ?? 0);
+          glowPx = Math.max(0, Math.min(30, (glowPct / 100) * 20));
+        } catch {}
+      }
+      ctx.fillStyle   = flash ? "#ffffff" : headColor;
       ctx.strokeStyle = flash ? "#ffffff" : this.colors.noteHeadStroke;
       ctx.lineWidth = 2;
-      this._roundRect(ctx, x, yHead, headW, headH, this.headPad, true);
+      // Always draw normal round note heads; apply size scale + glow
+      ctx.save();
+      if (glowPx > 0 && !flash) { ctx.shadowBlur = glowPx; ctx.shadowColor = headColor; }
+      // draw centered with scale
+      const cxh = x + headW/2;
+      const cyh = yHead + headH/2;
+      ctx.translate(cxh, cyh);
+      ctx.scale(noteSize, noteSize);
+      this._drawNoteHeadShape(ctx, "round", -headW/2, -headH/2, headW, headH);
+      ctx.restore();
 
       const selected = this._previewSelection ? this._previewSelection.has(i) : this.selection.has(i);
       if (selected) {
         ctx.strokeStyle = this.colors.selection;
         ctx.lineWidth = 2;
+        // selection box not scaled for simplicity
         ctx.strokeRect(x - 2, yHead - 2, headW + 4, headH + 4);
       }
     }
 
-    // playhead (also lines up with note centers)
+  // playhead (also lines up with note centers)
     const phY = Math.floor(now * pxPerMs - this.scrollY);
-    ctx.strokeStyle = this.colors.playhead;
+  ctx.strokeStyle = this.colors.playhead;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(startX - 16, phY);
     ctx.lineTo(startX + totalW + 16, phY);
     ctx.stroke();
+
+  // End camera transform
+    if (camSaved) ctx.restore();
+
+  // Beat flash overlay (render last, above everything; not camera-affected)
+    if (this.vfx?.previewEnabled) {
+      try {
+        const t = this.currentTimeMs();
+        const flashOn = !!(this._getVFXPropertyAtTime('background.flashEnable', t, this.vfx) ?? this.vfx?.data?.background?.flashEnable);
+        if (flashOn) {
+          const bpm = this.chart?.bpm || 120;
+          const beatMs = Math.max(1, 60000 / Math.max(1, bpm));
+          const timeIntoBeat = t % beatMs;
+          const flashColor = this._getVFXPropertyAtTime('background.flashColor', t, this.vfx) || this.vfx?.data?.background?.flashColor || '#ffffff';
+          const flashIntensity = Number(this._getVFXPropertyAtTime('background.flashIntensity', t, this.vfx) ?? this.vfx?.data?.background?.flashIntensity ?? 30);
+          const flashDuration = Math.max(20, Number(this._getVFXPropertyAtTime('background.flashDuration', t, this.vfx) ?? this.vfx?.data?.background?.flashDuration ?? 200));
+          const maxA = Math.max(0, Math.min(1, flashIntensity / 100));
+          const a = timeIntoBeat <= flashDuration ? maxA * (1 - (timeIntoBeat / flashDuration)) : 0;
+          if (a > 0) {
+            const hex = String(flashColor || '#ffffff');
+            const r = parseInt(hex.slice(1,3), 16) || 255;
+            const g = parseInt(hex.slice(3,5), 16) || 255;
+            const b = parseInt(hex.slice(5,7), 16) || 255;
+            ctx.save();
+            ctx.fillStyle = `rgba(${r},${g},${b},${a.toFixed(3)})`;
+            ctx.fillRect(0, 0, w, h);
+            ctx.restore();
+          }
+        }
+      } catch {}
+    }
+
+  // Removed canvas TOP/BOTTOM markers; now shown on VFX timeline instead
 
     // --- Gap badges for selected notes (same-lane Δprev/Δnext) ---
     ctx.font = "11px ui-sans-serif, system-ui";
@@ -2558,6 +3300,87 @@ export class Editor {
 
     const s = document.getElementById(this.ids.scrub);
     if (s && !s.matches(":active")) s.value = String(Math.floor(this.currentTimeMs()));
+  }
+
+  _drawNoteHeadShape(ctx, shape, x, y, w, h) {
+    switch (shape) {
+      case "triangleUp":
+        ctx.beginPath(); ctx.moveTo(x + w/2, y); ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h); ctx.closePath(); ctx.fill(); ctx.stroke(); break;
+      case "triangleDown":
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w/2, y + h); ctx.closePath(); ctx.fill(); ctx.stroke(); break;
+      case "diamond":
+        ctx.beginPath(); ctx.moveTo(x + w/2, y); ctx.lineTo(x + w, y + h/2); ctx.lineTo(x + w/2, y + h); ctx.lineTo(x, y + h/2); ctx.closePath(); ctx.fill(); ctx.stroke(); break;
+      case "pill":
+        this._roundRect(ctx, x, y, w, h, Math.min(h/2, this.headPad), true); break;
+      case "star":
+        this._drawStar(ctx, x + w/2, y + h/2, Math.min(w,h)/2, Math.min(w,h)/4, 5); break;
+      case "hex":
+        this._drawPolygon(ctx, x + w/2, y + h/2, Math.min(w,h)/2, 6); break;
+      case "notch":
+        ctx.beginPath(); ctx.moveTo(x + w*0.1, y); ctx.lineTo(x + w*0.9, y); ctx.lineTo(x + w, y + h*0.6); ctx.lineTo(x + w*0.5, y + h); ctx.lineTo(x, y + h*0.6); ctx.closePath(); ctx.fill(); ctx.stroke(); break;
+      case "round":
+      default:
+        this._roundRect(ctx, x, y, w, h, this.headPad, true); break;
+    }
+  }
+  _drawStar(ctx, cx, cy, outerR, innerR, points) {
+    const step = Math.PI / points; ctx.beginPath();
+    for (let i=0;i<2*points;i++) { const r = (i % 2 === 0) ? outerR : innerR; const a = i * step - Math.PI/2; const x = cx + Math.cos(a) * r; const y = cy + Math.sin(a) * r; if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);} ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  _drawPolygon(ctx, cx, cy, r, sides) {
+    ctx.beginPath(); for (let i=0;i<sides;i++) { const a = (i/sides) * Math.PI * 2 - Math.PI/2; const x = cx + Math.cos(a) * r; const y = cy + Math.sin(a) * r; if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);} ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+
+  _autoKeyframe(property, vfx) {
+    // Only when VFX tab is active (avoid unintended keyframes while editing elsewhere)
+    const vfxTab = document.querySelector('[data-panel="vfx"]');
+    if (!vfxTab || !vfxTab.classList.contains('active')) return;
+    const s = document.getElementById(this.ids.scrub);
+    let time = this.playStartMs; const v = Number(s?.value); if (Number.isFinite(v)) time = v;
+    const value = this._getCurrentVFXPropertyValue(property, vfx);
+    const easing = this._packEasing(vfx.timeline.easingCurve, vfx.timeline.easingStyle);
+    if (!vfx.keyframes[property]) vfx.keyframes[property] = [];
+    const idx = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
+    if (idx >= 0) vfx.keyframes[property][idx] = { time, value, easing }; else vfx.keyframes[property].push({ time, value, easing });
+    vfx.keyframes[property].sort((a,b)=>a.time-b.time);
+    const sel = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
+    if (sel >= 0) vfx.timeline.selectedKeyframe = { property, index: sel };
+    // Remember this property for its category, so switching tabs selects it
+    try {
+      const cat = this._propertyCategory(property);
+      if (!vfx.timeline.lastPropByCategory) vfx.timeline.lastPropByCategory = {};
+      vfx.timeline.lastPropByCategory[cat] = property;
+    } catch {}
+  }
+
+  // ------- VFX preview in editor canvas -------
+  _drawEditorVfxBackground(ctx, w, h) {
+    try {
+      const t = this.currentTimeMs();
+      const bg1 = this._getVFXPropertyAtTime('background.color1', t, this.vfx) || this.vfx?.data?.background?.color1 || '#0a0c10';
+      const bg2 = this._getVFXPropertyAtTime('background.color2', t, this.vfx) || this.vfx?.data?.background?.color2 || bg1;
+      const gradientOn = !!(this._getVFXPropertyAtTime('background.gradient', t, this.vfx) ?? this.vfx?.data?.background?.gradient);
+      const angle = Number(this._getVFXPropertyAtTime('background.angle', t, this.vfx) ?? this.vfx?.data?.background?.angle ?? 0);
+
+      if (gradientOn && typeof ctx.createLinearGradient === 'function') {
+        // Convert angle to start/end points
+        const rad = (angle - 90) * Math.PI / 180;
+        const cx = w / 2, cy = h / 2;
+        const len = Math.max(w, h);
+        const x = Math.cos(rad) * len, y = Math.sin(rad) * len;
+
+        const grad = ctx.createLinearGradient(cx - x, cy - y, cx + x, cy + y);
+        grad.addColorStop(0, bg1);
+        grad.addColorStop(1, bg2);
+        ctx.fillStyle = grad;
+      } else {
+        ctx.fillStyle = bg1;
+      }
+      ctx.fillRect(0, 0, w, h);
+    } catch {
+      ctx.fillStyle = this.colors.bg;
+      ctx.fillRect(0, 0, w, h);
+    }
   }
 
   _roundRect(ctx, x, y, w, h, r, fill = true) {
@@ -2714,8 +3537,12 @@ export class Editor {
       alert("Load an audio file/URL or a manifest with audio before playtesting.");
       return;
     }
+    // Attach VFX so playtest uses current editor VFX
+    let byDifficulty = null; let legacyVfx = null;
+    try { const vfxExport = this._generateVFXExport(this.vfx); byDifficulty = vfxExport.byDifficulty; legacyVfx = vfxExport.vfx; } catch {}
+
     // Pass startAtMs and allowExit so you can quit the playtest; prevent leaderboard post
-    window.PF_startGame({ mode: "solo", manifest: out, startAtMs: offset, allowExit: true, autoSubmit: false, isEditorPreview: true });
+    window.PF_startGame({ mode: "solo", manifest: out, startAtMs: offset, allowExit: true, autoSubmit: false, isEditorPreview: true, difficulty: this.difficulty || out.difficulty || "normal", byDifficulty, vfx: legacyVfx, returnTo: "editor" });
   }
 
   _syncInputs() {

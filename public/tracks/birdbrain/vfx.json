@@ -1,0 +1,76 @@
+{
+  "version": "1.1",
+  "byDifficulty": {
+    "easy": {
+      "properties": {
+        "background": { "color1": "#0d111a", "color2": "#1a1f2e", "gradient": false, "angle": 0, "flashEnable": false, "flashColor": "#ffffff", "flashIntensity": 30, "flashDuration": 200 },
+        "camera": { "x": 0, "y": 0, "z": 0, "zoom": 1, "angle": 0, "perspective": 50 },
+        "view": { "mode": "2D" },
+        "notes": { "colors": ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], "glow": 20, "size": 1.0, "trails": false },
+        "lanes": { "opacity": 100, "pulsing": false, "glow": 0 }
+      },
+      "keyframes": {
+        "background.color1": [
+          { "time": 0, "value": "#0d111a", "easing": "linear" },
+          { "time": 30000, "value": "#102133", "easing": "linear" }
+        ],
+        "camera.zoom": [
+          { "time": 0, "value": 1.0, "easing": "linear" },
+          { "time": 15000, "value": 1.08, "easing": "cubic:inOut" }
+        ]
+      }
+    },
+    "normal": {
+      "properties": {
+        "background": { "color1": "#0d111a", "color2": "#1a1f2e", "gradient": false, "angle": 0, "flashEnable": true, "flashColor": "#ffffff", "flashIntensity": 30, "flashDuration": 180 },
+        "camera": { "x": 0, "y": 0, "z": 0, "zoom": 1, "angle": 0, "perspective": 50 },
+        "view": { "mode": "2D" },
+        "notes": { "colors": ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], "glow": 20, "size": 1.0, "trails": false },
+        "lanes": { "opacity": 100, "pulsing": false, "glow": 0 }
+      },
+      "keyframes": {
+        "background.color1": [
+          { "time": 0, "value": "#0d111a", "easing": "linear" },
+          { "time": 45000, "value": "#112238", "easing": "linear" }
+        ],
+        "background.color2": [
+          { "time": 0, "value": "#1a1f2e", "easing": "linear" },
+          { "time": 45000, "value": "#20324a", "easing": "linear" }
+        ],
+        "camera.zoom": [
+          { "time": 0, "value": 1.0, "easing": "linear" },
+          { "time": 20000, "value": 1.12, "easing": "cubic:inOut" },
+          { "time": 40000, "value": 1.0, "easing": "cubic:inOut" }
+        ],
+        "lanes.opacity": [
+          { "time": 0, "value": 100, "easing": "linear" },
+          { "time": 30000, "value": 80, "easing": "sine:inOut" }
+        ]
+      }
+    },
+    "hard": {
+      "properties": {
+        "background": { "color1": "#0b0f17", "color2": "#182134", "gradient": false, "angle": 0, "flashEnable": true, "flashColor": "#ffffff", "flashIntensity": 40, "flashDuration": 160 },
+        "camera": { "x": 0, "y": 0, "z": 0, "zoom": 1.05, "angle": 0, "perspective": 55 },
+        "view": { "mode": "2D" },
+        "notes": { "colors": ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], "glow": 24, "size": 1.05, "trails": true },
+        "lanes": { "opacity": 95, "pulsing": false, "glow": 8 }
+      },
+      "keyframes": {
+        "background.color1": [
+          { "time": 0, "value": "#0b0f17", "easing": "linear" },
+          { "time": 60000, "value": "#0f1a29", "easing": "linear" }
+        ],
+        "background.color2": [
+          { "time": 0, "value": "#182134", "easing": "linear" },
+          { "time": 60000, "value": "#223855", "easing": "linear" }
+        ],
+        "camera.zoom": [
+          { "time": 0, "value": 1.05, "easing": "linear" },
+          { "time": 20000, "value": 1.18, "easing": "back:inOut" },
+          { "time": 45000, "value": 1.05, "easing": "back:inOut" }
+        ]
+      }
+    }
+  }
+}

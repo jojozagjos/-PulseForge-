@@ -221,8 +221,20 @@ export class Leaderboard {
       chart.difficulty = diff; // <<< important: pass difficulty through
 
       // Let PF_startGame handle running AND the only submission.
+      // Auto-load VFX for this track if present
+      let byDifficulty = null;
+      try {
+        const vfxUrl = `/tracks/${encodeURIComponent(chart.trackId)}/vfx.json`;
+        const vfxRes = await fetch(vfxUrl);
+        if (vfxRes && vfxRes.ok) {
+          const vfxJson = await vfxRes.json();
+          if (vfxJson?.byDifficulty) byDifficulty = vfxJson.byDifficulty;
+          else if (vfxJson?.vfx) byDifficulty = { [diff]: vfxJson.vfx };
+        }
+      } catch {}
+
       if (typeof window.PF_startGame === "function") {
-        await window.PF_startGame({ mode: "solo", manifest: chart, allowExit: false });
+        await window.PF_startGame({ mode: "solo", manifest: chart, allowExit: false, difficulty: diff, byDifficulty });
         // After it submits, refresh the visible board for the selected diff
         await this._loadBoard(chart.trackId, diff);
         this._highlightSelf(playerName);

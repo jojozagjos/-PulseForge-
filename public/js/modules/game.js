@@ -124,9 +124,95 @@ export class Game {
 
     this._ensureToastHolder();
 
+    // VFX runtime (optional)
+  this.vfx = this._initVfxRuntime(runtime);
+
+    // Camera and flash overlay
+    this.cameraLayer = null;     // container that holds gameplay and gets camera transforms
+    this._flashOverlay = null;   // full-screen overlay for beat flash
+    this._flashUntilMs = 0;
+    this._flashMaxAlpha = 0;
+    this._flashColor = 0xffffff;
+    this._lastBeatIndex = -1;
+
     // For restoring global key handlers
     this._prevOnKeyDown = undefined;
     this._prevOnKeyUp = undefined;
+  }
+
+  // ===== VFX Runtime support (subset for background/lanes/notes) =====
+  _initVfxRuntime(runtime) {
+    if (!runtime) return null;
+    const diff = runtime.difficulty || this.settings?.difficulty || "normal";
+    let set = null;
+    if (runtime.byDifficulty && typeof runtime.byDifficulty === 'object') {
+      set = runtime.byDifficulty[diff] || runtime.byDifficulty.normal || runtime.byDifficulty.easy || runtime.byDifficulty.hard;
+    } else if (runtime.vfx && typeof runtime.vfx === 'object') {
+      set = runtime.vfx; // legacy single set
+    }
+    if (!set) return null;
+    const props = set.properties || {};
+    const keyframes = set.keyframes || {};
+    return { props, keyframes };
+  }
+
+  _vfxUnpack(easing) {
+    if (!easing) return { curve: "linear", style: "inOut" };
+    if (easing.includes(":")) { const [curve, style] = easing.split(":"); return { curve, style: style || "inOut" }; }
+    const map = { easeIn: {curve:"cubic",style:"in"}, easeOut: {curve:"cubic",style:"out"}, easeInOut: {curve:"cubic",style:"inOut"} };
+    return map[easing] || { curve: easing, style: "inOut" };
+  }
+  _vfxEaseFn(curve, style) {
+    const E = {
+      linear: () => (t)=>t,
+      quad: { in:(t)=>t*t, out:(t)=>1-(1-t)*(1-t), inOut:(t)=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2 },
+      cubic:{ in:(t)=>t*t*t, out:(t)=>1-Math.pow(1-t,3), inOut:(t)=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2 },
+      quart:{ in:(t)=>t*t*t*t, out:(t)=>1-Math.pow(1-t,4), inOut:(t)=>t<.5?8*Math.pow(t,4):1-Math.pow(-2*t+2,4)/2 },
+      quint:{ in:(t)=>Math.pow(t,5), out:(t)=>1-Math.pow(1-t,5), inOut:(t)=>t<.5?16*Math.pow(t,5):1-Math.pow(-2*t+2,5)/2 },
+      sine: { in:(t)=>1-Math.cos((t*Math.PI)/2), out:(t)=>Math.sin((t*Math.PI)/2), inOut:(t)=>-(Math.cos(Math.PI*t)-1)/2 },
+      expo: { in:(t)=>t===0?0:Math.pow(2,10*t-10), out:(t)=>t===1?1:1-Math.pow(2,-10*t), inOut:(t)=>t===0?0:t===1?1:t<.5?Math.pow(2,20*t-10)/2:(2-Math.pow(2,-20*t+10))/2 },
+      circ: { in:(t)=>1-Math.sqrt(1-t*t), out:(t)=>Math.sqrt(1-Math.pow(t-1,2)), inOut:(t)=>t<.5?(1-Math.sqrt(1-Math.pow(2*t,2)))/2:(Math.sqrt(1-Math.pow(-2*t+2,2))+1)/2 },
+      back: { in:(t)=>{const c1=1.70158,c3=c1+1;return c3*t*t*t-c1*t*t;}, out:(t)=>{const c1=1.70158,c3=c1+1;return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2);}, inOut:(t)=>{const c1=1.70158,c2=c1*1.525;return t<.5?(Math.pow(2*t,2)*((c2+1)*2*t-c2))/2:(Math.pow(2*t-2,2)*((c2+1)*(2*t-2)+c2)+2)/2;} },
+      elastic:{ in:(t)=>{const c4=(2*Math.PI)/3;return t===0?0:t===1?1:-Math.pow(2,10*t-10)*Math.sin((t*10-10.75)*c4);}, out:(t)=>{const c4=(2*Math.PI)/3;return t===0?0:t===1?1:Math.pow(2,-10*t)*Math.sin((t*10-0.75)*c4)+1;}, inOut:(t)=>{const c5=(2*Math.PI)/4.5;return t===0?0:t===1?1:t<.5?-(Math.pow(2,20*t-10)*Math.sin((20*t-11.125)*c5))/2:(Math.pow(2,-20*t+10)*Math.sin((20*t-11.125)*c5))/2+1;} },
+      bounce:{ out:(t)=>{const n1=7.5625,d1=2.75; if(t<1/d1)return n1*t*t; else if(t<2/d1)return n1*(t-=1.5/d1)*t+.75; else if(t<2.5/d1)return n1*(t-=2.25/d1)*t+.9375; else return n1*(t-=2.625/d1)*t+.984375;}, in:(t)=>1-(E.bounce.out(1-t)), inOut:(t)=>t<.5?(1-E.bounce.out(1-2*t))/2:(1+E.bounce.out(2*t-1))/2 },
+      bezier: ()=> (t)=>t
+    };
+    if (curve === "linear") return E.linear();
+    if (curve === "instant") return ()=>0;
+    if (curve === "bezier") return E.bezier();
+    return (E[curve]?.[style || "inOut"]) || E.cubic.inOut;
+  }
+  _vfxInterpolateColor(a, b, t) {
+    const hx = (s)=>{const m=/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(String(s)||""); if(!m) return [0,0,0]; return [parseInt(m[1],16),parseInt(m[2],16),parseInt(m[3],16)];};
+    const [r1,g1,b1] = hx(a), [r2,g2,b2] = hx(b);
+    const r = Math.round(r1 + (r2-r1)*t), g = Math.round(g1 + (g2-g1)*t), b3 = Math.round(b1 + (b2-b1)*t);
+    const toHex = (n)=>n.toString(16).padStart(2,'0');
+    return `#${toHex(r)}${toHex(g)}${toHex(b3)}`;
+  }
+  _vfxValueAt(property, timeMs) {
+    if (!this.vfx) return null;
+    const kfs = this.vfx.keyframes?.[property];
+    if (!Array.isArray(kfs) || !kfs.length) {
+      // default from properties
+      const parts = property.split('.');
+      let v = this.vfx.props;
+      for (const p of parts) { if (v==null) return null; v = v[p]; }
+      return v;
+    }
+    const arr = kfs.slice().sort((a,b)=>a.time-b.time);
+    if (timeMs <= arr[0].time) return arr[0].value;
+    if (timeMs >= arr[arr.length-1].time) return arr[arr.length-1].value;
+    let a = arr[0], b = arr[1];
+    for (let i=0;i<arr.length-1;i++){ if (timeMs >= arr[i].time && timeMs <= arr[i+1].time) { a = arr[i]; b = arr[i+1]; break; } }
+    const dur = Math.max(1, b.time - a.time);
+    const t = Math.max(0, Math.min(1, (timeMs - a.time)/dur));
+    const ez = this._vfxUnpack(a.easing || "linear");
+    const fn = this._vfxEaseFn(ez.curve, ez.style);
+    const f = fn(t);
+    if (typeof a.value === 'number' && typeof b.value === 'number') return a.value + (b.value - a.value)*f;
+    if (typeof a.value === 'string' && /^#/.test(a.value) && typeof b.value === 'string') return this._vfxInterpolateColor(a.value, b.value, f);
+    if (typeof a.value === 'boolean') return f < 0.5 ? a.value : b.value;
+    return f < 0.5 ? a.value : b.value;
   }
 
   async run() {
@@ -230,11 +316,16 @@ export class Game {
 
   _buildScene() {
     this.app.stage.sortableChildren = true;
+    // Camera container that we can move/rotate/scale as a unit
+    this.cameraLayer = new PIXI.Container();
+    this.cameraLayer.sortableChildren = true;
+    this.cameraLayer.zIndex = 1;
+    this.app.stage.addChild(this.cameraLayer);
     // Subtle grid (behind everything)
     const grid = new PIXI.Graphics();
     grid.alpha = 0.22;
     for (let i = 0; i < 44; i++) { grid.moveTo(0, i * 18); grid.lineTo(this.width, i * 18); }
-    this.app.stage.addChild(grid);
+  this.cameraLayer.addChild(grid);
     if ("cacheAsBitmap" in grid) grid.cacheAsBitmap = true;
     grid.zIndex = 0;
 
@@ -259,7 +350,9 @@ export class Game {
     // Lane backboards
     this.laneBackboardLayer = new PIXI.Container();
     this.laneBackboardLayer.zIndex = 1;
-    this.app.stage.addChild(this.laneBackboardLayer);
+  this.cameraLayer.addChild(this.laneBackboardLayer);
+    // Keep refs for dynamic redraw (3D amount/perspective)
+    this.laneBackboards = [];
 
     for (let i = 0; i < this.laneCount; i++) {
       const g = new PIXI.Graphics();
@@ -268,6 +361,7 @@ export class Game {
       g.stroke({ width: 2, color: 0x2a3142 });
       g.alpha = 0.95;
       this.laneBackboardLayer.addChild(g);
+      this.laneBackboards.push(g);
       if ("cacheAsBitmap" in g) g.cacheAsBitmap = true;
     }
 
@@ -293,7 +387,7 @@ export class Game {
     // Note containers with per-lane masks
     this.noteLayer = new PIXI.Container();
     this.noteLayer.zIndex = 4;
-    this.app.stage.addChild(this.noteLayer);
+  this.cameraLayer.addChild(this.noteLayer);
 
     this.laneNoteLayers = [];
     this.laneMasks = [];
@@ -315,7 +409,7 @@ export class Game {
       laneCont.mask = mask;
 
       this.noteLayer.addChild(laneCont);
-      this.app.stage.addChild(mask);
+  this.cameraLayer.addChild(mask);
 
       this.laneNoteLayers[i] = laneCont;
       this.laneMasks[i] = mask;
@@ -324,7 +418,7 @@ export class Game {
     // Receptors
     this.receptorLayer = new PIXI.Container();
     this.receptorLayer.zIndex = 6;
-    this.app.stage.addChild(this.receptorLayer);
+  this.cameraLayer.addChild(this.receptorLayer);
 
     this.receptors = [];
     for (let i = 0; i < this.laneCount; i++) {
@@ -357,13 +451,13 @@ export class Game {
     }
 
     // FX
-    this.fxRingLayer = this._makeFxRingLayer();
-    this.fxRingLayer.zIndex = 7;
-    this.app.stage.addChild(this.fxRingLayer);
+  this.fxRingLayer = this._makeFxRingLayer();
+  this.fxRingLayer.zIndex = 7;
+  this.cameraLayer.addChild(this.fxRingLayer);
 
-    this.fxTextLayer = new PIXI.Container();
-    this.fxTextLayer.zIndex = 7;
-    this.app.stage.addChild(this.fxTextLayer);
+  this.fxTextLayer = new PIXI.Container();
+  this.fxTextLayer.zIndex = 7;
+  this.cameraLayer.addChild(this.fxTextLayer);
 
     // HUD (external counters if present)
     this.$combo = document.getElementById("hud-combo");
@@ -372,6 +466,13 @@ export class Game {
 
     // Progress bar
     this._buildProgressBar(totalW);
+
+  // Full-screen flash overlay (UI space; not affected by camera)
+  this._flashOverlay = new PIXI.Graphics();
+  this._flashOverlay.rect(0, 0, this.width, this.height);
+  this._flashOverlay.fill({ color: 0xffffff, alpha: 0 });
+  this._flashOverlay.zIndex = 20; // above gameplay, below HUD
+  this.app.stage.addChild(this._flashOverlay);
 
     // Text styles
     this._fxStyles = {
@@ -699,7 +800,7 @@ export class Game {
     if (!this.fxRingLayer) {
       this.fxRingLayer = this._makeFxRingLayer();
       this.fxRingLayer.zIndex = 7;
-      try { this.app?.stage?.addChild?.(this.fxRingLayer); } catch {}
+      try { this.cameraLayer?.addChild?.(this.fxRingLayer); } catch {}
     } else {
       try { this.fxRingLayer.removeChildren(); } catch {}
     }
@@ -708,7 +809,7 @@ export class Game {
     if (!this.fxTextLayer) {
       this.fxTextLayer = new PIXI.Container();
       this.fxTextLayer.zIndex = 7;
-      try { this.app?.stage?.addChild?.(this.fxTextLayer); } catch {}
+      try { this.cameraLayer?.addChild?.(this.fxTextLayer); } catch {}
     } else {
       try { this.fxTextLayer.removeChildren(); } catch {}
     }
@@ -732,7 +833,9 @@ export class Game {
       const head = new PIXI.Sprite(this._getHeadTexture(false));
       head.width = headW;
       head.height = headH;
-      head.tint = this.vis.laneColors[n.lane % this.vis.laneColors.length];
+  // Apply VFX per-lane color override if available at t=0 (will update per-frame below)
+  const laneColorHex = this._vfxColorForLaneAt(0, n.lane) || this.vis.laneColors[n.lane % this.vis.laneColors.length];
+  head.tint = laneColorHex;
 
       // optional gloss
       let gloss = null;
@@ -847,6 +950,114 @@ export class Game {
           }
         }
 
+        // ===== VFX background & lane effects =====
+        try {
+          if (this.vfx) {
+            const t = this.state.timeMs;
+
+            // Background color/gradient (simple blend)
+            const bg1 = this._vfxValueAt('background.color1', t) || this.vfx.props?.background?.color1;
+            const bg2 = this._vfxValueAt('background.color2', t) || this.vfx.props?.background?.color2 || bg1;
+            const gradientOn = !!this._vfxValueAt('background.gradient', t);
+            const bgCol = parseInt(String((gradientOn ? bg2 : bg1) || '#0a0c10').replace('#','0x'), 16);
+            // PIXI v8: background is an object; set its color property
+            if (this.app?.renderer?.background) {
+              this.app.renderer.background.color = bgCol;
+            }
+
+            // Lane opacity
+            const laneOpacityPct = Number(this._vfxValueAt('lanes.opacity', t));
+            const laneAlpha = Number.isFinite(laneOpacityPct) ? Math.max(0, Math.min(1, laneOpacityPct/100)) : 0.95;
+            if (this.laneBackboardLayer) this.laneBackboardLayer.alpha = laneAlpha;
+
+            // Camera transforms (position x/y, zoom, angle, z influence)
+            if (this.cameraLayer) {
+              const cx = Number(this._vfxValueAt('camera.x', t) ?? this.vfx.props?.camera?.x ?? 0);
+              const cy = Number(this._vfxValueAt('camera.y', t) ?? this.vfx.props?.camera?.y ?? 0);
+              const zoomBase = Number(this._vfxValueAt('camera.zoom', t) ?? this.vfx.props?.camera?.zoom ?? 1);
+              const zVal = Number(this._vfxValueAt('camera.z', t) ?? this.vfx.props?.camera?.z ?? 0);
+              const angleDeg = Number(this._vfxValueAt('camera.angle', t) ?? this.vfx.props?.camera?.angle ?? 0);
+              const ang = (angleDeg || 0) * Math.PI / 180;
+              // pivot around center so zoom/rotate feel natural
+              this.cameraLayer.pivot.set(this.width/2, this.height/2);
+              this.cameraLayer.position.set(this.width/2 + cx, this.height/2 + cy);
+              // Map Z to extra zoom factor, similar to editor preview
+              const z = Math.max(0.05, Math.min(5, Number.isFinite(zoomBase) ? zoomBase * (1 + (zVal/100)) : 1));
+              this.cameraLayer.scale.set(z, z);
+              this.cameraLayer.rotation = ang;
+            }
+
+            // 3D lanes: dynamically redraw backboards as trapezoids based on view.amount and camera.perspective
+            try {
+              const legacyMode = this._vfxValueAt('view.mode', t) || this.vfx.props?.view?.mode;
+              const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
+              const amountPct = Number(this._vfxValueAt('view.amount', t) ?? this.vfx.props?.view?.amount ?? legacyBoost);
+              const amount = Math.max(0, Math.min(1, amountPct/100));
+              const perspPct = Number(this._vfxValueAt('camera.perspective', t) ?? this.vfx.props?.camera?.perspective ?? 50);
+              const persp = Math.max(0, Math.min(1, perspPct/100));
+              const depth = amount * persp;
+              if (Array.isArray(this.laneBackboards) && this.laneBackboards.length === this.laneCount) {
+                for (let i = 0; i < this.laneCount; i++) {
+                  const g = this.laneBackboards[i];
+                  if (!g) continue;
+                  g.clear();
+                  if (depth > 0) {
+                    // Trapezoid polygon
+                    const x = this._laneX(i);
+                    const topShrink = this.laneWidth * (0.5 * depth);
+                    const topX = x + topShrink/2;
+                    const topY = this._laneTop + 8;
+                    const bottomX = x;
+                    const bottomY = this._laneTop + this._laneHeight - 8;
+                    g.beginFill(0x0f1420, 1);
+                    g.lineStyle({ width: 2, color: 0x2a3142, alignment: 0.5 });
+                    g.moveTo(topX, topY);
+                    g.lineTo(topX + this.laneWidth - topShrink, topY);
+                    g.lineTo(bottomX + this.laneWidth, bottomY);
+                    g.lineTo(bottomX, bottomY);
+                    g.closePath();
+                    g.fill();
+                    g.stroke();
+                  } else {
+                    g.roundRect(this._laneX(i), this._laneTop, this.laneWidth, this._laneHeight, 18);
+                    g.fill({ color: 0x0f1420 });
+                    g.stroke({ width: 2, color: 0x2a3142 });
+                  }
+                }
+              }
+            } catch {}
+
+            // Beat flash overlay
+            const flashOn = !!this._vfxValueAt('background.flashEnable', t);
+            if (flashOn && this._flashOverlay) {
+              const flashColor = this._vfxValueAt('background.flashColor', t) || this.vfx.props?.background?.flashColor || '#ffffff';
+              const flashIntensity = Number(this._vfxValueAt('background.flashIntensity', t) ?? this.vfx.props?.background?.flashIntensity ?? 30);
+              const flashDuration = Math.max(20, Number(this._vfxValueAt('background.flashDuration', t) ?? this.vfx.props?.background?.flashDuration ?? 200));
+              const bpm = Number(this.chart?.bpm || this.runtime?.manifest?.bpm || 120);
+              const beatLenMs = Math.max(1, 60000 / Math.max(1, bpm));
+              const beatIndex = Math.floor(t / beatLenMs);
+              if (beatIndex !== this._lastBeatIndex) {
+                this._lastBeatIndex = beatIndex;
+                this._flashUntilMs = t + flashDuration;
+                this._flashMaxAlpha = Math.max(0, Math.min(1, flashIntensity / 100));
+                // update color if changed
+                const col = parseInt(String(flashColor || '#ffffff').replace('#','0x'), 16);
+                if (col !== this._flashColor) {
+                  this._flashColor = col;
+                  this._flashOverlay.clear();
+                  this._flashOverlay.rect(0, 0, this.width, this.height);
+                  this._flashOverlay.fill({ color: this._flashColor, alpha: 0 });
+                }
+              }
+              const rem = Math.max(0, this._flashUntilMs - t);
+              const a = (rem <= 0) ? 0 : this._flashMaxAlpha * (rem / flashDuration);
+              this._flashOverlay.alpha = a;
+            } else if (this._flashOverlay) {
+              this._flashOverlay.alpha = 0;
+            }
+          }
+        } catch {}
+
         // ===== Notes =====
         for (let i = 0; i < this.noteSprites.length; i++) {
           const obj = this.noteSprites[i];
@@ -927,6 +1138,14 @@ export class Game {
               obj.body = null;
             }
           }
+
+          // Per-frame lane color override from VFX
+          try {
+            if (this.vfx && head) {
+              const cHex = this._vfxColorForLaneAt(tMs, n.lane);
+              if (cHex != null) { head.tint = cHex; if (body) body.tint = cHex; }
+            }
+          } catch {}
 
           // Optional gloss near judge line
           if (gloss) {
@@ -1032,6 +1251,16 @@ export class Game {
       // allow external resolver to end the loop
       this._setResultsCloseResolver(() => resolve());
     });
+  }
+
+  _vfxColorForLaneAt(tMs, lane) {
+    // notes.colors are 1-based in editor key path: notes.colors.1..4
+    const prop = `notes.colors.${(lane|0)+1}`;
+    const val = this._vfxValueAt(prop, tMs);
+    if (typeof val === 'string' && /^#/.test(val)) {
+      return parseInt(val.replace('#','0x'), 16);
+    }
+    return null;
   }
 
   _laneX(idx) { return this.startX + idx * (this.laneWidth + this.laneGap); }
