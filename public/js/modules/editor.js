@@ -173,6 +173,1138 @@ export class Editor {
 
     // External hooks
     this.onExport = opts.onExport || (() => {});
+
+    // ===== VFX Editor System =====
+    this.vfx = this._initVFXSystem();
+  }
+
+  // ===== VFX Editor System =====
+  _initVFXSystem() {
+    const vfx = {
+      // Current VFX data structure
+      data: {
+        background: {
+          color1: "#0d111a",
+          color2: "#1a1f2e", 
+          gradient: false,
+          angle: 0,
+          flashEnable: false,
+          flashColor: "#ffffff",
+          flashIntensity: 30,
+          flashDuration: 200
+        },
+        camera: {
+          x: 0,
+          y: 0,
+          z: 0,
+          zoom: 1.0,
+          angle: 0,
+          perspective: 50
+        },
+        view: {
+          mode: "2D"
+        },
+        notes: {
+          colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"],
+          glow: 20,
+          size: 1.0,
+          trails: false
+        },
+        lanes: {
+          opacity: 100,
+          pulsing: false,
+          glow: 0
+        }
+      },
+
+      // Keyframes for each property
+      keyframes: {
+        // Example structure:
+        // "background.color1": [
+        //   { time: 0, value: "#0d111a", easing: "instant" },
+        //   { time: 30000, value: "#ff0000", easing: "linear" }
+        // ]
+      },
+
+      // Current timeline state
+      timeline: {
+        currentProperty: "background.color1",
+        currentEasing: "linear",
+        zoom: 1.0,
+        selectedKeyframe: null,
+        playheadTime: 0,
+        currentCategory: "background",
+        offsetMs: 0,           // left edge time of the visible window
+        hoverKeyframe: null    // { property, index } when hovering
+      },
+
+      // VFX timeline canvas
+      timelineCanvas: null,
+      timelineCtx: null,
+
+      // Wiring flags
+      _wiredVFX: false,
+      _wiredVFXTimeline: false
+    };
+
+    // Initialize VFX canvas
+    this._initVFXCanvas(vfx);
+    
+    // Wire VFX controls
+    this._wireVFXControls(vfx);
+
+    // Listen for tab activation to resize and refresh VFX UI
+    window.addEventListener("pf-editor-tab-activated", (e) => {
+      if (e?.detail?.tab === "vfx") {
+        this._resizeVFXCanvas(vfx);
+        this._rebuildVFXPropertySelect(vfx.timeline.currentCategory, vfx);
+        this._updateVFXTimeline(vfx);
+      }
+    });
+
+    return vfx;
+  }
+
+  _initVFXCanvas(vfx) {
+    vfx.timelineCanvas = document.getElementById("vfx-timeline-canvas");
+    if (vfx.timelineCanvas) {
+      vfx.timelineCtx = vfx.timelineCanvas.getContext("2d");
+      this._resizeVFXCanvas(vfx);
+      
+      // Add event listeners for VFX timeline
+      vfx.timelineCanvas.addEventListener("click", (e) => this._vfxTimelineClick(e, vfx));
+      vfx.timelineCanvas.addEventListener("mousemove", (e) => this._vfxTimelineMouseMove(e, vfx));
+      
+      window.addEventListener("resize", () => this._resizeVFXCanvas(vfx));
+    }
+  }
+
+  _resizeVFXCanvas(vfx) {
+    if (!vfx.timelineCanvas) return;
+    
+    const rect = vfx.timelineCanvas.getBoundingClientRect();
+    // If hidden, rect can be 0; skip until visible
+    if (rect.width === 0 || rect.height === 0) return;
+    const dpr = window.devicePixelRatio || 1;
+
+    vfx.timelineCanvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    vfx.timelineCanvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    vfx.timelineCanvas.style.width = rect.width + "px";
+    vfx.timelineCanvas.style.height = rect.height + "px";
+    // Draw using CSS pixel coordinates
+    vfx.timelineCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  _wireVFXControls(vfx) {
+    if (vfx._wiredVFX) return;
+    vfx._wiredVFX = true;
+
+    // Wire category tabs
+    const categoryTabs = document.querySelectorAll(".vfx-category-tab");
+    categoryTabs.forEach(tab => {
+      tab.addEventListener("click", () => {
+        // Remove active class from all tabs and categories
+        document.querySelectorAll(".vfx-category-tab").forEach(t => t.classList.remove("active"));
+        document.querySelectorAll(".vfx-category").forEach(c => c.classList.remove("active"));
+        
+        // Add active class to clicked tab and corresponding category
+        tab.classList.add("active");
+        const panelSel = `.vfx-category[data-vfx-category="${tab.dataset.vfxCategory}"]`;
+        const categoryPanel = document.querySelector(panelSel);
+        if (categoryPanel) categoryPanel.classList.add("active");
+
+        // Track current category
+        vfx.timeline.currentCategory = tab.dataset.vfxCategory || "background";
+        // Rebuild property dropdown for this category
+        this._rebuildVFXPropertySelect(vfx.timeline.currentCategory, vfx);
+        // Ensure canvas sized and redraw
+        this._resizeVFXCanvas(vfx);
+        this._updateVFXTimeline(vfx);
+      });
+    });
+
+    // Initial property list for default category
+    this._rebuildVFXPropertySelect(vfx.timeline.currentCategory, vfx);
+
+    // Ensure a VFX category panel is active on first mount
+    const anyActive = document.querySelector('.vfx-category.active');
+    if (!anyActive) {
+      const defaultTab = document.querySelector('.vfx-category-tab[data-vfx-category="background"]');
+      const defaultPanel = document.querySelector('.vfx-category[data-vfx-category="background"]');
+      defaultTab?.classList.add('active');
+      defaultPanel?.classList.add('active');
+    }
+
+    // Wire property controls with live updates
+    this._wireVFXProperty("vfx-bg-color1", "background.color1", vfx);
+    this._wireVFXProperty("vfx-bg-color2", "background.color2", vfx);
+    this._wireVFXProperty("vfx-bg-gradient", "background.gradient", vfx);
+    this._wireVFXProperty("vfx-bg-angle", "background.angle", vfx, "vfx-bg-angle-value", "°");
+    
+    this._wireVFXProperty("vfx-bg-flash-enable", "background.flashEnable", vfx);
+    this._wireVFXProperty("vfx-bg-flash-color", "background.flashColor", vfx);
+    this._wireVFXProperty("vfx-bg-flash-intensity", "background.flashIntensity", vfx, "vfx-bg-flash-intensity-value", "%");
+    this._wireVFXProperty("vfx-bg-flash-duration", "background.flashDuration", vfx, "vfx-bg-flash-duration-value", "ms");
+
+    this._wireVFXProperty("vfx-camera-x", "camera.x", vfx);
+    this._wireVFXProperty("vfx-camera-y", "camera.y", vfx);
+    this._wireVFXProperty("vfx-camera-z", "camera.z", vfx);
+    this._wireVFXProperty("vfx-camera-zoom", "camera.zoom", vfx, "vfx-camera-zoom-value", "x");
+    this._wireVFXProperty("vfx-camera-angle", "camera.angle", vfx, "vfx-camera-angle-value", "°");
+    this._wireVFXProperty("vfx-camera-perspective", "camera.perspective", vfx, "vfx-camera-perspective-value", "%");
+    
+    this._wireVFXProperty("vfx-view-mode", "view.mode", vfx);
+
+    // Wire individual note colors
+    for (let i = 1; i <= 4; i++) {
+      this._wireVFXNoteColor(`vfx-note-color-${i}`, i - 1, vfx);
+    }
+
+    this._wireVFXProperty("vfx-note-glow", "notes.glow", vfx, "vfx-note-glow-value", "%");
+    this._wireVFXProperty("vfx-note-size", "notes.size", vfx, "vfx-note-size-value", "x");
+    this._wireVFXProperty("vfx-note-trails", "notes.trails", vfx);
+
+    this._wireVFXProperty("vfx-lane-opacity", "lanes.opacity", vfx, "vfx-lane-opacity-value", "%");
+    this._wireVFXProperty("vfx-lane-pulsing", "lanes.pulsing", vfx);
+    this._wireVFXProperty("vfx-lane-glow", "lanes.glow", vfx, "vfx-lane-glow-value", "%");
+
+    // Wire timeline controls
+    this._wireVFXTimelineControls(vfx);
+
+    // Wire file management
+    this._wireVFXFileControls(vfx);
+  }
+
+  _wireVFXProperty(elementId, propertyPath, vfx, valueDisplayId = null, unit = "") {
+    const element = document.getElementById(elementId);
+    if (!element) return;
+
+    const updateValue = () => {
+      const keys = propertyPath.split(".");
+      let value = element.type === "checkbox" ? element.checked : element.value;
+      
+      // Convert to appropriate type
+      if (element.type === "number" || element.type === "range") {
+        value = parseFloat(value);
+      }
+
+      // Set the value in vfx data
+      let target = vfx.data;
+      for (let i = 0; i < keys.length - 1; i++) {
+        target = target[keys[i]];
+      }
+      target[keys[keys.length - 1]] = value;
+
+      // Update value display if provided
+      if (valueDisplayId) {
+        const display = document.getElementById(valueDisplayId);
+        if (display) {
+          display.textContent = value + unit;
+        }
+      }
+    };
+
+    element.addEventListener("input", updateValue);
+    element.addEventListener("change", updateValue);
+    
+    // Initialize value display
+    if (valueDisplayId) {
+      const display = document.getElementById(valueDisplayId);
+      if (display) {
+        const keys = propertyPath.split(".");
+        let value = vfx.data;
+        for (const key of keys) {
+          value = value[key];
+        }
+        display.textContent = value + unit;
+      }
+    }
+  }
+
+  _wireVFXNoteColor(elementId, laneIndex, vfx) {
+    const element = document.getElementById(elementId);
+    if (!element) return;
+
+    element.addEventListener("input", () => {
+      vfx.data.notes.colors[laneIndex] = element.value;
+    });
+
+    element.addEventListener("change", () => {
+      vfx.data.notes.colors[laneIndex] = element.value;
+    });
+  }
+
+  _wireVFXTimelineControls(vfx) {
+    const currentPropertySelect = document.getElementById("vfx-current-property");
+    const easingTypeSelect = document.getElementById("vfx-easing-type");
+    const timelineZoomRange = document.getElementById("vfx-timeline-zoom");
+    const timelineZoomValue = document.getElementById("vfx-timeline-zoom-value");
+
+    if (currentPropertySelect) {
+      currentPropertySelect.addEventListener("change", () => {
+        vfx.timeline.currentProperty = currentPropertySelect.value;
+        this._updateVFXTimeline(vfx);
+      });
+    }
+
+    if (easingTypeSelect) {
+      easingTypeSelect.addEventListener("change", () => {
+        vfx.timeline.currentEasing = easingTypeSelect.value;
+        this._updateVFXTimeline(vfx);
+      });
+    }
+
+    if (timelineZoomRange) {
+      timelineZoomRange.addEventListener("input", () => {
+        vfx.timeline.zoom = parseFloat(timelineZoomRange.value);
+        if (timelineZoomValue) {
+          timelineZoomValue.textContent = vfx.timeline.zoom.toFixed(1) + "x";
+        }
+        // Keep the playhead centered when zooming
+        this._centerVFXTimelineOnPlayhead(vfx);
+        this._updateVFXTimeline(vfx);
+      });
+      // initialize label
+      if (timelineZoomValue) {
+        timelineZoomValue.textContent = parseFloat(timelineZoomRange.value).toFixed(1) + "x";
+      }
+    }
+
+    // Keyframe action buttons
+    const addKeyframeBtn = document.getElementById("vfx-add-keyframe");
+    const deleteKeyframeBtn = document.getElementById("vfx-delete-keyframe");
+    const duplicateKeyframeBtn = document.getElementById("vfx-duplicate-keyframe");
+    const clearKeyframesBtn = document.getElementById("vfx-clear-keyframes");
+
+    if (addKeyframeBtn) {
+      addKeyframeBtn.addEventListener("click", () => this._addVFXKeyframe(vfx));
+    }
+
+    if (deleteKeyframeBtn) {
+      deleteKeyframeBtn.addEventListener("click", () => this._deleteVFXKeyframe(vfx));
+    }
+
+    if (duplicateKeyframeBtn) {
+      duplicateKeyframeBtn.addEventListener("click", () => this._duplicateVFXKeyframe(vfx));
+    }
+
+    if (clearKeyframesBtn) {
+      clearKeyframesBtn.addEventListener("click", () => this._clearVFXKeyframes(vfx));
+    }
+
+    // Preview buttons
+    const previewBtn = document.getElementById("vfx-play-preview");
+    const testInGameBtn = document.getElementById("vfx-test-in-game");
+
+    if (previewBtn) {
+      previewBtn.addEventListener("click", () => this._previewVFX(vfx));
+    }
+
+    if (testInGameBtn) {
+      testInGameBtn.addEventListener("click", () => this._testVFXInGame(vfx));
+    }
+  }
+
+  _wireVFXFileControls(vfx) {
+    const exportBtn = document.getElementById("vfx-export");
+    const importBtn = document.getElementById("vfx-import");
+    const resetBtn = document.getElementById("vfx-reset");
+    const importFile = document.getElementById("vfx-import-file");
+
+    if (exportBtn) {
+      exportBtn.addEventListener("click", () => this._exportVFX(vfx));
+    }
+
+    if (importBtn) {
+      importBtn.addEventListener("click", () => {
+        if (importFile) importFile.click();
+      });
+    }
+
+    if (importFile) {
+      importFile.addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (file) this._importVFX(file, vfx);
+      });
+    }
+
+    if (resetBtn) {
+      resetBtn.addEventListener("click", () => this._resetVFX(vfx));
+    }
+  }
+
+  // VFX Keyframe Management
+  _addVFXKeyframe(vfx) {
+    const property = vfx.timeline.currentProperty;
+    // Prefer scrubber position for explicit timeline control
+    let time = this.playStartMs;
+    const scrub = document.getElementById(this.ids.scrub);
+    if (scrub) {
+      const v = Number(scrub.value);
+      if (Number.isFinite(v)) time = v;
+    }
+    const easing = vfx.timeline.currentEasing;
+    
+    // Get current value from the UI
+    const value = this._getCurrentVFXPropertyValue(property, vfx);
+    
+    if (!vfx.keyframes[property]) {
+      vfx.keyframes[property] = [];
+    }
+
+    // Check if keyframe already exists at this time
+    const existingIndex = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
+    
+    if (existingIndex >= 0) {
+      // Update existing keyframe
+      vfx.keyframes[property][existingIndex] = { time, value, easing };
+    } else {
+      // Add new keyframe and sort by time
+      vfx.keyframes[property].push({ time, value, easing });
+      vfx.keyframes[property].sort((a, b) => a.time - b.time);
+    }
+
+    // Select the just-added/updated keyframe and ensure timeline shows this property
+    const currentSelect = document.getElementById("vfx-current-property");
+    if (currentSelect && currentSelect.value !== property) {
+      currentSelect.value = property;
+    }
+    vfx.timeline.currentProperty = property;
+    // Select the nearest keyframe at that time
+    const idx = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
+    if (idx >= 0) vfx.timeline.selectedKeyframe = { property, index: idx };
+    // Keep playhead view centered where we added
+    this._centerVFXTimelineOnPlayhead(vfx);
+    this._updateVFXTimeline(vfx);
+  }
+
+  _deleteVFXKeyframe(vfx) {
+    if (!vfx.timeline.selectedKeyframe) return;
+    
+    const { property, index } = vfx.timeline.selectedKeyframe;
+    if (vfx.keyframes[property] && vfx.keyframes[property][index]) {
+      vfx.keyframes[property].splice(index, 1);
+      vfx.timeline.selectedKeyframe = null;
+      this._updateVFXTimeline(vfx);
+    }
+  }
+
+  _duplicateVFXKeyframe(vfx) {
+    if (!vfx.timeline.selectedKeyframe) return;
+    
+    const { property, index } = vfx.timeline.selectedKeyframe;
+    const keyframe = vfx.keyframes[property]?.[index];
+    if (!keyframe) return;
+
+    const newKeyframe = { ...keyframe, time: keyframe.time + 1000 }; // Add 1 second offset
+    vfx.keyframes[property].push(newKeyframe);
+    vfx.keyframes[property].sort((a, b) => a.time - b.time);
+    
+    this._updateVFXTimeline(vfx);
+  }
+
+  _clearVFXKeyframes(vfx) {
+    const property = vfx.timeline.currentProperty;
+    if (vfx.keyframes[property]) {
+      vfx.keyframes[property] = [];
+      vfx.timeline.selectedKeyframe = null;
+      this._updateVFXTimeline(vfx);
+    }
+  }
+
+  _getCurrentVFXPropertyValue(property, vfx) {
+    const keys = property.split(".");
+    let value = vfx.data;
+    
+    for (const key of keys) {
+      if (key.match(/^\d+$/)) {
+        // Handle array indices like "notes.colors.0"
+        value = value[parseInt(key)];
+      } else {
+        value = value[key];
+      }
+    }
+    
+    return value;
+  }
+
+  // VFX Timeline Drawing
+  _updateVFXTimeline(vfx) {
+    if (!vfx.timelineCtx) return;
+
+    const canvas = vfx.timelineCanvas;
+    const ctx = vfx.timelineCtx;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return; // hidden
+    
+    // Clear canvas
+    ctx.fillStyle = "#111725";
+    ctx.fillRect(0, 0, rect.width, rect.height);
+
+  // Draw timeline background (only visible window)
+  this._drawVFXTimelineBackground(ctx, rect, vfx);
+    
+  // Draw keyframes for current property
+  this._drawVFXKeyframes(ctx, rect, vfx);
+    
+    // Draw playhead and current value at playhead
+    this._drawVFXPlayhead(ctx, rect, vfx);
+  }
+
+  // Build property select options per category
+  _rebuildVFXPropertySelect(category, vfx) {
+    const select = document.getElementById("vfx-current-property");
+    if (!select) return;
+    const opts = this._getVFXPropertiesByCategory(category);
+    // Rebuild options
+    select.innerHTML = "";
+    for (const { value, label } of opts) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label;
+      select.appendChild(opt);
+    }
+    // Keep current if it exists in this category; otherwise pick first
+    const hasCurrent = opts.some(o => o.value === vfx.timeline.currentProperty);
+    if (!hasCurrent) {
+      vfx.timeline.currentProperty = opts[0]?.value || "";
+    }
+    select.value = vfx.timeline.currentProperty;
+  }
+
+  _getVFXPropertiesByCategory(category) {
+    switch (category) {
+      case "background":
+        return [
+          { value: "background.color1", label: "Background Color 1" },
+          { value: "background.color2", label: "Background Color 2" },
+          { value: "background.gradient", label: "Background Gradient" },
+          { value: "background.angle", label: "Background Angle" },
+          { value: "background.flashEnable", label: "Beat Flash Enable" },
+          { value: "background.flashColor", label: "Beat Flash Color" },
+          { value: "background.flashIntensity", label: "Beat Flash Intensity" },
+          { value: "background.flashDuration", label: "Beat Flash Duration" },
+        ];
+      case "camera":
+        return [
+          { value: "camera.x", label: "Camera X" },
+          { value: "camera.y", label: "Camera Y" },
+          { value: "camera.z", label: "Camera Z" },
+          { value: "camera.zoom", label: "Camera Zoom" },
+          { value: "camera.angle", label: "Camera Angle" },
+          { value: "camera.perspective", label: "Camera Perspective" },
+          { value: "view.mode", label: "View Mode (2D/3D)" },
+        ];
+      case "notes":
+        return [
+          { value: "notes.color.1", label: "Note Color Lane 1" },
+          { value: "notes.color.2", label: "Note Color Lane 2" },
+          { value: "notes.color.3", label: "Note Color Lane 3" },
+          { value: "notes.color.4", label: "Note Color Lane 4" },
+          { value: "notes.glow", label: "Note Glow" },
+          { value: "notes.size", label: "Note Size" },
+          { value: "notes.trails", label: "Note Trails" },
+        ];
+      case "lanes":
+        return [
+          { value: "lanes.opacity", label: "Lane Opacity" },
+          { value: "lanes.pulsing", label: "Lane Pulsing" },
+          { value: "lanes.glow", label: "Lane Glow" },
+        ];
+      default:
+        return [];
+    }
+  }
+
+  _drawVFXTimelineBackground(ctx, rect, vfx) {
+    const duration = this.chart?.durationMs || 180000; // 3 minutes default
+    const timelineWidth = rect.width - 40; // Leave margin for labels
+    const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
+    const viewportMs = duration / Math.max(0.0001, vfx.timeline.zoom);
+    // Clamp offset to valid range
+    const maxOffset = Math.max(0, duration - viewportMs);
+    if (!Number.isFinite(vfx.timeline.offsetMs)) vfx.timeline.offsetMs = 0;
+    vfx.timeline.offsetMs = Math.max(0, Math.min(maxOffset, vfx.timeline.offsetMs));
+
+    const leftTime = vfx.timeline.offsetMs;
+    const rightTime = Math.min(duration, leftTime + viewportMs);
+
+    // Draw time grid
+    ctx.strokeStyle = "#2a3142";
+    ctx.lineWidth = 1;
+
+    // Draw vertical grid lines every 10 seconds in visible window
+    const step = 10000; // 10s
+    const startGrid = Math.floor(leftTime / step) * step;
+    for (let time = startGrid; time <= rightTime + step; time += step) {
+      const x = 20 + ((time - leftTime) * pixelsPerMs);
+      if (x < 20) continue;
+      if (x > rect.width - 20) break;
+
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, rect.height);
+      ctx.stroke();
+
+      // Draw time labels
+      ctx.fillStyle = "#9bb0c9";
+      ctx.font = "11px Inter";
+      ctx.textAlign = "center";
+      ctx.fillText(this._fmtTimeMsShort(time), x, rect.height - 5);
+    }
+
+    // Draw horizontal center line
+    ctx.strokeStyle = "#2a3142";
+    ctx.beginPath();
+    ctx.moveTo(20, rect.height / 2);
+    ctx.lineTo(rect.width - 20, rect.height / 2);
+    ctx.stroke();
+  }
+
+  _drawVFXKeyframes(ctx, rect, vfx) {
+    const property = vfx.timeline.currentProperty;
+    const keyframes = vfx.keyframes[property] || [];
+    const duration = this.chart?.durationMs || 180000;
+    const timelineWidth = rect.width - 40;
+    const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
+    const leftTime = vfx.timeline.offsetMs || 0;
+
+    keyframes.forEach((keyframe, index) => {
+      const x = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
+      const y = rect.height / 2;
+
+      // Skip if outside visible area
+      if (x < 20 || x > rect.width - 20) return;
+
+      // Draw keyframe dot
+      const isSelected = vfx.timeline.selectedKeyframe?.property === property && 
+                        vfx.timeline.selectedKeyframe?.index === index;
+      const isHover = vfx.timeline.hoverKeyframe?.property === property &&
+                      vfx.timeline.hoverKeyframe?.index === index;
+      
+      ctx.fillStyle = isSelected ? "#C8FF4D" : (isHover ? "#FF2E88" : "#25F4EE");
+      ctx.strokeStyle = isSelected ? "#8A5CFF" : "#0d111a";
+      ctx.lineWidth = 2;
+
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Draw easing indicator
+      if (index < keyframes.length - 1) {
+        const nextKeyframe = keyframes[index + 1];
+        const nextX = 20 + ((nextKeyframe.time - leftTime) * pixelsPerMs);
+        
+        this._drawEasingCurve(ctx, x, y, nextX, y, keyframe.easing);
+      }
+
+      // Tooltip for value/time when hovered or selected
+      if (isHover || isSelected) {
+        const valStr = this._formatVFXValue(property, keyframe.value);
+        const timeStr = this._fmtTimeMsShort(keyframe.time);
+        const label = `${timeStr} • ${valStr}`;
+        this._drawTooltip(ctx, x, y - 12, label);
+      }
+    });
+  }
+
+  _drawEasingCurve(ctx, x1, y1, x2, y2, easing) {
+    ctx.strokeStyle = "rgba(37,244,238,0.5)";
+    ctx.lineWidth = 2;
+
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+
+    switch (easing) {
+      case "instant":
+        ctx.lineTo(x1, y2);
+        ctx.lineTo(x2, y2);
+        break;
+      case "linear":
+        ctx.lineTo(x2, y2);
+        break;
+      case "easeIn":
+        ctx.bezierCurveTo(x1 + (x2 - x1) * 0.42, y1, x1 + (x2 - x1) * 1, y2, x2, y2);
+        break;
+      case "easeOut":
+        ctx.bezierCurveTo(x1, y1, x1 + (x2 - x1) * 0.58, y2, x2, y2);
+        break;
+      case "easeInOut":
+        ctx.bezierCurveTo(x1 + (x2 - x1) * 0.42, y1, x1 + (x2 - x1) * 0.58, y2, x2, y2);
+        break;
+      default:
+        ctx.lineTo(x2, y2);
+        break;
+    }
+
+    ctx.stroke();
+  }
+
+  _drawVFXPlayhead(ctx, rect, vfx) {
+    const duration = this.chart?.durationMs || 180000;
+    const timelineWidth = rect.width - 40;
+    const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
+    const leftTime = vfx.timeline.offsetMs || 0;
+    const x = 20 + ((this.playStartMs - leftTime) * pixelsPerMs);
+
+    if (x >= 20 && x <= rect.width - 20) {
+      ctx.strokeStyle = "#FF2E88";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, rect.height);
+      ctx.stroke();
+    }
+      // Show current value at playhead for the selected property
+      const prop = vfx.timeline.currentProperty;
+      const val = this._getVFXPropertyAtTime(prop, this.playStartMs, vfx);
+      const label = `${this._fmtTimeMsShort(this.playStartMs)} • ${this._formatVFXValue(prop, val)}`;
+      this._drawTooltip(ctx, Math.min(rect.width - 20, x + 8), 16, label, true);
+  }
+
+  // VFX Timeline Interaction
+  _vfxTimelineClick(e, vfx) {
+    const rect = vfx.timelineCanvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    // Check if clicking on a keyframe
+    const property = vfx.timeline.currentProperty;
+    const keyframes = vfx.keyframes[property] || [];
+  const duration = this.chart?.durationMs || 180000;
+  const timelineWidth = rect.width - 40;
+  const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
+  const leftTime = vfx.timeline.offsetMs || 0;
+
+    let clickedKeyframe = null;
+    
+    keyframes.forEach((keyframe, index) => {
+  const kfX = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
+      const kfY = rect.height / 2;
+      
+      if (Math.abs(x - kfX) < 8 && Math.abs(y - kfY) < 8) {
+        clickedKeyframe = { property, index };
+      }
+    });
+
+    if (clickedKeyframe) {
+      vfx.timeline.selectedKeyframe = clickedKeyframe;
+    } else {
+      // Click on timeline to set playhead
+      const timeMs = Math.max(0, Math.min(duration, leftTime + (x - 20) / pixelsPerMs));
+      this.playStartMs = timeMs;
+      this._syncInputs();
+      vfx.timeline.selectedKeyframe = null;
+      // Center the view on the new playhead
+      this._centerVFXTimelineOnPlayhead(vfx);
+    }
+
+    this._updateVFXTimeline(vfx);
+  }
+
+  _vfxTimelineMouseMove(e, vfx) {
+    const rect = vfx.timelineCanvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const property = vfx.timeline.currentProperty;
+    const keyframes = vfx.keyframes[property] || [];
+    const duration = this.chart?.durationMs || 180000;
+    const timelineWidth = rect.width - 40;
+    const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
+    const leftTime = vfx.timeline.offsetMs || 0;
+
+    let hover = null;
+    keyframes.forEach((kf, index) => {
+      const kx = 20 + ((kf.time - leftTime) * pixelsPerMs);
+      const ky = rect.height / 2;
+      if (Math.abs(x - kx) < 8 && Math.abs(y - ky) < 8) hover = { property, index };
+    });
+
+    const changed = JSON.stringify(hover) !== JSON.stringify(vfx.timeline.hoverKeyframe);
+    vfx.timeline.hoverKeyframe = hover;
+    if (changed) this._updateVFXTimeline(vfx);
+  }
+
+  // Center the visible window on the playhead time
+  _centerVFXTimelineOnPlayhead(vfx) {
+    const duration = this.chart?.durationMs || 180000;
+    const canvas = vfx.timelineCanvas;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const timelineWidth = rect.width - 40;
+    const pixelsPerMs = (timelineWidth / duration) * Math.max(0.0001, vfx.timeline.zoom);
+    const viewportMs = duration / Math.max(0.0001, vfx.timeline.zoom);
+    let offset = this.playStartMs - viewportMs / 2;
+    const maxOffset = Math.max(0, duration - viewportMs);
+    vfx.timeline.offsetMs = Math.max(0, Math.min(maxOffset, offset));
+  }
+
+  _drawTooltip(ctx, x, y, text, alignLeft = false) {
+    ctx.save();
+    ctx.font = "11px Inter, system-ui";
+    const pad = 6;
+    const metrics = ctx.measureText(text);
+    const w = Math.ceil(metrics.width) + pad * 2;
+    const h = 18;
+    const bx = alignLeft ? x : (x - w / 2);
+    const by = Math.max(4, y - h - 4);
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, w, h, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#e7f0ff";
+    ctx.textAlign = alignLeft ? "left" : "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, alignLeft ? bx + pad : (bx + w / 2), by + h / 2);
+    ctx.restore();
+  }
+
+  _fmtTimeMsShort(ms) {
+    ms = Math.max(0, Math.floor(ms));
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return `${m}:${String(rem).padStart(2, '0')}`;
+  }
+
+  _formatVFXValue(property, value) {
+    if (value == null) return "—";
+    // Colors
+    if (typeof value === "string" && value.startsWith("#")) return value.toUpperCase();
+    // Booleans
+    if (typeof value === "boolean") return value ? "On" : "Off";
+    // Strings
+    if (typeof value === "string") return value;
+
+    // Numbers with units based on property
+    const unit = (() => {
+      if (property.endsWith("angle")) return "°";
+      if (property.endsWith("zoom") || property.endsWith("size")) return "x";
+      if (property.endsWith("perspective") || property.endsWith("glow") || property.endsWith("opacity") || property.endsWith("Intensity")) return "%";
+      return "";
+    })();
+    const num = Number(value);
+    const nstr = Number.isInteger(num) ? String(num) : num.toFixed(2);
+    return nstr + unit;
+  }
+
+    // VFX Easing Functions
+    _easingFunctions = {
+      instant: (t) => t >= 1 ? 1 : 0,
+      linear: (t) => t,
+      easeIn: (t) => t * t * t,
+      easeOut: (t) => 1 - Math.pow(1 - t, 3),
+      easeInOut: (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2,
+      bezier: (t, p1x = 0.25, p1y = 0.1, p2x = 0.25, p2y = 1.0) => {
+        // Simplified cubic bezier implementation for demo
+        return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      }
+    };
+
+    _interpolateVFXValue(keyframes, time, easing = "linear") {
+      if (!keyframes || keyframes.length === 0) return null;
+    
+      // Sort keyframes by time
+      const sorted = [...keyframes].sort((a, b) => a.time - b.time);
+    
+      // If before first keyframe, return first value
+      if (time <= sorted[0].time) return sorted[0].value;
+    
+      // If after last keyframe, return last value
+      if (time >= sorted[sorted.length - 1].time) return sorted[sorted.length - 1].value;
+    
+      // Find the two keyframes to interpolate between
+      let startKf = sorted[0];
+      let endKf = sorted[1];
+    
+      for (let i = 0; i < sorted.length - 1; i++) {
+        if (time >= sorted[i].time && time <= sorted[i + 1].time) {
+          startKf = sorted[i];
+          endKf = sorted[i + 1];
+          break;
+        }
+      }
+    
+      // Calculate interpolation factor
+      const duration = endKf.time - startKf.time;
+      if (duration === 0) return startKf.value;
+    
+      const t = Math.max(0, Math.min(1, (time - startKf.time) / duration));
+    
+      // Apply easing function
+      const easedT = this._easingFunctions[startKf.easing || easing] || this._easingFunctions.linear;
+      const factor = easedT(t);
+    
+      // Interpolate based on value type
+      if (typeof startKf.value === "number") {
+        return startKf.value + (endKf.value - startKf.value) * factor;
+      } else if (typeof startKf.value === "string" && startKf.value.startsWith("#")) {
+        // Color interpolation
+        return this._interpolateColor(startKf.value, endKf.value, factor);
+      } else if (typeof startKf.value === "boolean") {
+        return factor < 0.5 ? startKf.value : endKf.value;
+      } else {
+        // For other types (like strings), use instant transition at midpoint
+        return factor < 0.5 ? startKf.value : endKf.value;
+      }
+    }
+
+    _interpolateColor(color1, color2, factor) {
+      // Convert hex colors to RGB
+      const rgb1 = this._hexToRgb(color1);
+      const rgb2 = this._hexToRgb(color2);
+    
+      if (!rgb1 || !rgb2) return color1;
+    
+      // Interpolate RGB components
+      const r = Math.round(rgb1.r + (rgb2.r - rgb1.r) * factor);
+      const g = Math.round(rgb1.g + (rgb2.g - rgb1.g) * factor);
+      const b = Math.round(rgb1.b + (rgb2.b - rgb1.b) * factor);
+    
+      // Convert back to hex
+      return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+    }
+
+    _hexToRgb(hex) {
+      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+      return result ? {
+        r: parseInt(result[1], 16),
+        g: parseInt(result[2], 16),
+        b: parseInt(result[3], 16)
+      } : null;
+    }
+
+    // Get current VFX property value at specified time
+    _getVFXPropertyAtTime(property, time, vfx) {
+      const keyframes = vfx.keyframes[property];
+      if (!keyframes || keyframes.length === 0) {
+        // Return default value from vfx.data
+        return this._getCurrentVFXPropertyValue(property, vfx);
+      }
+    
+      return this._interpolateVFXValue(keyframes, time);
+    }
+
+  // VFX Actions
+  _previewVFX(vfx) {
+    // Start timeline playback with VFX effects applied
+    this.play();
+  }
+
+  _testVFXInGame(vfx) {
+    // Export VFX and test in game runtime
+    const vfxData = this._generateVFXExport(vfx);
+    
+    // Trigger test in game - this would integrate with your game system
+    if (this.onExport) {
+      this.onExport({
+        type: "vfx-test",
+        data: vfxData,
+        chart: this.chart
+      });
+    }
+  }
+
+  _exportVFX(vfx) {
+    const vfxData = this._generateVFXExport(vfx);
+    
+    // Create download
+    const blob = new Blob([JSON.stringify(vfxData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${this.manifest?.title || "chart"}-vfx.json`;
+    a.click();
+    
+    URL.revokeObjectURL(url);
+  }
+
+  _importVFX(file, vfx) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const vfxData = JSON.parse(e.target.result);
+        this._loadVFXData(vfxData, vfx);
+      } catch (error) {
+        console.error("Failed to import VFX:", error);
+        alert("Failed to import VFX file. Please check the file format.");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  _resetVFX(vfx) {
+    if (!confirm("Reset all VFX settings to default? This cannot be undone.")) return;
+    
+    // Reset to default values
+    vfx.data = {
+      background: {
+        color1: "#0d111a",
+        color2: "#1a1f2e", 
+        gradient: false,
+        angle: 0,
+        flashEnable: false,
+        flashColor: "#ffffff",
+        flashIntensity: 30,
+        flashDuration: 200
+      },
+      camera: {
+        x: 0,
+        y: 0,
+        z: 0,
+        zoom: 1.0,
+        angle: 0,
+        perspective: 50
+      },
+      view: {
+        mode: "2D"
+      },
+      notes: {
+        colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"],
+        glow: 20,
+        size: 1.0,
+        trails: false
+      },
+      lanes: {
+        opacity: 100,
+        pulsing: false,
+        glow: 0
+      }
+    };
+    
+    vfx.keyframes = {};
+    vfx.timeline.selectedKeyframe = null;
+    
+    this._syncVFXToUI(vfx);
+    this._updateVFXTimeline(vfx);
+  }
+
+  _generateVFXExport(vfx) {
+    return {
+      version: "1.0",
+      metadata: {
+        title: this.manifest?.title || "Untitled",
+        artist: this.manifest?.artist || "Unknown",
+        difficulty: this.difficulty,
+        duration: this.chart?.durationMs || 0,
+        exportedAt: new Date().toISOString()
+      },
+      vfx: {
+        properties: vfx.data,
+        keyframes: vfx.keyframes
+      }
+    };
+  }
+
+  _loadVFXData(vfxData, vfx) {
+    if (vfxData.vfx) {
+      if (vfxData.vfx.properties) {
+        Object.assign(vfx.data, vfxData.vfx.properties);
+      }
+      if (vfxData.vfx.keyframes) {
+        vfx.keyframes = vfxData.vfx.keyframes;
+      }
+    }
+    
+    this._syncVFXToUI(vfx);
+    this._updateVFXTimeline(vfx);
+  }
+
+  _syncVFXToUI(vfx) {
+    // Update all UI elements to match current VFX data
+    
+    // Background properties
+    const bgColor1 = document.getElementById("vfx-bg-color1");
+    const bgColor2 = document.getElementById("vfx-bg-color2");
+    const bgGradient = document.getElementById("vfx-bg-gradient");
+    const bgAngle = document.getElementById("vfx-bg-angle");
+    const bgAngleValue = document.getElementById("vfx-bg-angle-value");
+    
+    if (bgColor1) bgColor1.value = vfx.data.background.color1;
+    if (bgColor2) bgColor2.value = vfx.data.background.color2;
+    if (bgGradient) bgGradient.checked = vfx.data.background.gradient;
+    if (bgAngle) bgAngle.value = vfx.data.background.angle;
+    if (bgAngleValue) bgAngleValue.textContent = vfx.data.background.angle + "°";
+
+    // Background flash properties
+    const flashEnable = document.getElementById("vfx-bg-flash-enable");
+    const flashColor = document.getElementById("vfx-bg-flash-color");
+    const flashIntensity = document.getElementById("vfx-bg-flash-intensity");
+    const flashIntensityValue = document.getElementById("vfx-bg-flash-intensity-value");
+    const flashDuration = document.getElementById("vfx-bg-flash-duration");
+    const flashDurationValue = document.getElementById("vfx-bg-flash-duration-value");
+    
+    if (flashEnable) flashEnable.checked = vfx.data.background.flashEnable;
+    if (flashColor) flashColor.value = vfx.data.background.flashColor;
+    if (flashIntensity) flashIntensity.value = vfx.data.background.flashIntensity;
+    if (flashIntensityValue) flashIntensityValue.textContent = vfx.data.background.flashIntensity + "%";
+    if (flashDuration) flashDuration.value = vfx.data.background.flashDuration;
+    if (flashDurationValue) flashDurationValue.textContent = vfx.data.background.flashDuration + "ms";
+
+    // Camera properties
+    const cameraX = document.getElementById("vfx-camera-x");
+    const cameraY = document.getElementById("vfx-camera-y");
+    const cameraZ = document.getElementById("vfx-camera-z");
+    const cameraZoom = document.getElementById("vfx-camera-zoom");
+    const cameraZoomValue = document.getElementById("vfx-camera-zoom-value");
+    const cameraAngle = document.getElementById("vfx-camera-angle");
+    const cameraAngleValue = document.getElementById("vfx-camera-angle-value");
+    const cameraPerspective = document.getElementById("vfx-camera-perspective");
+    const cameraPerspectiveValue = document.getElementById("vfx-camera-perspective-value");
+    
+    if (cameraX) cameraX.value = vfx.data.camera.x;
+    if (cameraY) cameraY.value = vfx.data.camera.y;
+    if (cameraZ) cameraZ.value = vfx.data.camera.z;
+    if (cameraZoom) cameraZoom.value = vfx.data.camera.zoom;
+    if (cameraZoomValue) cameraZoomValue.textContent = vfx.data.camera.zoom.toFixed(1) + "x";
+    if (cameraAngle) cameraAngle.value = vfx.data.camera.angle;
+    if (cameraAngleValue) cameraAngleValue.textContent = vfx.data.camera.angle + "°";
+    if (cameraPerspective) cameraPerspective.value = vfx.data.camera.perspective;
+    if (cameraPerspectiveValue) cameraPerspectiveValue.textContent = vfx.data.camera.perspective + "%";
+
+    // View mode
+    const viewMode = document.getElementById("vfx-view-mode");
+    if (viewMode) viewMode.value = vfx.data.view.mode;
+
+    // Note colors
+    for (let i = 0; i < 4; i++) {
+      const noteColor = document.getElementById(`vfx-note-color-${i + 1}`);
+      if (noteColor && vfx.data.notes.colors[i]) {
+        noteColor.value = vfx.data.notes.colors[i];
+      }
+    }
+
+    // Note effects
+    const noteGlow = document.getElementById("vfx-note-glow");
+    const noteGlowValue = document.getElementById("vfx-note-glow-value");
+    const noteSize = document.getElementById("vfx-note-size");
+    const noteSizeValue = document.getElementById("vfx-note-size-value");
+    const noteTrails = document.getElementById("vfx-note-trails");
+    
+    if (noteGlow) noteGlow.value = vfx.data.notes.glow;
+    if (noteGlowValue) noteGlowValue.textContent = vfx.data.notes.glow + "%";
+    if (noteSize) noteSize.value = vfx.data.notes.size;
+    if (noteSizeValue) noteSizeValue.textContent = vfx.data.notes.size.toFixed(1) + "x";
+    if (noteTrails) noteTrails.checked = vfx.data.notes.trails;
+
+    // Lane effects
+    const laneOpacity = document.getElementById("vfx-lane-opacity");
+    const laneOpacityValue = document.getElementById("vfx-lane-opacity-value");
+    const lanePulsing = document.getElementById("vfx-lane-pulsing");
+    const laneGlow = document.getElementById("vfx-lane-glow");
+    const laneGlowValue = document.getElementById("vfx-lane-glow-value");
+    
+    if (laneOpacity) laneOpacity.value = vfx.data.lanes.opacity;
+    if (laneOpacityValue) laneOpacityValue.textContent = vfx.data.lanes.opacity + "%";
+    if (lanePulsing) lanePulsing.checked = vfx.data.lanes.pulsing;
+    if (laneGlow) laneGlow.value = vfx.data.lanes.glow;
+    if (laneGlowValue) laneGlowValue.textContent = vfx.data.lanes.glow + "%";
   }
 
   // ===== History (Undo/Redo) =====
@@ -1212,6 +2344,15 @@ export class Editor {
         label.textContent = `${cur}s / ${dur}s`;
       }
     } catch {}
+    
+    // Update VFX timeline if visible
+    if (this.vfx && this.vfx.timelineCanvas) {
+      const vfxTab = document.querySelector('[data-panel="vfx"]');
+      if (vfxTab && vfxTab.classList.contains('active')) {
+        this._updateVFXTimeline(this.vfx);
+      }
+    }
+    
     this._draw();
     requestAnimationFrame(this._tick);
   }

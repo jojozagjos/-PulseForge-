@@ -147,6 +147,7 @@
         <button class="tab active" role="tab" aria-selected="true" data-tab="tools">Tools</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="audio">Audio</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="chart">Chart</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="vfx">VFX</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="file">File</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="help">Help</button>
       </nav>
@@ -273,6 +274,179 @@
           </div>
         </section>
 
+        <!-- VFX panel -->
+        <section class="ed-panel" data-panel="vfx">
+          <h3>VFX Editor</h3>
+          
+          <!-- VFX Category Tabs -->
+          <div class="vfx-categories" style="display:flex; gap:4px; margin-bottom:12px; border-bottom:1px solid #2a3142; padding-bottom:8px;">
+            <button class="vfx-category-tab active" data-vfx-category="background">Background</button>
+            <button class="vfx-category-tab" data-vfx-category="camera">Camera</button>
+            <button class="vfx-category-tab" data-vfx-category="notes">Notes</button>
+            <button class="vfx-category-tab" data-vfx-category="lanes">Lanes</button>
+          </div>
+
+          <!-- Background Category -->
+          <div class="vfx-category active" data-vfx-category="background">
+            <div class="vfx-property-group">
+              <h4>Background Color</h4>
+              <div class="row" style="gap:8px; align-items:center;">
+                <label>Color 1: <input type="color" id="vfx-bg-color1" value="#0d111a" /></label>
+                <label>Color 2: <input type="color" id="vfx-bg-color2" value="#1a1f2e" /></label>
+                <label>Gradient: <input type="checkbox" id="vfx-bg-gradient" /></label>
+                <label>Angle: <input type="range" id="vfx-bg-angle" min="0" max="360" value="0" /> <span id="vfx-bg-angle-value">0°</span></label>
+              </div>
+            </div>
+
+            <div class="vfx-property-group">
+              <h4>Beat Flash</h4>
+              <div class="row" style="gap:8px; align-items:center;">
+                <label>Enable: <input type="checkbox" id="vfx-bg-flash-enable" /></label>
+                <label>Flash Color: <input type="color" id="vfx-bg-flash-color" value="#ffffff" /></label>
+                <label>Intensity: <input type="range" id="vfx-bg-flash-intensity" min="0" max="100" value="30" /> <span id="vfx-bg-flash-intensity-value">30%</span></label>
+                <label>Duration: <input type="range" id="vfx-bg-flash-duration" min="50" max="500" value="200" /> <span id="vfx-bg-flash-duration-value">200ms</span></label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Camera Category -->
+          <div class="vfx-category" data-vfx-category="camera">
+            <div class="vfx-property-group">
+              <h4>Camera Position</h4>
+              <div class="row" style="gap:8px; align-items:center;">
+                <label>X: <input type="number" id="vfx-camera-x" value="0" step="0.1" /></label>
+                <label>Y: <input type="number" id="vfx-camera-y" value="0" step="0.1" /></label>
+                <label>Z: <input type="number" id="vfx-camera-z" value="0" step="0.1" /></label>
+              </div>
+            </div>
+
+            <div class="vfx-property-group">
+              <h4>Camera Settings</h4>
+              <div class="row" style="gap:8px; align-items:center;">
+                <label>Zoom: <input type="range" id="vfx-camera-zoom" min="0.1" max="5" value="1" step="0.1" /> <span id="vfx-camera-zoom-value">1.0x</span></label>
+                <label>Angle: <input type="range" id="vfx-camera-angle" min="-180" max="180" value="0" /> <span id="vfx-camera-angle-value">0°</span></label>
+                <label>Perspective: <input type="range" id="vfx-camera-perspective" min="0" max="100" value="50" /> <span id="vfx-camera-perspective-value">50%</span></label>
+              </div>
+            </div>
+
+            <div class="vfx-property-group">
+              <h4>View Mode</h4>
+              <div class="row" style="gap:8px; align-items:center;">
+                <label>Mode: 
+                  <select id="vfx-view-mode">
+                    <option value="2D">2D</option>
+                    <option value="3D">3D</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Notes Category -->
+          <div class="vfx-category" data-vfx-category="notes">
+            <div class="vfx-property-group">
+              <h4>Note Colors (Individual Lanes)</h4>
+              <div class="row" style="gap:8px; align-items:center;">
+                <label>Lane 1: <input type="color" id="vfx-note-color-1" value="#19cdd0" /></label>
+                <label>Lane 2: <input type="color" id="vfx-note-color-2" value="#8A5CFF" /></label>
+                <label>Lane 3: <input type="color" id="vfx-note-color-3" value="#C8FF4D" /></label>
+                <label>Lane 4: <input type="color" id="vfx-note-color-4" value="#FFA94D" /></label>
+              </div>
+            </div>
+
+            <div class="vfx-property-group">
+              <h4>Note Effects</h4>
+              <div class="row" style="gap:8px; align-items:center;">
+                <label>Glow: <input type="range" id="vfx-note-glow" min="0" max="100" value="20" /> <span id="vfx-note-glow-value">20%</span></label>
+                <label>Size: <input type="range" id="vfx-note-size" min="0.5" max="2" value="1" step="0.1" /> <span id="vfx-note-size-value">1.0x</span></label>
+                <label>Trails: <input type="checkbox" id="vfx-note-trails" /></label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Lanes Category -->
+          <div class="vfx-category" data-vfx-category="lanes">
+            <div class="vfx-property-group">
+              <h4>Lane Effects</h4>
+              <div class="row" style="gap:8px; align-items:center;">
+                <label>Opacity: <input type="range" id="vfx-lane-opacity" min="0" max="100" value="100" /> <span id="vfx-lane-opacity-value">100%</span></label>
+                <label>Pulsing: <input type="checkbox" id="vfx-lane-pulsing" /></label>
+                <label>Glow: <input type="range" id="vfx-lane-glow" min="0" max="100" value="0" /> <span id="vfx-lane-glow-value">0%</span></label>
+              </div>
+            </div>
+          </div>
+
+          <!-- VFX Timeline and Keyframes -->
+          <div class="vfx-timeline-section" style="margin-top:20px; border-top:1px solid #2a3142; padding-top:12px;">
+            <h4>Timeline & Keyframes</h4>
+            
+            <!-- Current Property Selection -->
+            <div class="row" style="gap:8px; align-items:center; margin-bottom:12px;">
+              <label>Property: 
+                <select id="vfx-current-property">
+                  <option value="background.color1">Background Color 1</option>
+                  <option value="background.color2">Background Color 2</option>
+                  <option value="background.gradient">Background Gradient</option>
+                  <option value="background.angle">Background Angle</option>
+                  <option value="camera.x">Camera X</option>
+                  <option value="camera.y">Camera Y</option>
+                  <option value="camera.z">Camera Z</option>
+                  <option value="camera.zoom">Camera Zoom</option>
+                  <option value="camera.angle">Camera Angle</option>
+                  <option value="camera.perspective">Camera Perspective</option>
+                  <option value="view.mode">View Mode</option>
+                  <option value="notes.color.1">Note Color Lane 1</option>
+                  <option value="notes.color.2">Note Color Lane 2</option>
+                  <option value="notes.color.3">Note Color Lane 3</option>
+                  <option value="notes.color.4">Note Color Lane 4</option>
+                </select>
+              </label>
+              
+              <label>Easing: 
+                <select id="vfx-easing-type">
+                  <option value="instant">Instant</option>
+                  <option value="linear">Linear</option>
+                  <option value="easeIn">Ease In</option>
+                  <option value="easeOut">Ease Out</option>
+                  <option value="easeInOut">Ease In Out</option>
+                  <option value="bezier">Custom Bezier</option>
+                </select>
+              </label>
+            </div>
+
+            <!-- Keyframe Controls -->
+            <div class="row" style="gap:8px; margin-bottom:12px;">
+              <button id="vfx-add-keyframe" class="secondary">Add Keyframe</button>
+              <button id="vfx-delete-keyframe" class="ghost">Delete Selected</button>
+              <button id="vfx-duplicate-keyframe" class="secondary">Duplicate</button>
+              <button id="vfx-clear-keyframes" class="ghost">Clear All</button>
+            </div>
+
+            <!-- VFX Timeline Canvas -->
+            <div class="vfx-timeline-container" style="background:#111725; border:1px solid #2a3142; border-radius:8px; height:200px; position:relative; overflow:hidden;">
+              <canvas id="vfx-timeline-canvas" style="width:100%; height:100%; display:block;"></canvas>
+            </div>
+
+            <!-- Timeline Controls -->
+            <div class="row" style="gap:8px; margin-top:8px; align-items:center;">
+              <button id="vfx-play-preview" class="primary">Preview VFX</button>
+              <button id="vfx-test-in-game" class="secondary">Test in Game</button>
+              <label>Timeline Zoom: <input type="range" id="vfx-timeline-zoom" min="0.1" max="5" value="1" step="0.1" /> <span id="vfx-timeline-zoom-value">1.0x</span></label>
+            </div>
+          </div>
+
+          <!-- VFX Export/Import -->
+          <div class="vfx-file-section" style="margin-top:20px; border-top:1px solid #2a3142; padding-top:12px;">
+            <h4>VFX File Management</h4>
+            <div class="row" style="gap:8px;">
+              <button id="vfx-export" class="primary">Export VFX</button>
+              <button id="vfx-import" class="secondary">Import VFX</button>
+              <button id="vfx-reset" class="ghost">Reset to Default</button>
+            </div>
+            <input type="file" id="vfx-import-file" accept=".json" style="display:none;" />
+          </div>
+        </section>
+
         <!-- File panel (Export helpers) -->
         <section class="ed-panel" data-panel="file">
           <h3>Import / Export</h3>
@@ -285,13 +459,40 @@
         <!-- Help panel -->
         <section class="ed-panel" data-panel="help">
           <h3>How to use the Editor</h3>
-          <p class="muted">Use the Tools tab to select, create, delete, stretch, copy and paste notes. The Audio tab loads song audio, and the Chart tab opens/saves chart JSON.</p>
+          <p class="muted">Use the Tools tab to select, create, delete, stretch, copy and paste notes. The Audio tab loads song audio, and the Chart tab opens/saves chart JSON. The VFX tab creates visual effects and camera animations.</p>
+          
+          <h4>Chart Editor</h4>
           <ul class="muted">
             <li>Alt+Click sets the playhead. Middle drag pans. Shift adds to selection.</li>
             <li>Use the Zoom slider or Shift+Wheel to zoom in/out; Follow keeps the playhead centered.</li>
             <li>Stretch turns a note into a hold; drag its tail to adjust duration.</li>
             <li>Scrub the timeline with the slider below the canvas to preview.</li>
           </ul>
+
+          <h4>VFX Editor</h4>
+          <ul class="muted">
+            <li><strong>Categories:</strong> Background, Camera, Notes, and Lanes each have their own property groups.</li>
+            <li><strong>Keyframes:</strong> Pick a <em>category</em> first (Background/Camera/Notes/Lanes) to filter the property list. Choose an easing, move the scrubber/playhead to the exact time, then click "Add Keyframe".</li>
+            <li><strong>Timeline:</strong> Click to set the playhead and add keyframes at that time. (Drag-to-move coming soon.) Click a keyframe dot to select; use Delete Selected to remove.</li>
+            <li><strong>Easing:</strong> Instant = snap change, Linear = constant speed, Ease In/Out = smooth acceleration/deceleration.</li>
+            <li><strong>Background:</strong> Set colors, gradients, and beat-synced flash effects.</li>
+            <li><strong>Camera:</strong> Control position (X,Y,Z), zoom, angle, perspective, and 2D/3D view mode transitions.</li>
+            <li><strong>Notes:</strong> Customize individual lane colors, glow effects, size, and trails.</li>
+            <li><strong>Export:</strong> Save VFX settings as a .json file that can be loaded into the game runtime.</li>
+          </ul>
+
+          <h4>VFX Workflow</h4>
+          <ol class="muted">
+            <li>Load your chart and audio in the Chart and Audio tabs.</li>
+            <li>Switch to the VFX tab and select a category (Background, Camera, Notes, or Lanes).</li>
+            <li>Adjust the property values using sliders, color pickers, and toggles.</li>
+            <li>Select the property you want to animate from the dropdown.</li>
+            <li>Set the playhead to your desired time and click "Add Keyframe".</li>
+            <li>Move to another time, change the property value, and add another keyframe.</li>
+            <li>Choose the easing type for smooth transitions between keyframes.</li>
+            <li>Use "Preview VFX" to see your effects or "Test in Game" for full gameplay testing.</li>
+            <li>Export your VFX file when finished to use in the game runtime.</li>
+          </ol>
         </section>
       </aside>
 

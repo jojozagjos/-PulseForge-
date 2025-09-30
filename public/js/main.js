@@ -185,6 +185,8 @@ window.addEventListener("DOMContentLoaded", () => {
       const tab = btn.getAttribute('data-tab');
       nav.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === btn));
       panels.forEach(p => p.classList.toggle('active', p.getAttribute('data-panel') === tab));
+      // Notify listeners which tab is active (for VFX canvas sizing, etc.)
+      try { window.dispatchEvent(new CustomEvent('pf-editor-tab-activated', { detail: { tab } })); } catch {}
     });
   } catch {}
 }

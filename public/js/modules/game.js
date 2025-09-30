@@ -60,14 +60,14 @@ export class Game {
     this.held = [];
     this.activeHoldsByLane = new Map();
 
-    // Quit state
-    this._quitting = false;
-    this._showResultsTimeout = null;
+      // Quit state
+      this._quitting = false;
+      this._showResultsTimeout = null;
 
-    // Layers / HUD refs
-    this.laneBackboardLayer = null;
-    this.noteLayer = null;
-    this.laneNoteLayers = [];
+      // Layers / HUD refs
+      this.laneBackboardLayer = null;
+      this.noteLayer = null;
+      this.laneNoteLayers = [];
     this.laneMasks = [];
 
     this.receptorLayer = null;

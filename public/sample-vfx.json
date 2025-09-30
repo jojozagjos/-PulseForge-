@@ -1,0 +1,64 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "title": "Sample VFX",
+    "artist": "Test Artist",
+    "difficulty": "normal",
+    "duration": 180000,
+    "exportedAt": "2025-09-29T00:00:00.000Z"
+  },
+  "vfx": {
+    "properties": {
+      "background": {
+        "color1": "#0d111a",
+        "color2": "#1a1f2e", 
+        "gradient": true,
+        "angle": 45,
+        "flashEnable": true,
+        "flashColor": "#ffffff",
+        "flashIntensity": 50,
+        "flashDuration": 200
+      },
+      "camera": {
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "zoom": 1.0,
+        "angle": 0,
+        "perspective": 50
+      },
+      "view": {
+        "mode": "3D"
+      },
+      "notes": {
+        "colors": ["#ff0080", "#00ff80", "#8000ff", "#ff8000"],
+        "glow": 40,
+        "size": 1.2,
+        "trails": true
+      },
+      "lanes": {
+        "opacity": 80,
+        "pulsing": true,
+        "glow": 30
+      }
+    },
+    "keyframes": {
+      "background.color1": [
+        { "time": 0, "value": "#0d111a", "easing": "linear" },
+        { "time": 30000, "value": "#ff0000", "easing": "easeInOut" },
+        { "time": 60000, "value": "#0000ff", "easing": "easeOut" },
+        { "time": 90000, "value": "#0d111a", "easing": "linear" }
+      ],
+      "camera.zoom": [
+        { "time": 15000, "value": 1.0, "easing": "easeIn" },
+        { "time": 45000, "value": 1.5, "easing": "easeOut" },
+        { "time": 75000, "value": 1.0, "easing": "linear" }
+      ],
+      "view.mode": [
+        { "time": 0, "value": "2D", "easing": "instant" },
+        { "time": 30000, "value": "3D", "easing": "instant" },
+        { "time": 60000, "value": "2D", "easing": "instant" }
+      ]
+    }
+  }
+}
