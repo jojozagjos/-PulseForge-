@@ -28,10 +28,7 @@
           "shakeAmp": 6,
           "shakeFreq": 3
         },
-        "view": {
-          "mode": "2D",
-          "amount": 25
-        },
+        
         "notes": {
           "colors": ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"],
           "glow": 0,
@@ -45,10 +42,7 @@
         }
       },
       "keyframes": {
-        "view.amount": [
-          { "time": 0, "value": 10, "easing": "linear" },
-          { "time": 30000, "value": 30, "easing": "quad:inOut" }
-        ],
+        
         "camera.shakeAmp": [
           { "time": 0, "value": 0, "easing": "linear" },
           { "time": 20000, "value": 6, "easing": "sine:inOut" },
@@ -83,10 +77,7 @@
           "shakeAmp": 10,
           "shakeFreq": 4.5
         },
-        "view": {
-          "mode": "2D",
-          "amount": 45
-        },
+        
         "notes": {
           "colors": ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"],
           "glow": 0,
@@ -100,12 +91,8 @@
         }
       },
       "keyframes": {
-        "view.amount": [
-          { "time": 0, "value": 20, "easing": "linear" },
-          { "time": 30000, "value": 55, "easing": "quad:inOut" },
-          { "time": 60000, "value": 35, "easing": "quad:inOut" }
-        ],
-        "camera.shakeAmp": [
+        
+  "camera.shakeAmp": [
           { "time": 0, "value": 0, "easing": "linear" },
           { "time": 18000, "value": 10, "easing": "sine:inOut" },
           { "time": 36000, "value": 0, "easing": "sine:inOut" }

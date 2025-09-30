@@ -191,7 +191,7 @@ export class Editor {
           currentProperty: "camera.rotateZ",
         easingCurve: "linear",   // linear|quad|cubic|quart|quint|sine|expo|circ|back|elastic|bounce|bezier|instant
         easingStyle: "inOut",    // in|out|inOut (ignored for instant/linear/bezier)
-        zoom: 1.0,
+  zoom: 1.0,
         selectedKeyframe: null,
         playheadTime: 0,
         currentCategory: "background",
@@ -208,7 +208,7 @@ export class Editor {
       // Wiring flags
       _wiredVFX: false,
       _wiredVFXTimeline: false,
-      previewCamera: false
+  previewCamera: true
     };
 
     // Build default VFX set factory
@@ -224,7 +224,7 @@ export class Editor {
         flashDuration: 200
       },
   camera: { x: 0, y: 0, z: 0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
-  view: { mode: "2D", amount: 0 },
+  // Removed 3D Depth slider; 2.5D comes from Rotate X/Y only
   notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0, trails: false },
       lanes: { opacity: 100, pulsing: false, glow: 0 }
     });
@@ -402,7 +402,7 @@ export class Editor {
       }
     } catch {}
     
-    this._wireVFXProperty("vfx-view-amount", "view.amount", vfx, "vfx-view-amount-value", "%");
+  // Removed view.amount wiring (UI removed)
 
     // Wire individual note colors
     for (let i = 1; i <= 4; i++) {
@@ -659,7 +659,7 @@ export class Editor {
       'camera.rotateZ': 0,
     'camera.shakeAmp': 0,
     'camera.shakeFreq': 5,
-  'view.amount': 0,
+  // view.amount removed
   // removed view.rotateX and view.rotateY
       'notes.colors.1': '#19cdd0',
       'notes.colors.2': '#8A5CFF',
@@ -990,7 +990,6 @@ export class Editor {
           { value: "camera.rotateZ", label: "Rotate Z" },
           { value: "camera.shakeAmp", label: "Camera Shake Amp" },
           { value: "camera.shakeFreq", label: "Camera Shake Freq" },
-          { value: "view.amount", label: "3D Amount" },
           // removed legacy view.rotateX/view.rotateY controls
         ];
       case "notes":
@@ -1770,8 +1769,10 @@ export class Editor {
             delete vfx.data.camera.angle;
             // Ensure rotateX/rotateY defaults exist
             if (vfx.data.camera.rotateX == null) vfx.data.camera.rotateX = 0;
-            if (vfx.data.camera.rotateY == null) vfx.data.camera.rotateY = 0;
-            if (vfx.data.camera.rotateZ == null) vfx.data.camera.rotateZ = 0;
+      if (vfx.data.camera.rotateY == null) vfx.data.camera.rotateY = 0;
+      if (vfx.data.camera.rotateZ == null) vfx.data.camera.rotateZ = 0;
+      // Drop any legacy view node
+      if (vfx.data.view) delete vfx.data.view;
           }
         } catch {}
       }
@@ -1795,6 +1796,8 @@ export class Editor {
             vfx.keyframes['camera.rotateZ'].push(...arr);
             delete vfx.keyframes['camera.angle'];
           }
+          // Remove any view.amount keyframes
+          if (vfx.keyframes['view.amount']) delete vfx.keyframes['view.amount'];
         } catch {}
       }
     };
@@ -1888,12 +1891,8 @@ export class Editor {
   if (camShakeFreqValue) camShakeFreqValue.textContent = (vfx.data.camera.shakeFreq ?? 5).toFixed(1) + "Hz";
 
   // View controls (legacy mode retained for back-compat; amount is primary)
-  const viewMode = document.getElementById("vfx-view-mode");
-  if (viewMode) viewMode.value = vfx.data.view.mode;
-  const viewAmount = document.getElementById("vfx-view-amount");
-  const viewAmountValue = document.getElementById("vfx-view-amount-value");
-  if (viewAmount) viewAmount.value = vfx.data.view.amount ?? 0;
-  if (viewAmountValue) viewAmountValue.textContent = `${vfx.data.view.amount ?? 0}%`;
+  // view mode UI removed
+  // view.amount UI removed
 
     // Note colors
     for (let i = 0; i < 4; i++) {
@@ -3051,9 +3050,9 @@ export class Editor {
         let cy = Number(this._getVFXPropertyAtTime('camera.y', t, this.vfx) ?? this.vfx?.data?.camera?.y ?? 0);
   const zVal = Number(this._getVFXPropertyAtTime('camera.z', t, this.vfx) ?? this.vfx?.data?.camera?.z ?? 0);
   const rotZDeg = Number(this._getVFXPropertyAtTime('camera.rotateZ', t, this.vfx) ?? this.vfx?.data?.camera?.rotateZ ?? 0);
-  // Optional: small contribution from camera.rotateY to Z for 2D preview flavor
-  const rotYDegCam = Number(this._getVFXPropertyAtTime('camera.rotateY', t, this.vfx) ?? this.vfx?.data?.camera?.rotateY ?? 0);
-  const ang = (rotZDeg + rotYDegCam * 0.5) * Math.PI / 180;
+  const rotXDeg = Number(this._getVFXPropertyAtTime('camera.rotateX', t, this.vfx) ?? this.vfx?.data?.camera?.rotateX ?? 0);
+  const rotYDeg = Number(this._getVFXPropertyAtTime('camera.rotateY', t, this.vfx) ?? this.vfx?.data?.camera?.rotateY ?? 0);
+  const ang = (rotZDeg) * Math.PI / 180;
         // Shake
         const shakeAmp = Number(this._getVFXPropertyAtTime('camera.shakeAmp', t, this.vfx) ?? this.vfx?.data?.camera?.shakeAmp ?? 0);
         const shakeFreq = Number(this._getVFXPropertyAtTime('camera.shakeFreq', t, this.vfx) ?? this.vfx?.data?.camera?.shakeFreq ?? 5);
@@ -3071,6 +3070,14 @@ export class Editor {
         ctx.translate(w/2 + cx, h/2 + cy);
         ctx.scale(zoomZ, zoomZ);
         ctx.rotate(ang);
+    // Apply 2.5D skew using Rotate X/Y (map to shear)
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const skewXrad = clamp(rotYDeg * Math.PI / 180, -0.6, 0.6); // yaw → skewX
+    const skewYrad = clamp(rotXDeg * Math.PI / 180, -0.6, 0.6); // pitch → skewY
+    const tanX = Math.tan(skewXrad);
+    const tanY = Math.tan(skewYrad);
+    // current matrix is R * S * T; multiply a shear matrix
+    ctx.transform(1, tanY, tanX, 1, 0, 0);
         ctx.translate(-w/2, -h/2);
       } catch {}
     }
@@ -3086,12 +3093,12 @@ export class Editor {
       } catch {}
     }
 
-  // 3D lanes follow view.amount only
+  // 2.5D preview uses Rotate X/Y only; no view.amount
   let viewBlend = 0;
   if (this.vfx?.previewEnabled) {
     const legacyMode = (this._getVFXPropertyAtTime('view.mode', this.currentTimeMs(), this.vfx) || this.vfx?.data?.view?.mode);
     const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
-    const viewAmtPct = Number(this._getVFXPropertyAtTime('view.amount', this.currentTimeMs(), this.vfx) ?? this.vfx?.data?.view?.amount ?? legacyBoost);
+  const viewAmtPct = 0;
     viewBlend = Math.max(0, Math.min(1, viewAmtPct/100));
     // simple rotation in 2D: rotate canvas around center to emulate a 3D tilt
     // removed legacy view.rotateX/Y preview approximation
@@ -3226,7 +3233,7 @@ export class Editor {
       // Note size & glow previews
       let noteSize = 1;
       let glowPx = 0;
-      // Depth effect: scale heads larger near playhead (judge) based on view.amount
+  // Depth effect: minimal preview scaling near judge (fixed small amount)
       let perspScaleX = 1;
       if (this.vfx?.previewEnabled) {
         try {
@@ -3236,7 +3243,7 @@ export class Editor {
           glowPx = Math.max(0, Math.min(30, (glowPct / 100) * 20));
           const legacyMode = (this._getVFXPropertyAtTime('view.mode', tNow, this.vfx) || this.vfx?.data?.view?.mode);
           const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
-          const amountPct = Number(this._getVFXPropertyAtTime('view.amount', tNow, this.vfx) ?? this.vfx?.data?.view?.amount ?? legacyBoost);
+          const amountPct = 0;
           const amt = Math.max(0, Math.min(1, amountPct / 100));
           if (amt > 0) {
             const centerY = cyh; // note center

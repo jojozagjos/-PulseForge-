@@ -6,7 +6,11 @@ export class Settings {
     this.name = "";
     this.latencyMs = 0;
     this.keys = ["D","F","J","K"];
-    this.volume = 1; // 0..1
+  this.volume = 1; // 0..1 master
+
+  // Performance
+  this.maxFps = 120;      // 0 = unlimited
+  this.renderScale = 1.0; // 0.5 .. 2
 
     // Small, shared audio helper (routes through a master Gain)
     this._ap = new AudioPlayer();
@@ -56,15 +60,20 @@ export class Settings {
       this.name = name || "";
       this.latencyMs = isFiniteNumber(s.latencyMs) ? s.latencyMs : this.latencyMs;
       this.keys = Array.isArray(s.keys) && s.keys.length ? s.keys : this.keys;
-      this.volume = isFiniteNumber(s.volume) ? clamp01(s.volume) : this.volume;
+  this.volume = isFiniteNumber(s.volume) ? clamp01(s.volume) : this.volume;
+  this.maxFps = isFiniteNumber(s.maxFps) ? Math.max(0, Math.floor(s.maxFps)) : this.maxFps;
+  this.renderScale = isFiniteNumber(s.renderScale) ? Math.max(0.5, Math.min(2, s.renderScale)) : this.renderScale;
     } catch {}
 
     // Reflect → UI
     const $name = qs("#set-name");
     const $lat  = qs("#set-latency");
     const $keys = qs("#set-keys");
-    const $vol  = qs("#set-volume");
-    const $volLabel = qs("#set-volume-label");
+  const $vol  = qs("#set-volume");
+  const $volLabel = qs("#set-volume-label");
+  const $maxfps = qs("#set-maxfps");
+  const $renderScale = qs("#set-render-scale");
+  const $renderScaleLabel = qs("#set-render-scale-label");
 
     if ($name) $name.value = this.name || "";
     if ($lat)  $lat.value = this.latencyMs;
@@ -84,6 +93,27 @@ export class Settings {
         if ($volLabel) $volLabel.textContent = `${Math.round(v * 100)}%`;
         // broadcast so editor/solo preview can react immediately
         window.dispatchEvent(new CustomEvent("pf-volume-changed", { detail: { volume: v } }));
+      });
+    }
+
+
+    // Performance UI
+    if ($maxfps) {
+      $maxfps.value = String(this.maxFps);
+      $maxfps.addEventListener("change", () => {
+        const v = Math.max(0, Math.floor(Number($maxfps.value) || 0));
+        this.maxFps = v;
+        window.dispatchEvent(new CustomEvent("pf-maxfps-changed", { detail: { maxFps: v } }));
+      });
+    }
+    if ($renderScale) {
+      $renderScale.value = String(this.renderScale);
+      if ($renderScaleLabel) $renderScaleLabel.textContent = `${Number(this.renderScale).toFixed(1)}x`;
+      $renderScale.addEventListener("input", () => {
+        const v = Math.max(0.5, Math.min(2, Number($renderScale.value) || 1));
+        this.renderScale = v;
+        if ($renderScaleLabel) $renderScaleLabel.textContent = `${v.toFixed(1)}x`;
+        window.dispatchEvent(new CustomEvent("pf-render-scale-changed", { detail: { renderScale: v } }));
       });
     }
 
@@ -122,13 +152,17 @@ export class Settings {
       .map(s => s.trim().toUpperCase())
       .filter(Boolean)
       .slice(0, 4);
-    this.volume = clamp01(((Number($vol?.value) || 100) / 100));
+  this.volume = clamp01(((Number($vol?.value) || 100) / 100));
+  this.maxFps = Math.max(0, Math.floor(Number(qs("#set-maxfps")?.value || this.maxFps)));
+  this.renderScale = Math.max(0.5, Math.min(2, Number(qs("#set-render-scale")?.value || this.renderScale)));
 
     localStorage.setItem("pf-settings", JSON.stringify({
       name: this.name,
       latencyMs: this.latencyMs,
       keys: this.keys,
-      volume: this.volume
+      volume: this.volume,
+      maxFps: this.maxFps,
+      renderScale: this.renderScale
     }));
 
     // Keep AudioPlayer aligned with saved volume
@@ -137,6 +171,11 @@ export class Settings {
 
     if (alertUser) alert("Saved.");
   }
+
+  // Simple getters for other modules
+  getName(){ return this.name; }
+  getVolumes(){ return { master: this.volume }; }
+  getPerformance(){ return { maxFps: this.maxFps, renderScale: this.renderScale }; }
 
   // ----------------- Latency Test -----------------
   async _startLatencyTest() {

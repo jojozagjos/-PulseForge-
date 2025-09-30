@@ -241,10 +241,10 @@ export class Game {
     this.maxCombo = 0;
     this._resultsShown = false;
 
-    const clampRes = Math.max(1, Math.min(this.settings.renderScale || 1, (window?.devicePixelRatio || 1)));
-
     // New PIXI app each run
     this.app = new PIXI.Application();
+    const perf = (typeof this.settings.getPerformance === "function") ? this.settings.getPerformance() : { maxFps: this.settings.maxFps, renderScale: this.settings.renderScale };
+    const clampRes = Math.max(1, Math.min(perf?.renderScale || 1, (window?.devicePixelRatio || 1)));
     await this.app.init({
       canvas: this.canvas,
       width: this.width,
@@ -254,10 +254,12 @@ export class Game {
       resolution: clampRes,
       powerPreference: "high-performance"
     });
-    this.app.ticker.maxFPS = this.settings.maxFps || 120;
+    // Max FPS: 0 = unlimited (let PIXI run uncapped)
+    const maxFps = (perf?.maxFps ?? 120);
+    this.app.ticker.maxFPS = maxFps > 0 ? maxFps : Infinity;
     this.app.ticker.minFPS = this.settings.minFps || 50;
 
-    this._buildScene();
+  this._buildScene();
 
     await this._playSolo(this.runtime.manifest);
 
@@ -315,8 +317,8 @@ export class Game {
 
   _buildScene() {
     this.app.stage.sortableChildren = true;
-    // Camera container that we can move/rotate/scale as a unit
-    this.cameraLayer = new PIXI.Container();
+  // Camera container that we can move/rotate/scale as a unit
+  this.cameraLayer = new PIXI.Container();
     this.cameraLayer.sortableChildren = true;
     this.cameraLayer.zIndex = 1;
     this.app.stage.addChild(this.cameraLayer);
@@ -350,8 +352,8 @@ export class Game {
     this.laneBackboardLayer = new PIXI.Container();
     this.laneBackboardLayer.zIndex = 1;
   this.cameraLayer.addChild(this.laneBackboardLayer);
-    // Keep refs for dynamic redraw (3D amount/perspective)
-    this.laneBackboards = [];
+  // Keep refs for dynamic redraw
+  this.laneBackboards = [];
 
     for (let i = 0; i < this.laneCount; i++) {
       const g = new PIXI.Graphics();
@@ -579,6 +581,7 @@ export class Game {
 
   async _playSolo(manifest) {
     const player = new AudioPlayer();
+    // Master volume only
     this._applyVolume(player);
     // Show Loading… while we fetch the audio
     this._setLoading(true, "Loading…");
@@ -1055,7 +1058,7 @@ export class Game {
             const laneAlpha = Number.isFinite(laneOpacityPct) ? Math.max(0, Math.min(1, laneOpacityPct/100)) : 0.95;
             if (this.laneBackboardLayer) this.laneBackboardLayer.alpha = laneAlpha;
 
-            // Camera transforms (position x/y, zoom, rotation) + shake; build 3D context when X/Y rotation present
+            // Camera transforms (position x/y, zoom, rotation) + shake
             if (this.cameraLayer) {
               const cx = Number(this._vfxValueAt('camera.x', t) ?? this.vfx.props?.camera?.x ?? 0);
               const cy = Number(this._vfxValueAt('camera.y', t) ?? this.vfx.props?.camera?.y ?? 0);
@@ -1064,8 +1067,6 @@ export class Game {
               const rotZDeg = Number(this._vfxValueAt('camera.rotateZ', t) ?? this.vfx.props?.camera?.rotateZ ?? 0);
               const rotXDeg = Number(this._vfxValueAt('camera.rotateX', t) ?? this.vfx.props?.camera?.rotateX ?? 0);
               const rotYDeg = Number(this._vfxValueAt('camera.rotateY', t) ?? this.vfx.props?.camera?.rotateY ?? 0);
-              const rx = this._pfDegToRad(rotXDeg), ry = this._pfDegToRad(rotYDeg), rz = this._pfDegToRad(rotZDeg);
-              const use3D = Math.abs(rotXDeg) > 0.001 || Math.abs(rotYDeg) > 0.001;
               // Shake
               const shakeAmp = Number(this._vfxValueAt('camera.shakeAmp', t) ?? this.vfx.props?.camera?.shakeAmp ?? 0);
               const shakeFreq = Number(this._vfxValueAt('camera.shakeFreq', t) ?? this.vfx.props?.camera?.shakeFreq ?? 5);
@@ -1077,96 +1078,35 @@ export class Game {
               }
               // Map Z to extra zoom factor
               const zoomMul = Math.max(0.05, Math.min(5, 1 * (1 + (zVal/100))));
-
-              if (use3D) {
-                // Build 3D context
-                const m = this._pfBuildRotMatrix(rx, ry, rz);
-                // Tie focal length to screen size and 3D amount (depth)
-                const legacyMode = this._vfxValueAt('view.mode', t) || this.vfx.props?.view?.mode;
-                const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
-                const amountPct = Number(this._vfxValueAt('view.amount', t) ?? this.vfx.props?.view?.amount ?? legacyBoost);
-                const depthAmt = Math.max(0, Math.min(1, amountPct/100));
-                const baseF = Math.max(this.width, this.height) * 0.9;
-                const focalPx = baseF * (1 + depthAmt);
-                this._pf3D = { use3D: true, m, focalPx, zoomMul, panX: cx + sx, panY: cy + sy };
-                // Keep cameraLayer neutral so we control positions directly
-                this.cameraLayer.pivot.set(0, 0);
-                this.cameraLayer.position.set(0, 0);
-                this.cameraLayer.scale.set(1, 1);
-                this.cameraLayer.rotation = 0;
-              } else {
-                this._pf3D = { use3D: false };
-                // 2D transform path
-                const ang = rz; // pure Z rotation
-                this.cameraLayer.pivot.set(this.width/2, this.height/2);
-                this.cameraLayer.position.set(this.width/2 + cx + sx, this.height/2 + cy + sy);
-                this.cameraLayer.scale.set(zoomMul, zoomMul);
-                this.cameraLayer.rotation = ang;
-              }
+              // Treat canvas as a 2D plane: apply rotateZ as rotation, X/Y as skew (2.5D look)
+              const rz = this._pfDegToRad(rotZDeg);
+              this.cameraLayer.pivot.set(this.width/2, this.height/2);
+              this.cameraLayer.position.set(this.width/2 + cx + sx, this.height/2 + cy + sy);
+              this.cameraLayer.scale.set(zoomMul, zoomMul);
+              this.cameraLayer.rotation = rz;
+              // Skew for faux 3D: clamp small range for stability
+              const skewX = Math.max(-0.6, Math.min(0.6, this._pfDegToRad(rotYDeg)));
+              const skewY = Math.max(-0.6, Math.min(0.6, this._pfDegToRad(rotXDeg)));
+              // PIXI v8: container.skew is available via transform.skew or skew property
+              try {
+                if (this.cameraLayer.skew) {
+                  this.cameraLayer.skew.set(skewX, skewY);
+                } else if (this.cameraLayer.transform?.skew) {
+                  this.cameraLayer.transform.skew.set(skewX, skewY);
+                }
+              } catch {}
             }
 
-            // 3D lanes: use true 3D projection when camera rotateX/rotateY is present; otherwise 2D trapezoids from view.amount
+            // Lanes: draw as simple rects (no perspective); tint/alpha still applied above
             try {
-              const legacyMode = this._vfxValueAt('view.mode', t) || this.vfx.props?.view?.mode;
-              const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
-              const amountPct = Number(this._vfxValueAt('view.amount', t) ?? this.vfx.props?.view?.amount ?? legacyBoost);
-              const amount = Math.max(0, Math.min(1, amountPct/100));
-              const depth = amount;
               if (Array.isArray(this.laneBackboards) && this.laneBackboards.length === this.laneCount) {
                 for (let i = 0; i < this.laneCount; i++) {
                   const g = this.laneBackboards[i];
                   if (!g) continue;
                   g.clear();
-                  const use3D = !!this._pf3D?.use3D;
-                  if (use3D) {
-                    const m = this._pf3D.m;
-                    const f = this._pf3D.focalPx;
-                    const zoomMul = this._pf3D.zoomMul;
-                    const panX = this._pf3D.panX || 0;
-                    const panY = this._pf3D.panY || 0;
-                    const laneX = this._laneX(i);
-                    const x0 = laneX, x1 = laneX + this.laneWidth;
-                    const yTop = this._laneTop + 8, yBot = this._laneTop + this._laneHeight - 8;
-                    // push bottom further in Z based on depth to simulate perspective
-                    const zTop = 0;
-                    const zBot = Math.max(0, depth) * (this.height * 0.75);
-                    const p0 = this._pfProjectPoint(x0 + panX, yTop + panY, zTop, m, f, zoomMul);
-                    const p1 = this._pfProjectPoint(x1 + panX, yTop + panY, zTop, m, f, zoomMul);
-                    const p2 = this._pfProjectPoint(x1 + panX, yBot + panY, zBot, m, f, zoomMul);
-                    const p3 = this._pfProjectPoint(x0 + panX, yBot + panY, zBot, m, f, zoomMul);
-                    g.beginFill(0x0f1420, 1);
-                    g.lineStyle({ width: 2, color: 0x2a3142, alignment: 0.5 });
-                    g.moveTo(p0.x, p0.y);
-                    g.lineTo(p1.x, p1.y);
-                    g.lineTo(p2.x, p2.y);
-                    g.lineTo(p3.x, p3.y);
-                    g.closePath();
-                    g.fill();
-                    g.stroke();
-                  } else {
-                    if (depth > 0) {
-                      // 2D trapezoid
-                      const x = this._laneX(i);
-                      const topShrink = this.laneWidth * (0.5 * depth);
-                      const topX = x + topShrink/2;
-                      const topY = this._laneTop + 8;
-                      const bottomX = x;
-                      const bottomY = this._laneTop + this._laneHeight - 8;
-                      g.beginFill(0x0f1420, 1);
-                      g.lineStyle({ width: 2, color: 0x2a3142, alignment: 0.5 });
-                      g.moveTo(topX, topY);
-                      g.lineTo(topX + this.laneWidth - topShrink, topY);
-                      g.lineTo(bottomX + this.laneWidth, bottomY);
-                      g.lineTo(bottomX, bottomY);
-                      g.closePath();
-                      g.fill();
-                      g.stroke();
-                    } else {
-                      g.roundRect(this._laneX(i), this._laneTop, this.laneWidth, this._laneHeight, 18);
-                      g.fill({ color: 0x0f1420 });
-                      g.stroke({ width: 2, color: 0x2a3142 });
-                    }
-                  }
+                  g.roundRect(this._laneX(i), this._laneTop, this.laneWidth, this._laneHeight, 18);
+                  g.fill({ color: 0x0f1420 });
+                  g.stroke({ width: 2, color: 0x2a3142 });
                 }
               }
             } catch {}
@@ -1212,23 +1152,7 @@ export class Game {
           const yAtCenter = this.judgeY - (n.tMs - tMs) * this.pixelsPerMs;
           let y = yAtCenter - (head.height / 2);
           if (cont.parent) {
-            // For 3D, adjust visual y by projection while preserving world y for judgment
-            if (this._pf3D?.use3D && head) {
-              const laneX = this._laneX(n.lane);
-              const centerWorldX = laneX + this.laneWidth / 2;
-              const centerWorldY = y + (head.height / 2);
-              const legacyMode = this._vfxValueAt('view.mode', tMs) || this.vfx?.props?.view?.mode;
-              const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
-              const amountPct = Number(this._vfxValueAt('view.amount', tMs) ?? this.vfx?.props?.view?.amount ?? legacyBoost);
-              const amt = Math.max(0, Math.min(1, amountPct / 100));
-              const z = Math.max(0, amt) * (this.height * 0.75) * (1 - Math.min(1, Math.abs(this.judgeY - centerWorldY) / this._laneHeight));
-              const p = this._pfProjectPoint(centerWorldX + (this._pf3D.panX||0), centerWorldY + (this._pf3D.panY||0), z, this._pf3D.m, this._pf3D.focalPx, this._pf3D.zoomMul);
-              const baseYCenter = centerWorldY + (this._pf3D.panY||0);
-              const dy = p.y - baseYCenter;
-              cont.y = (y + dy) | 0;
-            } else {
-              cont.y = y;
-            }
+            cont.y = y;
           }
 
           // Tap miss: after window passes, mark miss and fade head
@@ -1288,35 +1212,15 @@ export class Game {
             if (!head.__pfFade) this._beginFadeOut(head, head.__pfFadeRate, false);
           }
 
-          // Depth effect: scale notes as they approach the judge line (closer = larger)
+          // Depth effect: simple proximity scaling near judge (2.5D feel)
           let sx = 1;
           try {
-            const legacyMode = this._vfxValueAt('view.mode', tMs) || this.vfx?.props?.view?.mode;
-            const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
-            const amountPct = Number(this._vfxValueAt('view.amount', tMs) ?? this.vfx?.props?.view?.amount ?? legacyBoost);
-            const amt = Math.max(0, Math.min(1, amountPct / 100));
-            if (amt > 0) {
-              const centerY = y + (head?.height || 0) / 2;
-              const dist = Math.abs(this.judgeY - centerY);
-              const laneSpan = Math.max(1, this._laneHeight); // pixels
-              const closeness = Math.max(0, Math.min(1, 1 - (dist / laneSpan)));
-              // up to +25% scale at the judge line, modulated by 3D amount
-              sx = 1 + closeness * 0.25 * amt;
-            }
-            // Apply 3D camera X/Y rotation to note horizontal position and additional scale
-            if (this._pf3D?.use3D && head && cont.parent) {
-              const laneX = this._laneX(n.lane);
-              const x0 = laneX + (this.laneWidth - (head.__pfBaseW || head.width)) / 2;
-              const centerWorldX = laneX + this.laneWidth / 2;
-              const centerWorldY = y + (head.height / 2);
-              const z = Math.max(0, amt) * (this.height * 0.75) * (1 - Math.min(1, Math.abs(this.judgeY - centerWorldY) / this._laneHeight));
-              const p = this._pfProjectPoint(centerWorldX + (this._pf3D.panX||0), centerWorldY + (this._pf3D.panY||0), z, this._pf3D.m, this._pf3D.focalPx, this._pf3D.zoomMul);
-              const baseXCenter = centerWorldX + (this._pf3D.panX||0);
-              const dx = p.x - baseXCenter;
-              cont.x = (x0 + dx) | 0;
-              // enhance scale slightly by perspective factor near judge
-              sx *= Math.max(0.8, Math.min(1.4, p.scale));
-            }
+            const centerY = y + (head?.height || 0) / 2;
+            const dist = Math.abs(this.judgeY - centerY);
+            const laneSpan = Math.max(1, this._laneHeight); // pixels
+            const closeness = Math.max(0, Math.min(1, 1 - (dist / laneSpan)));
+            // up to +20% scale at the judge line
+            sx = 1 + closeness * 0.2;
           } catch {}
           if (head) {
             head.scale.x = sx;
@@ -1502,46 +1406,8 @@ export class Game {
     return new PIXI.Container();
   }
 
-  // ===== Simple 3D camera projection helpers =====
+  // ===== Simple helpers =====
   _pfDegToRad(d) { return (d || 0) * Math.PI / 180; }
-  _pfBuildRotMatrix(rx, ry, rz) {
-    // rx, ry, rz in radians; return 3x3 matrix as array of arrays
-    const sx = Math.sin(rx), cx = Math.cos(rx);
-    const sy = Math.sin(ry), cy = Math.cos(ry);
-    const sz = Math.sin(rz), cz = Math.cos(rz);
-    // R = Rz * Ry * Rx
-    const m00 = cz*cy;
-    const m01 = cz*sy*sx - sz*cx;
-    const m02 = cz*sy*cx + sz*sx;
-    const m10 = sz*cy;
-    const m11 = sz*sy*sx + cz*cx;
-    const m12 = sz*sy*cx - cz*sx;
-    const m20 = -sy;
-    const m21 = cy*sx;
-    const m22 = cy*cx;
-    return [
-      [m00, m01, m02],
-      [m10, m11, m12],
-      [m20, m21, m22]
-    ];
-  }
-  _pfApplyMat3(m, x, y, z) {
-    return {
-      x: m[0][0]*x + m[0][1]*y + m[0][2]*z,
-      y: m[1][0]*x + m[1][1]*y + m[1][2]*z,
-      z: m[2][0]*x + m[2][1]*y + m[2][2]*z
-    };
-  }
-  _pfProjectPoint(px, py, pz, m, focalPx, zoomMul = 1) {
-    // Translate to centered space
-    const cx = this.width/2, cy = this.height/2;
-    const X = px - cx, Y = py - cy; // world plane z is pz
-    const r = this._pfApplyMat3(m, X, Y, pz || 0);
-    const f = Math.max(1, focalPx);
-    const denom = Math.max(0.01, f + r.z);
-    const s = (f / denom) * (zoomMul || 1);
-    return { x: cx + r.x * s, y: cy + r.y * s, scale: s };
-  }
 
   _ensureHeadTextures(headW, headH) {
     if (this._texCache.headNormal && this._texCache._headW === headW && this._texCache._headH === headH) return;
