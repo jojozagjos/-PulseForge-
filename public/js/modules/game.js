@@ -14,9 +14,8 @@ const HOLD_BODY_FADE = 0.06;
 
 /** Visual options */
 const VIS = {
-  laneColors: [0x19cdd0, 0x8A5CFF, 0xC8FF4D, 0xFFA94D], // teal, purple, lime, orange
-  showHitWindows: true,
-  receptorGlow: true,
+  laneColors: [0x19cdd0, 0x19cdd0, 0x19cdd0, 0x19cdd0], // teal, purple, lime, orange
+  showHitWindows: false,
   ringOnHit: true
 };
 
@@ -60,14 +59,14 @@ export class Game {
     this.held = [];
     this.activeHoldsByLane = new Map();
 
-      // Quit state
-      this._quitting = false;
-      this._showResultsTimeout = null;
+    // Quit state
+    this._quitting = false;
+    this._showResultsTimeout = null;
 
-      // Layers / HUD refs
-      this.laneBackboardLayer = null;
-      this.noteLayer = null;
-      this.laneNoteLayers = [];
+    // Layers / HUD refs
+    this.laneBackboardLayer = null;
+    this.noteLayer = null;
+    this.laneNoteLayers = [];
     this.laneMasks = [];
 
     this.receptorLayer = null;
@@ -77,7 +76,7 @@ export class Game {
     this.fxTextLayer = null;
     this._ringTex = null;
 
-    // HUD (external counters if present)
+  // HUD (external counters if present)
     this.$combo = null;
     this.$acc = null;
     this.$score = null;
@@ -365,24 +364,48 @@ export class Game {
       if ("cacheAsBitmap" in g) g.cacheAsBitmap = true;
     }
 
-    // Judge line + halo
-    this.judgeStatic = new PIXI.Container();
-    this.judgeStatic.zIndex = 3;
-    this.app.stage.addChild(this.judgeStatic);
-    {
-      const core = new PIXI.Graphics();
-      core.moveTo(this.startX - 12, this.judgeY);
-      core.lineTo(this.startX + totalW + 12, this.judgeY);
-      core.stroke({ width: 3, color: 0xffffff, alpha: 0.9 });
-      this.judgeStatic.addChild(core);
+    // Judge line + halo (treat as hit window visual; hide when showHitWindows is false)
+    if (VIS.showHitWindows) {
+      this.judgeStatic = new PIXI.Container();
+      this.judgeStatic.zIndex = 3;
+      this.cameraLayer.addChild(this.judgeStatic);
+      {
+        const core = new PIXI.Graphics();
+        core.moveTo(this.startX - 12, this.judgeY);
+        core.lineTo(this.startX + totalW + 12, this.judgeY);
+        core.stroke({ width: 3, color: 0xffffff, alpha: 0.9 });
+        this.judgeStatic.addChild(core);
 
-      const halo = new PIXI.Graphics();
-      halo.moveTo(this.startX - 14, this.judgeY);
-      halo.lineTo(this.startX + totalW + 14, this.judgeY);
-      halo.stroke({ width: 10, color: 0x25f4ee, alpha: 0.15 });
-      this.judgeStatic.addChild(halo);
+        const halo = new PIXI.Graphics();
+        halo.moveTo(this.startX - 14, this.judgeY);
+        halo.lineTo(this.startX + totalW + 14, this.judgeY);
+        halo.stroke({ width: 10, color: 0x25f4ee, alpha: 0.15 });
+        this.judgeStatic.addChild(halo);
+      }
+      if ("cacheAsBitmap" in this.judgeStatic) this.judgeStatic.cacheAsBitmap = true;
     }
-    if ("cacheAsBitmap" in this.judgeStatic) this.judgeStatic.cacheAsBitmap = true;
+
+    // Optional hit window guides (Perfect/Great/Good), follows camera
+    if (VIS.showHitWindows) {
+      const hw = new PIXI.Container();
+      hw.zIndex = 3;
+      const drawGuide = (ms, color, alpha) => {
+        const g = new PIXI.Graphics();
+        const dy = ms * this.pixelsPerMs;
+        g.moveTo(this.startX - 10, this.judgeY - dy);
+        g.lineTo(this.startX + totalW + 10, this.judgeY - dy);
+        g.stroke({ width: 2, color, alpha });
+        g.moveTo(this.startX - 10, this.judgeY + dy);
+        g.lineTo(this.startX + totalW + 10, this.judgeY + dy);
+        g.stroke({ width: 2, color, alpha });
+        hw.addChild(g);
+      };
+      drawGuide(PERFECT_MS, 0x25f4ee, 0.35);
+      drawGuide(GREAT_MS,   0xC8FF4D, 0.28);
+      drawGuide(GOOD_MS,    0x8A5CFF, 0.22);
+      this.cameraLayer.addChild(hw);
+      this.hitWindowsLayer = hw;
+    }
 
     // Note containers with per-lane masks
     this.noteLayer = new PIXI.Container();
@@ -427,6 +450,7 @@ export class Game {
       rec.x = laneCenterX;
       rec.y = this.judgeY;
       rec.alpha = 0.95;
+      rec.__lane = i;
 
       const chev = new PIXI.Graphics();
       const c = this.vis.laneColors[i % this.vis.laneColors.length];
@@ -444,8 +468,11 @@ export class Game {
       glow.fill({ color: c, alpha: 0.0 });
       rec.addChild(glow);
 
+      rec.__chev = chev;
+      rec.__bar = bar;
       rec.__glow = glow;
       rec.__pulse = 0;
+      rec.__color = c;
       this.receptorLayer.addChild(rec);
       this.receptors.push(rec);
     }
@@ -464,8 +491,8 @@ export class Game {
     this.$acc = document.getElementById("hud-acc");
     this.$score = document.getElementById("hud-score");
 
-    // Progress bar
-    this._buildProgressBar(totalW);
+  // Progress bar
+  this._buildProgressBar(totalW);
 
   // Full-screen flash overlay (UI space; not affected by camera)
   this._flashOverlay = new PIXI.Graphics();
@@ -509,16 +536,32 @@ export class Game {
     this.countdownText.alpha = 0;
     this.hudLayer.addChild(this.countdownText);
 
+  // Loading text (centered)
+  this.loadingText = new PIXI.Text({ text: "", style: this._fxStyles.Countdown });
+  this.loadingText.anchor.set(0.5, 0.5);
+  this.loadingText.position.set(this.width / 2, Math.floor(this.height * 0.5));
+  this.loadingText.alpha = 0;
+  this.hudLayer.addChild(this.loadingText);
+
     // Ensure all layers sort their children predictably by zIndex
     ;[this.laneBackboardLayer, this.judgeStatic, this.noteLayer, this.receptorLayer, this.fxRingLayer, this.fxTextLayer, this.hudLayer]
       .forEach(c => { try { if (c) c.sortableChildren = true; } catch {} });
   }
 
   _buildProgressBar(totalW) {
+    // Build a simple UI-space progress bar (does not follow camera)
     const barW = totalW + 80;
     const barH = 6;
     const x = this.startX - 40;
     const y = this.height - 32;
+
+    // Clean up existing
+    try {
+      if (this.progressBg) { this.app.stage.removeChild(this.progressBg); this.progressBg.destroy({ children:true }); }
+      if (this.progressFill) { this.app.stage.removeChild(this.progressFill); this.progressFill.destroy({ children:true }); }
+    } catch {}
+    this.progressBg = null;
+    this.progressFill = null;
 
     this.progressBg = new PIXI.Graphics();
     this.progressBg.roundRect(x, y, barW, barH, 3);
@@ -537,7 +580,13 @@ export class Game {
   async _playSolo(manifest) {
     const player = new AudioPlayer();
     this._applyVolume(player);
-    await player.load(manifest.audioUrl);
+    // Show Loading… while we fetch the audio
+    this._setLoading(true, "Loading…");
+    try {
+      await player.load(manifest.audioUrl);
+    } finally {
+      this._setLoading(false);
+    }
 
     // Clone so we never mutate the editor’s objects
     this.chart = {
@@ -570,6 +619,15 @@ export class Game {
     await this._waitForResultsClose();
 
     source.stop();
+  }
+
+  _setLoading(isVisible, message = "Loading…") {
+    try {
+      if (!this.loadingText) return;
+      this.loadingText.text = isVisible ? message : "";
+      this.loadingText.alpha = isVisible ? 1 : 0;
+      this.loadingText.visible = !!isVisible;
+    } catch {}
   }
 
   _resetNoteRuntimeFlags() {
@@ -830,9 +888,10 @@ export class Game {
       const cont = new PIXI.Container();
       const isHold = (n.dMs && n.dMs > 0);
 
-      const head = new PIXI.Sprite(this._getHeadTexture(false));
-      head.width = headW;
-      head.height = headH;
+  const head = new PIXI.Sprite(this._getHeadTexture(false));
+  head.width = headW;
+  head.height = headH;
+  head.__pfBaseW = headW;
   // Apply VFX per-lane color override if available at t=0 (will update per-frame below)
   const laneColorHex = this._vfxColorForLaneAt(0, n.lane) || this.vis.laneColors[n.lane % this.vis.laneColors.length];
   head.tint = laneColorHex;
@@ -842,6 +901,7 @@ export class Game {
       if (this._texCache.headGloss) {
         gloss = new PIXI.Sprite(this._texCache.headGloss);
         gloss.alpha = 0.45;
+        gloss.__pfBaseW = headW;
       }
 
       // place in lane container
@@ -852,7 +912,9 @@ export class Game {
       if (isHold) {
         const lengthPx = Math.max(10, n.dMs * this.pixelsPerMs);
         body = new PIXI.Sprite(this._getBodyTexture(lengthPx, false));
-        const stemX = (headW - 12) / 2;
+  const stemX = (headW - 12) / 2;
+  body.__pfBaseW = 12;
+  body.__pfStemX = stemX;
         body.x = stemX;
         body.y = -(lengthPx - 2);
         body.tint = this.vis.laneColors[n.lane % this.vis.laneColors.length];
@@ -938,6 +1000,29 @@ export class Game {
         for (let i = 0; i < this.receptors.length; i++) {
           const rec = this.receptors[i];
           if (!rec) continue;
+          // Keep receptor color in sync with lane note color (VFX can change per time)
+          try {
+            const t = this.state.timeMs;
+            const lane = rec.__lane | 0;
+            const vfxColor = this._vfxColorForLaneAt(t, lane);
+            const fallback = this.vis.laneColors[lane % this.vis.laneColors.length];
+            const want = vfxColor ?? fallback;
+            if (want != null && want !== rec.__color) {
+              rec.__color = want;
+              // Redraw receptor pieces with new color
+              rec.__chev?.clear();
+              rec.__chev?.moveTo(-14, -16); rec.__chev?.lineTo(0, -4); rec.__chev?.lineTo(14, -16);
+              rec.__chev?.stroke({ width: 3, color: want, alpha: 0.95 });
+
+              rec.__bar?.clear();
+              rec.__bar?.roundRect(-this.laneWidth * 0.35, -2, this.laneWidth * 0.7, 4, 2);
+              rec.__bar?.fill({ color: want, alpha: 0.25 });
+
+              rec.__glow?.clear();
+              rec.__glow?.roundRect(-this.laneWidth * 0.38, -6, this.laneWidth * 0.76, 12, 4);
+              rec.__glow?.fill({ color: want, alpha: rec.__glow?.alpha ?? 0.0 });
+            }
+          } catch {}
           if (rec.__pulse > 0) {
             const t = rec.__pulse;
             const scale = 1.0 + 0.12 * Math.sin((Math.PI * t) / 10);
@@ -970,58 +1055,117 @@ export class Game {
             const laneAlpha = Number.isFinite(laneOpacityPct) ? Math.max(0, Math.min(1, laneOpacityPct/100)) : 0.95;
             if (this.laneBackboardLayer) this.laneBackboardLayer.alpha = laneAlpha;
 
-            // Camera transforms (position x/y, zoom, angle, z influence)
+            // Camera transforms (position x/y, zoom, rotation) + shake; build 3D context when X/Y rotation present
             if (this.cameraLayer) {
               const cx = Number(this._vfxValueAt('camera.x', t) ?? this.vfx.props?.camera?.x ?? 0);
               const cy = Number(this._vfxValueAt('camera.y', t) ?? this.vfx.props?.camera?.y ?? 0);
-              const zoomBase = Number(this._vfxValueAt('camera.zoom', t) ?? this.vfx.props?.camera?.zoom ?? 1);
+              // Zoom is controlled solely by camera.z; camera.zoom property is ignored
               const zVal = Number(this._vfxValueAt('camera.z', t) ?? this.vfx.props?.camera?.z ?? 0);
-              const angleDeg = Number(this._vfxValueAt('camera.angle', t) ?? this.vfx.props?.camera?.angle ?? 0);
-              const ang = (angleDeg || 0) * Math.PI / 180;
-              // pivot around center so zoom/rotate feel natural
-              this.cameraLayer.pivot.set(this.width/2, this.height/2);
-              this.cameraLayer.position.set(this.width/2 + cx, this.height/2 + cy);
-              // Map Z to extra zoom factor, similar to editor preview
-              const z = Math.max(0.05, Math.min(5, Number.isFinite(zoomBase) ? zoomBase * (1 + (zVal/100)) : 1));
-              this.cameraLayer.scale.set(z, z);
-              this.cameraLayer.rotation = ang;
+              const rotZDeg = Number(this._vfxValueAt('camera.rotateZ', t) ?? this.vfx.props?.camera?.rotateZ ?? 0);
+              const rotXDeg = Number(this._vfxValueAt('camera.rotateX', t) ?? this.vfx.props?.camera?.rotateX ?? 0);
+              const rotYDeg = Number(this._vfxValueAt('camera.rotateY', t) ?? this.vfx.props?.camera?.rotateY ?? 0);
+              const rx = this._pfDegToRad(rotXDeg), ry = this._pfDegToRad(rotYDeg), rz = this._pfDegToRad(rotZDeg);
+              const use3D = Math.abs(rotXDeg) > 0.001 || Math.abs(rotYDeg) > 0.001;
+              // Shake
+              const shakeAmp = Number(this._vfxValueAt('camera.shakeAmp', t) ?? this.vfx.props?.camera?.shakeAmp ?? 0);
+              const shakeFreq = Number(this._vfxValueAt('camera.shakeFreq', t) ?? this.vfx.props?.camera?.shakeFreq ?? 5);
+              let sx = 0, sy = 0;
+              if (shakeAmp > 0 && shakeFreq > 0) {
+                const tt = t / 1000; // seconds
+                sx = Math.sin(tt * Math.PI * 2 * shakeFreq) * shakeAmp;
+                sy = Math.cos(tt * Math.PI * 2 * shakeFreq * 0.8) * (shakeAmp * 0.6);
+              }
+              // Map Z to extra zoom factor
+              const zoomMul = Math.max(0.05, Math.min(5, 1 * (1 + (zVal/100))));
+
+              if (use3D) {
+                // Build 3D context
+                const m = this._pfBuildRotMatrix(rx, ry, rz);
+                // Tie focal length to screen size and 3D amount (depth)
+                const legacyMode = this._vfxValueAt('view.mode', t) || this.vfx.props?.view?.mode;
+                const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
+                const amountPct = Number(this._vfxValueAt('view.amount', t) ?? this.vfx.props?.view?.amount ?? legacyBoost);
+                const depthAmt = Math.max(0, Math.min(1, amountPct/100));
+                const baseF = Math.max(this.width, this.height) * 0.9;
+                const focalPx = baseF * (1 + depthAmt);
+                this._pf3D = { use3D: true, m, focalPx, zoomMul, panX: cx + sx, panY: cy + sy };
+                // Keep cameraLayer neutral so we control positions directly
+                this.cameraLayer.pivot.set(0, 0);
+                this.cameraLayer.position.set(0, 0);
+                this.cameraLayer.scale.set(1, 1);
+                this.cameraLayer.rotation = 0;
+              } else {
+                this._pf3D = { use3D: false };
+                // 2D transform path
+                const ang = rz; // pure Z rotation
+                this.cameraLayer.pivot.set(this.width/2, this.height/2);
+                this.cameraLayer.position.set(this.width/2 + cx + sx, this.height/2 + cy + sy);
+                this.cameraLayer.scale.set(zoomMul, zoomMul);
+                this.cameraLayer.rotation = ang;
+              }
             }
 
-            // 3D lanes: dynamically redraw backboards as trapezoids based on view.amount and camera.perspective
+            // 3D lanes: use true 3D projection when camera rotateX/rotateY is present; otherwise 2D trapezoids from view.amount
             try {
               const legacyMode = this._vfxValueAt('view.mode', t) || this.vfx.props?.view?.mode;
               const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
               const amountPct = Number(this._vfxValueAt('view.amount', t) ?? this.vfx.props?.view?.amount ?? legacyBoost);
               const amount = Math.max(0, Math.min(1, amountPct/100));
-              const perspPct = Number(this._vfxValueAt('camera.perspective', t) ?? this.vfx.props?.camera?.perspective ?? 50);
-              const persp = Math.max(0, Math.min(1, perspPct/100));
-              const depth = amount * persp;
+              const depth = amount;
               if (Array.isArray(this.laneBackboards) && this.laneBackboards.length === this.laneCount) {
                 for (let i = 0; i < this.laneCount; i++) {
                   const g = this.laneBackboards[i];
                   if (!g) continue;
                   g.clear();
-                  if (depth > 0) {
-                    // Trapezoid polygon
-                    const x = this._laneX(i);
-                    const topShrink = this.laneWidth * (0.5 * depth);
-                    const topX = x + topShrink/2;
-                    const topY = this._laneTop + 8;
-                    const bottomX = x;
-                    const bottomY = this._laneTop + this._laneHeight - 8;
+                  const use3D = !!this._pf3D?.use3D;
+                  if (use3D) {
+                    const m = this._pf3D.m;
+                    const f = this._pf3D.focalPx;
+                    const zoomMul = this._pf3D.zoomMul;
+                    const panX = this._pf3D.panX || 0;
+                    const panY = this._pf3D.panY || 0;
+                    const laneX = this._laneX(i);
+                    const x0 = laneX, x1 = laneX + this.laneWidth;
+                    const yTop = this._laneTop + 8, yBot = this._laneTop + this._laneHeight - 8;
+                    // push bottom further in Z based on depth to simulate perspective
+                    const zTop = 0;
+                    const zBot = Math.max(0, depth) * (this.height * 0.75);
+                    const p0 = this._pfProjectPoint(x0 + panX, yTop + panY, zTop, m, f, zoomMul);
+                    const p1 = this._pfProjectPoint(x1 + panX, yTop + panY, zTop, m, f, zoomMul);
+                    const p2 = this._pfProjectPoint(x1 + panX, yBot + panY, zBot, m, f, zoomMul);
+                    const p3 = this._pfProjectPoint(x0 + panX, yBot + panY, zBot, m, f, zoomMul);
                     g.beginFill(0x0f1420, 1);
                     g.lineStyle({ width: 2, color: 0x2a3142, alignment: 0.5 });
-                    g.moveTo(topX, topY);
-                    g.lineTo(topX + this.laneWidth - topShrink, topY);
-                    g.lineTo(bottomX + this.laneWidth, bottomY);
-                    g.lineTo(bottomX, bottomY);
+                    g.moveTo(p0.x, p0.y);
+                    g.lineTo(p1.x, p1.y);
+                    g.lineTo(p2.x, p2.y);
+                    g.lineTo(p3.x, p3.y);
                     g.closePath();
                     g.fill();
                     g.stroke();
                   } else {
-                    g.roundRect(this._laneX(i), this._laneTop, this.laneWidth, this._laneHeight, 18);
-                    g.fill({ color: 0x0f1420 });
-                    g.stroke({ width: 2, color: 0x2a3142 });
+                    if (depth > 0) {
+                      // 2D trapezoid
+                      const x = this._laneX(i);
+                      const topShrink = this.laneWidth * (0.5 * depth);
+                      const topX = x + topShrink/2;
+                      const topY = this._laneTop + 8;
+                      const bottomX = x;
+                      const bottomY = this._laneTop + this._laneHeight - 8;
+                      g.beginFill(0x0f1420, 1);
+                      g.lineStyle({ width: 2, color: 0x2a3142, alignment: 0.5 });
+                      g.moveTo(topX, topY);
+                      g.lineTo(topX + this.laneWidth - topShrink, topY);
+                      g.lineTo(bottomX + this.laneWidth, bottomY);
+                      g.lineTo(bottomX, bottomY);
+                      g.closePath();
+                      g.fill();
+                      g.stroke();
+                    } else {
+                      g.roundRect(this._laneX(i), this._laneTop, this.laneWidth, this._laneHeight, 18);
+                      g.fill({ color: 0x0f1420 });
+                      g.stroke({ width: 2, color: 0x2a3142 });
+                    }
                   }
                 }
               }
@@ -1066,8 +1210,26 @@ export class Game {
 
           // Position so head center hits judge line at n.tMs
           const yAtCenter = this.judgeY - (n.tMs - tMs) * this.pixelsPerMs;
-          const y = yAtCenter - (head.height / 2);
-          if (cont.parent) cont.y = y;
+          let y = yAtCenter - (head.height / 2);
+          if (cont.parent) {
+            // For 3D, adjust visual y by projection while preserving world y for judgment
+            if (this._pf3D?.use3D && head) {
+              const laneX = this._laneX(n.lane);
+              const centerWorldX = laneX + this.laneWidth / 2;
+              const centerWorldY = y + (head.height / 2);
+              const legacyMode = this._vfxValueAt('view.mode', tMs) || this.vfx?.props?.view?.mode;
+              const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
+              const amountPct = Number(this._vfxValueAt('view.amount', tMs) ?? this.vfx?.props?.view?.amount ?? legacyBoost);
+              const amt = Math.max(0, Math.min(1, amountPct / 100));
+              const z = Math.max(0, amt) * (this.height * 0.75) * (1 - Math.min(1, Math.abs(this.judgeY - centerWorldY) / this._laneHeight));
+              const p = this._pfProjectPoint(centerWorldX + (this._pf3D.panX||0), centerWorldY + (this._pf3D.panY||0), z, this._pf3D.m, this._pf3D.focalPx, this._pf3D.zoomMul);
+              const baseYCenter = centerWorldY + (this._pf3D.panY||0);
+              const dy = p.y - baseYCenter;
+              cont.y = (y + dy) | 0;
+            } else {
+              cont.y = y;
+            }
+          }
 
           // Tap miss: after window passes, mark miss and fade head
           if (tMs >= 0 && !n.hit && (!body)) {
@@ -1126,6 +1288,53 @@ export class Game {
             if (!head.__pfFade) this._beginFadeOut(head, head.__pfFadeRate, false);
           }
 
+          // Depth effect: scale notes as they approach the judge line (closer = larger)
+          let sx = 1;
+          try {
+            const legacyMode = this._vfxValueAt('view.mode', tMs) || this.vfx?.props?.view?.mode;
+            const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
+            const amountPct = Number(this._vfxValueAt('view.amount', tMs) ?? this.vfx?.props?.view?.amount ?? legacyBoost);
+            const amt = Math.max(0, Math.min(1, amountPct / 100));
+            if (amt > 0) {
+              const centerY = y + (head?.height || 0) / 2;
+              const dist = Math.abs(this.judgeY - centerY);
+              const laneSpan = Math.max(1, this._laneHeight); // pixels
+              const closeness = Math.max(0, Math.min(1, 1 - (dist / laneSpan)));
+              // up to +25% scale at the judge line, modulated by 3D amount
+              sx = 1 + closeness * 0.25 * amt;
+            }
+            // Apply 3D camera X/Y rotation to note horizontal position and additional scale
+            if (this._pf3D?.use3D && head && cont.parent) {
+              const laneX = this._laneX(n.lane);
+              const x0 = laneX + (this.laneWidth - (head.__pfBaseW || head.width)) / 2;
+              const centerWorldX = laneX + this.laneWidth / 2;
+              const centerWorldY = y + (head.height / 2);
+              const z = Math.max(0, amt) * (this.height * 0.75) * (1 - Math.min(1, Math.abs(this.judgeY - centerWorldY) / this._laneHeight));
+              const p = this._pfProjectPoint(centerWorldX + (this._pf3D.panX||0), centerWorldY + (this._pf3D.panY||0), z, this._pf3D.m, this._pf3D.focalPx, this._pf3D.zoomMul);
+              const baseXCenter = centerWorldX + (this._pf3D.panX||0);
+              const dx = p.x - baseXCenter;
+              cont.x = (x0 + dx) | 0;
+              // enhance scale slightly by perspective factor near judge
+              sx *= Math.max(0.8, Math.min(1.4, p.scale));
+            }
+          } catch {}
+          if (head) {
+            head.scale.x = sx;
+            const baseW = head.__pfBaseW || head.width;
+            head.x = (baseW - baseW * sx) / 2;
+          }
+          if (gloss) {
+            gloss.scale.x = sx;
+            const baseW = gloss.__pfBaseW || head?.__pfBaseW || gloss.width;
+            gloss.x = (baseW - baseW * sx) / 2;
+          }
+          if (body) {
+            const baseW = body.__pfBaseW || 12;
+            body.scale.x = sx;
+            const stemX = body.__pfStemX || ((head?.__pfBaseW || head?.width || this.laneWidth) - baseW) / 2;
+            body.x = stemX + (baseW - baseW * sx) / 2;
+          }
+
           // Per-frame fading
           if (head.parent && head.__pfFade) {
             head.alpha = Math.max(0, head.alpha - head.__pfFade.rate);
@@ -1143,7 +1352,11 @@ export class Game {
           try {
             if (this.vfx && head) {
               const cHex = this._vfxColorForLaneAt(tMs, n.lane);
-              if (cHex != null) { head.tint = cHex; if (body) body.tint = cHex; }
+              if (cHex != null) {
+                // Don’t override white flash or active hold white
+                if (!head.__pfFlashUntil && !head.__pfHoldActive) head.tint = cHex;
+                if (body && !body.__pfHoldActive && !head.__pfFlashUntil) body.tint = cHex;
+              }
             }
           } catch {}
 
@@ -1289,6 +1502,47 @@ export class Game {
     return new PIXI.Container();
   }
 
+  // ===== Simple 3D camera projection helpers =====
+  _pfDegToRad(d) { return (d || 0) * Math.PI / 180; }
+  _pfBuildRotMatrix(rx, ry, rz) {
+    // rx, ry, rz in radians; return 3x3 matrix as array of arrays
+    const sx = Math.sin(rx), cx = Math.cos(rx);
+    const sy = Math.sin(ry), cy = Math.cos(ry);
+    const sz = Math.sin(rz), cz = Math.cos(rz);
+    // R = Rz * Ry * Rx
+    const m00 = cz*cy;
+    const m01 = cz*sy*sx - sz*cx;
+    const m02 = cz*sy*cx + sz*sx;
+    const m10 = sz*cy;
+    const m11 = sz*sy*sx + cz*cx;
+    const m12 = sz*sy*cx - cz*sx;
+    const m20 = -sy;
+    const m21 = cy*sx;
+    const m22 = cy*cx;
+    return [
+      [m00, m01, m02],
+      [m10, m11, m12],
+      [m20, m21, m22]
+    ];
+  }
+  _pfApplyMat3(m, x, y, z) {
+    return {
+      x: m[0][0]*x + m[0][1]*y + m[0][2]*z,
+      y: m[1][0]*x + m[1][1]*y + m[1][2]*z,
+      z: m[2][0]*x + m[2][1]*y + m[2][2]*z
+    };
+  }
+  _pfProjectPoint(px, py, pz, m, focalPx, zoomMul = 1) {
+    // Translate to centered space
+    const cx = this.width/2, cy = this.height/2;
+    const X = px - cx, Y = py - cy; // world plane z is pz
+    const r = this._pfApplyMat3(m, X, Y, pz || 0);
+    const f = Math.max(1, focalPx);
+    const denom = Math.max(0.01, f + r.z);
+    const s = (f / denom) * (zoomMul || 1);
+    return { x: cx + r.x * s, y: cy + r.y * s, scale: s };
+  }
+
   _ensureHeadTextures(headW, headH) {
     if (this._texCache.headNormal && this._texCache._headW === headW && this._texCache._headH === headH) return;
 
@@ -1346,7 +1600,6 @@ export class Game {
   _flashReceptor(lane, strength = 1.0) {
     const rec = this.receptors[lane]; if (!rec) return;
     rec.__pulse = Math.max(rec.__pulse, Math.floor(10 * strength));
-    if (this.vis.receptorGlow) rec.__glow.alpha = 0.22 * strength;
   }
 
   _spawnRing(x, y, color = 0x25f4ee) {

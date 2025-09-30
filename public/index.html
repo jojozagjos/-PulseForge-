@@ -323,19 +323,28 @@
             <div class="vfx-property-group">
               <h4>Camera Settings</h4>
               <div class="row" style="gap:8px; align-items:center;">
-                <label>Zoom: <input type="range" id="vfx-camera-zoom" min="0.1" max="5" value="1" step="0.1" /> <span id="vfx-camera-zoom-value">1.0x</span> <button class="mini-reset" data-vfx-reset="camera.zoom" title="Reset">↺</button></label>
-                <label>Angle: <input type="range" id="vfx-camera-angle" min="-180" max="180" value="0" /> <span id="vfx-camera-angle-value">0°</span> <button class="mini-reset" data-vfx-reset="camera.angle" title="Reset">↺</button></label>
-                <label>Perspective: <input type="range" id="vfx-camera-perspective" min="0" max="100" value="50" /> <span id="vfx-camera-perspective-value">50%</span> <button class="mini-reset" data-vfx-reset="camera.perspective" title="Reset">↺</button></label>
+                <!-- Zoom removed: camera.z is the sole zoom control -->
+                <label>Rotate X: <input type="range" id="vfx-camera-rotX" min="-45" max="45" value="0" /> <span id="vfx-camera-rotX-value">0°</span> <button class="mini-reset" data-vfx-reset="camera.rotateX" title="Reset">↺</button></label>
+                <label>Rotate Y: <input type="range" id="vfx-camera-rotY" min="-45" max="45" value="0" /> <span id="vfx-camera-rotY-value">0°</span> <button class="mini-reset" data-vfx-reset="camera.rotateY" title="Reset">↺</button></label>
+                <label>Rotate Z: <input type="range" id="vfx-camera-rotZ" min="-180" max="180" value="0" /> <span id="vfx-camera-rotZ-value">0°</span> <button class="mini-reset" data-vfx-reset="camera.rotateZ" title="Reset">↺</button></label>
               </div>
+            </div>
+            <div class="vfx-property-group">
+              <h4>Camera Shake</h4>
+              <div class="row" style="gap:8px; align-items:center;">
+                <label>Amp: <input type="range" id="vfx-camera-shake-amp" min="0" max="50" value="0" step="1" /> <span id="vfx-camera-shake-amp-value">0px</span> <button class="mini-reset" data-vfx-reset="camera.shakeAmp" title="Reset">↺</button></label>
+                <label>Freq: <input type="range" id="vfx-camera-shake-freq" min="0" max="20" value="5" step="0.1" /> <span id="vfx-camera-shake-freq-value">5.0Hz</span> <button class="mini-reset" data-vfx-reset="camera.shakeFreq" title="Reset">↺</button></label>
+              </div>
+            </div>
             <div class="vfx-property-group">
               <label><input type="checkbox" id="vfx-preview-camera" /> Preview camera in editor</label>
             </div>
-            </div>
 
+            <!-- 3D Amount moved here from the old 3D View block -->
             <div class="vfx-property-group">
-              <h4>3D View</h4>
+              <h4>3D Depth</h4>
               <div class="row" style="gap:8px; align-items:center;">
-                <label>3D Amount: 
+                <label>3D Amount:
                   <input type="range" id="vfx-view-amount" min="0" max="100" value="0" />
                   <span id="vfx-view-amount-value">0%</span>
                   <button class="mini-reset" data-vfx-reset="view.amount" title="Reset">↺</button>
@@ -359,7 +368,7 @@
             <div class="vfx-property-group">
               <h4>Note Effects</h4>
               <div class="row" style="gap:8px; align-items:center;">
-                <label>Glow: <input type="range" id="vfx-note-glow" min="0" max="100" value="20" /> <span id="vfx-note-glow-value">20%</span> <button class="mini-reset" data-vfx-reset="notes.glow" title="Reset">↺</button></label>
+                <label>Glow: <input type="range" id="vfx-note-glow" min="0" max="100" value="0" /> <span id="vfx-note-glow-value">0%</span> <button class="mini-reset" data-vfx-reset="notes.glow" title="Reset">↺</button></label>
                 <label>Size: <input type="range" id="vfx-note-size" min="0.5" max="2" value="1" step="0.1" /> <span id="vfx-note-size-value">1.0x</span> <button class="mini-reset" data-vfx-reset="notes.size" title="Reset">↺</button></label>
                 <label>Trails: <input type="checkbox" id="vfx-note-trails" /> <button class="mini-reset" data-vfx-reset="notes.trails" title="Reset">↺</button></label>
               </div>

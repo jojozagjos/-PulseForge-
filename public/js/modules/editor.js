@@ -72,7 +72,7 @@ export class Editor {
     // Data
     this.manifest = null;
     this.manifestUrl = null;
-    this.chart = null; // { bpm, lanes, durationMs, notes:[{tMs,lane,dMs?}] }
+  this.chart = null; // { bpm, lanes, durationMs, notes:[{tMs,lane,dMs?}] }
     this.chartUrl = null;
     this.difficulty = "normal";
 
@@ -188,7 +188,7 @@ export class Editor {
       // Current timeline state
       timeline: {
         currentProperty: "background.color1",
-        // new easing model
+          currentProperty: "camera.rotateZ",
         easingCurve: "linear",   // linear|quad|cubic|quart|quint|sine|expo|circ|back|elastic|bounce|bezier|instant
         easingStyle: "inOut",    // in|out|inOut (ignored for instant/linear/bezier)
         zoom: 1.0,
@@ -223,9 +223,9 @@ export class Editor {
         flashIntensity: 30,
         flashDuration: 200
       },
-      camera: { x: 0, y: 0, z: 0, zoom: 1.0, angle: 0, perspective: 50 },
+  camera: { x: 0, y: 0, z: 0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
   view: { mode: "2D", amount: 0 },
-      notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 20, size: 1.0, trails: false },
+  notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0, trails: false },
       lanes: { opacity: 100, pulsing: false, glow: 0 }
     });
     const makeDefaultSet = () => ({ data: makeDefaultData(), keyframes: {} });
@@ -384,9 +384,14 @@ export class Editor {
     this._wireVFXProperty("vfx-camera-x", "camera.x", vfx);
     this._wireVFXProperty("vfx-camera-y", "camera.y", vfx);
     this._wireVFXProperty("vfx-camera-z", "camera.z", vfx);
-    this._wireVFXProperty("vfx-camera-zoom", "camera.zoom", vfx, "vfx-camera-zoom-value", "x");
-    this._wireVFXProperty("vfx-camera-angle", "camera.angle", vfx, "vfx-camera-angle-value", "°");
-    this._wireVFXProperty("vfx-camera-perspective", "camera.perspective", vfx, "vfx-camera-perspective-value", "%");
+  // Zoom control removed; use camera.z only
+    // Camera rotation (X/Y/Z)
+    this._wireVFXProperty("vfx-camera-rotX", "camera.rotateX", vfx, "vfx-camera-rotX-value", "°");
+    this._wireVFXProperty("vfx-camera-rotY", "camera.rotateY", vfx, "vfx-camera-rotY-value", "°");
+    this._wireVFXProperty("vfx-camera-rotZ", "camera.rotateZ", vfx, "vfx-camera-rotZ-value", "°");
+  // Camera shake
+  this._wireVFXProperty("vfx-camera-shake-amp", "camera.shakeAmp", vfx, "vfx-camera-shake-amp-value", "px");
+  this._wireVFXProperty("vfx-camera-shake-freq", "camera.shakeFreq", vfx, "vfx-camera-shake-freq-value", "Hz");
 
     // Camera preview toggle in editor
     try {
@@ -397,7 +402,7 @@ export class Editor {
       }
     } catch {}
     
-  this._wireVFXProperty("vfx-view-amount", "view.amount", vfx, "vfx-view-amount-value", "%");
+    this._wireVFXProperty("vfx-view-amount", "view.amount", vfx, "vfx-view-amount-value", "%");
 
     // Wire individual note colors
     for (let i = 1; i <= 4; i++) {
@@ -648,15 +653,19 @@ export class Editor {
       'camera.x': 0,
       'camera.y': 0,
       'camera.z': 0,
-      'camera.zoom': 1,
-      'camera.angle': 0,
-      'camera.perspective': 50,
+  // 'camera.zoom': 1, // removed
+      'camera.rotateX': 0,
+      'camera.rotateY': 0,
+      'camera.rotateZ': 0,
+    'camera.shakeAmp': 0,
+    'camera.shakeFreq': 5,
   'view.amount': 0,
+  // removed view.rotateX and view.rotateY
       'notes.colors.1': '#19cdd0',
       'notes.colors.2': '#8A5CFF',
       'notes.colors.3': '#C8FF4D',
       'notes.colors.4': '#FFA94D',
-      'notes.glow': 20,
+  'notes.glow': 0,
       'notes.size': 1,
       'notes.trails': false,
       'lanes.opacity': 100,
@@ -975,10 +984,14 @@ export class Editor {
           { value: "camera.x", label: "Camera X" },
           { value: "camera.y", label: "Camera Y" },
           { value: "camera.z", label: "Camera Z" },
-          { value: "camera.zoom", label: "Camera Zoom" },
-          { value: "camera.angle", label: "Camera Angle" },
-          { value: "camera.perspective", label: "Camera Perspective" },
+          // { value: "camera.zoom", label: "Camera Zoom" },
+          { value: "camera.rotateX", label: "Rotate X" },
+          { value: "camera.rotateY", label: "Rotate Y" },
+          { value: "camera.rotateZ", label: "Rotate Z" },
+          { value: "camera.shakeAmp", label: "Camera Shake Amp" },
+          { value: "camera.shakeFreq", label: "Camera Shake Freq" },
           { value: "view.amount", label: "3D Amount" },
+          // removed legacy view.rotateX/view.rotateY controls
         ];
       case "notes":
         return [
@@ -1162,9 +1175,9 @@ export class Editor {
     if (prev === undefined || curr === undefined) return null;
     if (typeof prev === "number" && typeof curr === "number") {
       const unit = (() => {
-        if (property.endsWith("angle")) return "°";
+  if (property.endsWith("angle") || property.endsWith("rotateX") || property.endsWith("rotateY") || property.endsWith("rotateZ")) return "°";
         if (property.endsWith("zoom") || property.endsWith("size")) return "x";
-        if (/(perspective|glow|opacity|Intensity)$/.test(property)) return "%";
+        if (/(glow|opacity|Intensity)$/.test(property)) return "%";
         return "";
       })();
       const d = curr - prev;
@@ -1439,7 +1452,7 @@ export class Editor {
     const unit = (() => {
       if (property.endsWith("angle")) return "°";
       if (property.endsWith("zoom") || property.endsWith("size")) return "x";
-      if (property.endsWith("perspective") || property.endsWith("glow") || property.endsWith("opacity") || property.endsWith("Intensity")) return "%";
+  if (property.endsWith("glow") || property.endsWith("opacity") || property.endsWith("Intensity")) return "%";
       return "";
     })();
     const num = Number(value);
@@ -1706,9 +1719,9 @@ export class Editor {
         flashIntensity: 30,
         flashDuration: 200
       },
-      camera: { x: 0, y: 0, z: 0, zoom: 1.0, angle: 0, perspective: 50 },
-      view: { mode: "2D", amount: 0 },
-      notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 20, size: 1.0, trails: false },
+    camera: { x: 0, y: 0, z: 0, zoom: 1.0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
+  view: { mode: "2D", amount: 0 },
+  notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0, trails: false },
       lanes: { opacity: 100, pulsing: false, glow: 0 }
     };
     
@@ -1748,6 +1761,19 @@ export class Editor {
       if (!setObj) return;
       if (setObj.properties) {
         vfx.data = JSON.parse(JSON.stringify(setObj.properties));
+        // Back-compat: map legacy camera.angle to camera.rotateZ if present
+        try {
+          if (vfx.data?.camera && typeof vfx.data.camera === 'object') {
+            if (typeof vfx.data.camera.angle === 'number' && (vfx.data.camera.rotateZ == null)) {
+              vfx.data.camera.rotateZ = vfx.data.camera.angle;
+            }
+            delete vfx.data.camera.angle;
+            // Ensure rotateX/rotateY defaults exist
+            if (vfx.data.camera.rotateX == null) vfx.data.camera.rotateX = 0;
+            if (vfx.data.camera.rotateY == null) vfx.data.camera.rotateY = 0;
+            if (vfx.data.camera.rotateZ == null) vfx.data.camera.rotateZ = 0;
+          }
+        } catch {}
       }
       if (setObj.keyframes) {
         vfx.keyframes = JSON.parse(JSON.stringify(setObj.keyframes));
@@ -1761,6 +1787,13 @@ export class Editor {
               const ez = this._unpackEasing(kf.easing);
               kf.easing = this._packEasing(ez.curve, ez.style);
             }
+          }
+          // Migrate any keyframes on camera.angle to camera.rotateZ
+          if (vfx.keyframes['camera.angle']) {
+            const arr = vfx.keyframes['camera.angle'];
+            if (!vfx.keyframes['camera.rotateZ']) vfx.keyframes['camera.rotateZ'] = [];
+            vfx.keyframes['camera.rotateZ'].push(...arr);
+            delete vfx.keyframes['camera.angle'];
           }
         } catch {}
       }
@@ -1826,22 +1859,33 @@ export class Editor {
     const cameraX = document.getElementById("vfx-camera-x");
     const cameraY = document.getElementById("vfx-camera-y");
     const cameraZ = document.getElementById("vfx-camera-z");
-    const cameraZoom = document.getElementById("vfx-camera-zoom");
-    const cameraZoomValue = document.getElementById("vfx-camera-zoom-value");
-    const cameraAngle = document.getElementById("vfx-camera-angle");
-    const cameraAngleValue = document.getElementById("vfx-camera-angle-value");
-    const cameraPerspective = document.getElementById("vfx-camera-perspective");
-    const cameraPerspectiveValue = document.getElementById("vfx-camera-perspective-value");
+  // Zoom UI removed
+  const camRotX = document.getElementById("vfx-camera-rotX");
+  const camRotXVal = document.getElementById("vfx-camera-rotX-value");
+  const camRotY = document.getElementById("vfx-camera-rotY");
+  const camRotYVal = document.getElementById("vfx-camera-rotY-value");
+  const camRotZ = document.getElementById("vfx-camera-rotZ");
+  const camRotZVal = document.getElementById("vfx-camera-rotZ-value");
+  // Perspective removed
     
     if (cameraX) cameraX.value = vfx.data.camera.x;
     if (cameraY) cameraY.value = vfx.data.camera.y;
     if (cameraZ) cameraZ.value = vfx.data.camera.z;
-    if (cameraZoom) cameraZoom.value = vfx.data.camera.zoom;
-    if (cameraZoomValue) cameraZoomValue.textContent = vfx.data.camera.zoom.toFixed(1) + "x";
-    if (cameraAngle) cameraAngle.value = vfx.data.camera.angle;
-    if (cameraAngleValue) cameraAngleValue.textContent = vfx.data.camera.angle + "°";
-    if (cameraPerspective) cameraPerspective.value = vfx.data.camera.perspective;
-    if (cameraPerspectiveValue) cameraPerspectiveValue.textContent = vfx.data.camera.perspective + "%";
+  // Zoom UI removed
+  if (camRotX) camRotX.value = vfx.data.camera.rotateX ?? 0;
+  if (camRotXVal) camRotXVal.textContent = (vfx.data.camera.rotateX ?? 0) + "°";
+  if (camRotY) camRotY.value = vfx.data.camera.rotateY ?? 0;
+  if (camRotYVal) camRotYVal.textContent = (vfx.data.camera.rotateY ?? 0) + "°";
+  if (camRotZ) camRotZ.value = vfx.data.camera.rotateZ ?? 0;
+  if (camRotZVal) camRotZVal.textContent = (vfx.data.camera.rotateZ ?? 0) + "°";
+  const camShakeAmp = document.getElementById("vfx-camera-shake-amp");
+  const camShakeAmpValue = document.getElementById("vfx-camera-shake-amp-value");
+  const camShakeFreq = document.getElementById("vfx-camera-shake-freq");
+  const camShakeFreqValue = document.getElementById("vfx-camera-shake-freq-value");
+  if (camShakeAmp) camShakeAmp.value = vfx.data.camera.shakeAmp ?? 0;
+  if (camShakeAmpValue) camShakeAmpValue.textContent = (vfx.data.camera.shakeAmp ?? 0) + "px";
+  if (camShakeFreq) camShakeFreq.value = vfx.data.camera.shakeFreq ?? 5;
+  if (camShakeFreqValue) camShakeFreqValue.textContent = (vfx.data.camera.shakeFreq ?? 5).toFixed(1) + "Hz";
 
   // View controls (legacy mode retained for back-compat; amount is primary)
   const viewMode = document.getElementById("vfx-view-mode");
@@ -3003,15 +3047,24 @@ export class Editor {
     if (this.vfx?.previewEnabled && this.vfx?.previewCamera) {
       try {
         const t = this.currentTimeMs();
-        const cx = Number(this._getVFXPropertyAtTime('camera.x', t, this.vfx) ?? this.vfx?.data?.camera?.x ?? 0);
-        const cy = Number(this._getVFXPropertyAtTime('camera.y', t, this.vfx) ?? this.vfx?.data?.camera?.y ?? 0);
-        const zoomBase = Number(this._getVFXPropertyAtTime('camera.zoom', t, this.vfx) ?? this.vfx?.data?.camera?.zoom ?? 1);
-        const zVal = Number(this._getVFXPropertyAtTime('camera.z', t, this.vfx) ?? this.vfx?.data?.camera?.z ?? 0);
-        const angDeg = Number(this._getVFXPropertyAtTime('camera.angle', t, this.vfx) ?? this.vfx?.data?.camera?.angle ?? 0);
-        const ang = angDeg * Math.PI / 180;
+        let cx = Number(this._getVFXPropertyAtTime('camera.x', t, this.vfx) ?? this.vfx?.data?.camera?.x ?? 0);
+        let cy = Number(this._getVFXPropertyAtTime('camera.y', t, this.vfx) ?? this.vfx?.data?.camera?.y ?? 0);
+  const zVal = Number(this._getVFXPropertyAtTime('camera.z', t, this.vfx) ?? this.vfx?.data?.camera?.z ?? 0);
+  const rotZDeg = Number(this._getVFXPropertyAtTime('camera.rotateZ', t, this.vfx) ?? this.vfx?.data?.camera?.rotateZ ?? 0);
+  // Optional: small contribution from camera.rotateY to Z for 2D preview flavor
+  const rotYDegCam = Number(this._getVFXPropertyAtTime('camera.rotateY', t, this.vfx) ?? this.vfx?.data?.camera?.rotateY ?? 0);
+  const ang = (rotZDeg + rotYDegCam * 0.5) * Math.PI / 180;
+        // Shake
+        const shakeAmp = Number(this._getVFXPropertyAtTime('camera.shakeAmp', t, this.vfx) ?? this.vfx?.data?.camera?.shakeAmp ?? 0);
+        const shakeFreq = Number(this._getVFXPropertyAtTime('camera.shakeFreq', t, this.vfx) ?? this.vfx?.data?.camera?.shakeFreq ?? 5);
+        if (shakeAmp > 0 && shakeFreq > 0) {
+          const tt = t / 1000;
+          cx += Math.sin(tt * Math.PI * 2 * shakeFreq) * shakeAmp;
+          cy += Math.cos(tt * Math.PI * 2 * shakeFreq * 0.8) * (shakeAmp * 0.6);
+        }
         // Map Z to an additional zoom contribution (editor-only preview)
         // +100 Z ≈ +100% zoom, -50 Z ≈ -50% zoom; clamp to reasonable range
-        const zoomZ = Math.max(0.1, Math.min(5, zoomBase * (1 + (zVal / 100))));
+  const zoomZ = Math.max(0.1, Math.min(5, 1 * (1 + (zVal / 100))));
         ctx.save();
         camSaved = true;
         // Pivot around screen center similar to runtime cameraLayer
@@ -3033,17 +3086,17 @@ export class Editor {
       } catch {}
     }
 
-  // Gate 3D/perspective effects behind global Preview
-  let viewBlend = 0, perspStrength = 0;
+  // 3D lanes follow view.amount only
+  let viewBlend = 0;
   if (this.vfx?.previewEnabled) {
     const legacyMode = (this._getVFXPropertyAtTime('view.mode', this.currentTimeMs(), this.vfx) || this.vfx?.data?.view?.mode);
     const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
     const viewAmtPct = Number(this._getVFXPropertyAtTime('view.amount', this.currentTimeMs(), this.vfx) ?? this.vfx?.data?.view?.amount ?? legacyBoost);
     viewBlend = Math.max(0, Math.min(1, viewAmtPct/100));
-    const persp = Number(this._getVFXPropertyAtTime('camera.perspective', this.currentTimeMs(), this.vfx) ?? this.vfx?.data?.camera?.perspective ?? 50);
-    perspStrength = Math.max(0, Math.min(1, persp/100));
+    // simple rotation in 2D: rotate canvas around center to emulate a 3D tilt
+    // removed legacy view.rotateX/Y preview approximation
   }
-  const depth = viewBlend * perspStrength; // blend 2D↔3D smoothly
+  const depth = viewBlend;
     for (let i = 0; i < L; i++) {
       const x = startX + i * (laneW + gap);
       ctx.fillStyle = this.colors.laneFill;
@@ -3070,6 +3123,8 @@ export class Editor {
     }
 
     if (saved) ctx.restore();
+    // restore the preview rotation if applied
+    // nothing to restore for removed legacy rotation
 
     // timing/grid
     const bpm = this.chart.bpm || 120;
@@ -3159,7 +3214,7 @@ export class Editor {
 
       // flash head when its *center* is near playhead
       const flash = Math.abs(n.tMs - now) <= flashWindow;
-      // VFX preview: per-lane note colors if enabled (shape stays normal; VFX easing shapes do NOT affect chart notes)
+  // VFX preview: per-lane note colors if enabled (shape stays normal; VFX easing shapes do NOT affect chart notes)
       let headColor = this.colors.noteHead;
       if (this.vfx?.previewEnabled) {
         const prop = `notes.colors.${n.lane+1}`;
@@ -3171,12 +3226,26 @@ export class Editor {
       // Note size & glow previews
       let noteSize = 1;
       let glowPx = 0;
+      // Depth effect: scale heads larger near playhead (judge) based on view.amount
+      let perspScaleX = 1;
       if (this.vfx?.previewEnabled) {
         try {
           const tNow = this.currentTimeMs();
           noteSize = Number(this._getVFXPropertyAtTime('notes.size', tNow, this.vfx) ?? this.vfx?.data?.notes?.size ?? 1);
           const glowPct = Number(this._getVFXPropertyAtTime('notes.glow', tNow, this.vfx) ?? this.vfx?.data?.notes?.glow ?? 0);
           glowPx = Math.max(0, Math.min(30, (glowPct / 100) * 20));
+          const legacyMode = (this._getVFXPropertyAtTime('view.mode', tNow, this.vfx) || this.vfx?.data?.view?.mode);
+          const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
+          const amountPct = Number(this._getVFXPropertyAtTime('view.amount', tNow, this.vfx) ?? this.vfx?.data?.view?.amount ?? legacyBoost);
+          const amt = Math.max(0, Math.min(1, amountPct / 100));
+          if (amt > 0) {
+            const centerY = cyh; // note center
+            const dist = Math.abs((this.currentTimeMs() * pxPerMs - this.scrollY) - centerY);
+            const laneSpan = Math.max(1, h - 32);
+            const closeness = Math.max(0, Math.min(1, 1 - (dist / laneSpan)));
+            // use same factor for x/y scaling here (perspScaleX only names; we apply uniform scale below)
+            perspScaleX = 1 + closeness * 0.25 * amt;
+          }
         } catch {}
       }
       ctx.fillStyle   = flash ? "#ffffff" : headColor;
@@ -3188,8 +3257,8 @@ export class Editor {
       // draw centered with scale
       const cxh = x + headW/2;
       const cyh = yHead + headH/2;
-      ctx.translate(cxh, cyh);
-      ctx.scale(noteSize, noteSize);
+  ctx.translate(cxh, cyh);
+  ctx.scale(noteSize * perspScaleX, noteSize * perspScaleX);
       this._drawNoteHeadShape(ctx, "round", -headW/2, -headH/2, headW, headH);
       ctx.restore();
 

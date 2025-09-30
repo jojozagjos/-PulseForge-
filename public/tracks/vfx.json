@@ -1,0 +1,120 @@
+{
+  "metadata": {
+    "version": "1.1",
+    "activeDifficulty": "normal",
+    "author": "auto"
+  },
+  "byDifficulty": {
+    "easy": {
+      "properties": {
+        "background": {
+          "color1": "#0d111a",
+          "color2": "#1a1f2e",
+          "gradient": false,
+          "angle": 0,
+          "flashEnable": true,
+          "flashColor": "#ffffff",
+          "flashIntensity": 20,
+          "flashDuration": 180
+        },
+        "camera": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "zoom": 1.0,
+          "rotateX": 0,
+          "rotateY": 0,
+          "rotateZ": 0,
+          "shakeAmp": 6,
+          "shakeFreq": 3
+        },
+        "view": {
+          "mode": "2D",
+          "amount": 25
+        },
+        "notes": {
+          "colors": ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"],
+          "glow": 0,
+          "size": 1.0,
+          "trails": false
+        },
+        "lanes": {
+          "opacity": 95,
+          "pulsing": false,
+          "glow": 0
+        }
+      },
+      "keyframes": {
+        "view.amount": [
+          { "time": 0, "value": 10, "easing": "linear" },
+          { "time": 30000, "value": 30, "easing": "quad:inOut" }
+        ],
+        "camera.shakeAmp": [
+          { "time": 0, "value": 0, "easing": "linear" },
+          { "time": 20000, "value": 6, "easing": "sine:inOut" },
+          { "time": 40000, "value": 0, "easing": "sine:inOut" }
+        ],
+        "background.flashIntensity": [
+          { "time": 0, "value": 15, "easing": "linear" },
+          { "time": 30000, "value": 25, "easing": "linear" }
+        ]
+      }
+    },
+    "normal": {
+      "properties": {
+        "background": {
+          "color1": "#0d111a",
+          "color2": "#141a29",
+          "gradient": true,
+          "angle": 20,
+          "flashEnable": true,
+          "flashColor": "#ffffff",
+          "flashIntensity": 30,
+          "flashDuration": 160
+        },
+        "camera": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "zoom": 1.05,
+          "rotateX": 0,
+          "rotateY": 0,
+          "rotateZ": 0,
+          "shakeAmp": 10,
+          "shakeFreq": 4.5
+        },
+        "view": {
+          "mode": "2D",
+          "amount": 45
+        },
+        "notes": {
+          "colors": ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"],
+          "glow": 0,
+          "size": 1.0,
+          "trails": false
+        },
+        "lanes": {
+          "opacity": 92,
+          "pulsing": false,
+          "glow": 0
+        }
+      },
+      "keyframes": {
+        "view.amount": [
+          { "time": 0, "value": 20, "easing": "linear" },
+          { "time": 30000, "value": 55, "easing": "quad:inOut" },
+          { "time": 60000, "value": 35, "easing": "quad:inOut" }
+        ],
+        "camera.shakeAmp": [
+          { "time": 0, "value": 0, "easing": "linear" },
+          { "time": 18000, "value": 10, "easing": "sine:inOut" },
+          { "time": 36000, "value": 0, "easing": "sine:inOut" }
+        ],
+        "background.flashIntensity": [
+          { "time": 0, "value": 20, "easing": "linear" },
+          { "time": 30000, "value": 35, "easing": "linear" }
+        ]
+      }
+    }
+  }
+}
