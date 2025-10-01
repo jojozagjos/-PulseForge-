@@ -1080,75 +1080,84 @@ export class Editor {
   }
 
   _drawVFXKeyframes(ctx, rect, vfx) {
-    const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
-    const keyframes = vfx.keyframes[property] || [];
     const duration = this.chart?.durationMs || 180000;
     const timelineWidth = rect.width - 40;
     const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
     const leftTime = vfx.timeline.offsetMs || 0;
 
-    keyframes.forEach((keyframe, index) => {
-      const x = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
-      const y = rect.height / 2;
+    // Draw all properties in the current category so keyframes don't disappear when switching controls
+    const category = vfx.timeline.currentCategory || "background";
+    const props = this._getVFXPropertiesByCategory(category).map(p => p.value);
 
-      // Skip if outside visible area
-      if (x < 20 || x > rect.width - 20) return;
+    for (const property of props) {
+      const keyframes = vfx.keyframes[property] || [];
+      keyframes.forEach((keyframe, index) => {
+        const x = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
+        const y = rect.height / 2;
 
-      // Draw keyframe marker (shape based on easing type/style)
-      const isSelected = vfx.timeline.selectedKeyframe?.property === property && 
-                        vfx.timeline.selectedKeyframe?.index === index;
-      const isHover = vfx.timeline.hoverKeyframe?.property === property &&
-                      vfx.timeline.hoverKeyframe?.index === index;
-      this._drawKeyframeMarker(ctx, x, y, keyframe.easing, { selected: isSelected, hover: isHover });
+        // Skip if outside visible area
+        if (x < 20 || x > rect.width - 20) return;
 
-      // Draw easing indicator
-      if (index < keyframes.length - 1) {
-        const nextKeyframe = keyframes[index + 1];
-        const nextX = 20 + ((nextKeyframe.time - leftTime) * pixelsPerMs);
-        
-        this._drawEasingCurve(ctx, x, y, nextX, y, keyframe.easing);
-      }
+        // Draw keyframe marker (shape based on easing type/style)
+        const isSelected = vfx.timeline.selectedKeyframe?.property === property && 
+                          vfx.timeline.selectedKeyframe?.index === index;
+        const isHover = vfx.timeline.hoverKeyframe?.property === property &&
+                        vfx.timeline.hoverKeyframe?.index === index;
+        this._drawKeyframeMarker(ctx, x, y, keyframe.easing, { selected: isSelected, hover: isHover });
 
-      // Diff vs previous
-      const prevKf = keyframes[index - 1];
-      if (prevKf) {
-        const diff = this._formatVFXDelta(property, prevKf.value, keyframe.value);
-        if (diff) {
-          if (diff.type === "color" && diff.a && diff.b) {
-            this._drawColorSwatches(ctx, x - 10, y + 10, diff.a, diff.b);
-          } else if (diff.text) {
-            ctx.fillStyle = "#9bb0c9";
-            ctx.font = "10px Inter";
-            ctx.textAlign = "center";
-            ctx.fillText(diff.text, x, y - 12);
+        // Draw easing indicator per property
+        if (index < keyframes.length - 1) {
+          const nextKeyframe = keyframes[index + 1];
+          const nextX = 20 + ((nextKeyframe.time - leftTime) * pixelsPerMs);
+          this._drawEasingCurve(ctx, x, y, nextX, y, keyframe.easing);
+        }
+
+        // Diff vs previous of same property
+        const prevKf = keyframes[index - 1];
+        if (prevKf) {
+          const diff = this._formatVFXDelta(property, prevKf.value, keyframe.value);
+          if (diff) {
+            if (diff.type === "color" && diff.a && diff.b) {
+              this._drawColorSwatches(ctx, x - 10, y + 10, diff.a, diff.b);
+            } else if (diff.text) {
+              ctx.fillStyle = "#9bb0c9";
+              ctx.font = "10px Inter";
+              ctx.textAlign = "center";
+              ctx.fillText(diff.text, x, y - 12);
+            }
           }
         }
-      }
 
-      // Tooltip for value/time and delta when hovered or selected
-      if (isHover || isSelected) {
-        const valStr = this._formatVFXValue(property, keyframe.value);
-        const timeStr = this._fmtTimeMsShort(keyframe.time);
-        let label = `${timeStr} • ${valStr}`;
-        const prev = keyframes[index - 1]?.value;
-        const d = this._formatVFXDelta(property, prev, keyframe.value);
-        if (d && d.text) label += `  (Δ ${d.text})`;
-        this._drawTooltip(ctx, x, y - 18, label);
-      }
-    });
+        // Tooltip for value/time and delta when hovered or selected
+        if (isHover || isSelected) {
+          const valStr = this._formatVFXValue(property, keyframe.value);
+          const timeStr = this._fmtTimeMsShort(keyframe.time);
+          let label = `${timeStr} • ${valStr}`;
+          const prev = keyframes[index - 1]?.value;
+          const d = this._formatVFXDelta(property, prev, keyframe.value);
+          if (d && d.text) label += `  (Δ ${d.text})`;
+          this._drawTooltip(ctx, x, y - 18, label);
+        }
+      });
+    }
 
-    // Update selected keyframe diff label in UI
+    // Update selected keyframe diff label in UI based on the selected property's own series
     try {
       const sel = vfx.timeline.selectedKeyframe;
       const out = document.getElementById("vfx-selected-diff");
       if (out) {
-        if (sel && keyframes[sel.index]) {
-          const cur = keyframes[sel.index];
-          const prev = keyframes[sel.index - 1];
-          const d = prev ? this._formatVFXDelta(property, prev.value, cur.value) : null;
-          const dText = d?.text || (d?.type === "color" ? `${cur.value}` : "");
-          const vStr = this._formatVFXValue(property, cur.value);
-          out.textContent = `Selected: ${this._fmtTimeMsShort(cur.time)} • ${vStr}${dText ? ` (Δ ${dText})` : ""}`;
+        if (sel) {
+          const list = vfx.keyframes[sel.property] || [];
+          const cur = list[sel.index];
+          if (cur) {
+            const prev = list[sel.index - 1];
+            const d = prev ? this._formatVFXDelta(sel.property, prev.value, cur.value) : null;
+            const dText = d?.text || (d?.type === "color" ? `${cur.value}` : "");
+            const vStr = this._formatVFXValue(sel.property, cur.value);
+            out.textContent = `Selected: ${this._fmtTimeMsShort(cur.time)} • ${vStr}${dText ? ` (Δ ${dText})` : ""}`;
+          } else {
+            out.textContent = "—";
+          }
         } else {
           out.textContent = "—";
         }
@@ -1291,9 +1300,11 @@ export class Editor {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-  // Check if clicking on a keyframe
-  const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
-    const keyframes = vfx.keyframes[property] || [];
+  // Check if clicking on a keyframe across all properties in the current category
+  const category = vfx.timeline.currentCategory || 'background';
+  const props = this._getVFXPropertiesByCategory(category).map(p=>p.value);
+  let property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
+  const keyframes = vfx.keyframes[property] || [];
   const duration = this.chart?.durationMs || 180000;
   const timelineWidth = rect.width - 40;
   const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
@@ -1302,14 +1313,19 @@ export class Editor {
   let clickedKeyframe = null;
   const hitR = 10; // enlarge hit radius for easier selection
     
-    keyframes.forEach((keyframe, index) => {
-  const kfX = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
-      const kfY = rect.height / 2;
-      
-      if (Math.abs(x - kfX) < hitR && Math.abs(y - kfY) < hitR) {
-        clickedKeyframe = { property, index };
+    for (const prop of props) {
+      const list = vfx.keyframes[prop] || [];
+      for (let index = 0; index < list.length; index++) {
+        const keyframe = list[index];
+        const kfX = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
+        const kfY = rect.height / 2;
+        if (Math.abs(x - kfX) < hitR && Math.abs(y - kfY) < hitR) {
+          clickedKeyframe = { property: prop, index };
+          break;
+        }
       }
-    });
+      if (clickedKeyframe) break;
+    }
 
     if (clickedKeyframe) {
       // Select keyframe only (do not move playhead on simple click)
@@ -1340,8 +1356,8 @@ export class Editor {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-  const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
-    const keyframes = vfx.keyframes[property] || [];
+  const category = vfx.timeline.currentCategory || 'background';
+    const props = this._getVFXPropertiesByCategory(category).map(p=>p.value);
     const duration = this.chart?.durationMs || 180000;
     const timelineWidth = rect.width - 40;
     const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
@@ -1349,11 +1365,16 @@ export class Editor {
 
     let hover = null;
     const hitR = 10;
-    keyframes.forEach((kf, index) => {
-      const kx = 20 + ((kf.time - leftTime) * pixelsPerMs);
-      const ky = rect.height / 2;
-      if (Math.abs(x - kx) < hitR && Math.abs(y - ky) < hitR) hover = { property, index };
-    });
+    for (const prop of props) {
+      const list = vfx.keyframes[prop] || [];
+      for (let index = 0; index < list.length; index++) {
+        const kf = list[index];
+        const kx = 20 + ((kf.time - leftTime) * pixelsPerMs);
+        const ky = rect.height / 2;
+        if (Math.abs(x - kx) < hitR && Math.abs(y - ky) < hitR) { hover = { property: prop, index }; break; }
+      }
+      if (hover) break;
+    }
 
   const changed = JSON.stringify(hover) !== JSON.stringify(vfx.timeline.hoverKeyframe);
     vfx.timeline.hoverKeyframe = hover;
@@ -1372,17 +1393,19 @@ export class Editor {
         this._centerVFXTimelineOnPlayhead(vfx);
         this._updateVFXTimeline(vfx);
       });
-  } else if (vfx._drag && vfx._drag.type === 'keyframe' && vfx._drag.property === property) {
-      // Drag selected keyframe horizontally to change its time
+  } else if (vfx._drag && vfx._drag.type === 'keyframe') {
+      // Drag selected keyframe horizontally to change its time (respect the specific property)
+      const prop = vfx._drag.property;
+      const list = vfx.keyframes[prop] || [];
       const idx = vfx._drag.index;
-      const moved = vfx._drag.ref || keyframes[idx];
+      const moved = vfx._drag.ref || list[idx];
       if (moved) {
         const newTime = Math.max(0, Math.min(duration, leftTime + (x - 20) / pixelsPerMs));
         moved.time = newTime;
-        // Keep keyframes sorted and track the moved index by identity
-  keyframes.sort((a,b)=>a.time-b.time);
-        const newIdx = keyframes.findIndex(k=>k===moved);
-        if (newIdx >= 0) vfx.timeline.selectedKeyframe = { property, index: newIdx };
+        // Keep keyframes for that property sorted and track the moved index by identity
+        list.sort((a,b)=>a.time-b.time);
+        const newIdx = list.findIndex(k=>k===moved);
+        if (newIdx >= 0) vfx.timeline.selectedKeyframe = { property: prop, index: newIdx };
         // When moving a keyframe in time, keep UI value synced to that keyframe's current value
         this._syncSelectedKeyframeToUI(vfx);
         this._updateVFXTimeline(vfx);
@@ -1397,6 +1420,8 @@ export class Editor {
     const y = e.clientY - rect.top;
   const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
     const keyframes = vfx.keyframes[property] || [];
+  const category = vfx.timeline.currentCategory || 'background';
+  const props = this._getVFXPropertiesByCategory(category).map(p=>p.value);
     const duration = this.chart?.durationMs || 180000;
     const timelineWidth = rect.width - 40;
     const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
@@ -1404,11 +1429,16 @@ export class Editor {
 
     let onKeyframe = false;
     let hitIdx = -1;
+    let hitProp = null;
     const hitR = 10;
-    for (let i = 0; i < keyframes.length; i++) {
-      const kfX = 20 + ((keyframes[i].time - leftTime) * pixelsPerMs);
-      const kfY = rect.height / 2;
-      if (Math.abs(x - kfX) < hitR && Math.abs(y - kfY) < hitR) { onKeyframe = true; hitIdx = i; break; }
+    for (const prop of props) {
+      const list = vfx.keyframes[prop] || [];
+      for (let i = 0; i < list.length; i++) {
+        const kfX = 20 + ((list[i].time - leftTime) * pixelsPerMs);
+        const kfY = rect.height / 2;
+        if (Math.abs(x - kfX) < hitR && Math.abs(y - kfY) < hitR) { onKeyframe = true; hitIdx = i; hitProp = prop; break; }
+      }
+      if (onKeyframe) break;
     }
 
     if (!onKeyframe) {
@@ -1419,8 +1449,9 @@ export class Editor {
       }
     } else {
       // Start dragging this keyframe
-      vfx.timeline.selectedKeyframe = { property, index: hitIdx };
-      vfx._drag = { type: 'keyframe', property, index: hitIdx, ref: keyframes[hitIdx], wasPlaying: !!this.playing };
+      vfx.timeline.selectedKeyframe = { property: hitProp, index: hitIdx };
+      const list = vfx.keyframes[hitProp] || [];
+      vfx._drag = { type: 'keyframe', property: hitProp, index: hitIdx, ref: list[hitIdx], wasPlaying: !!this.playing };
       // Do not pause/resume playhead for keyframe drag; keep transport state unchanged
       // Suppress the subsequent click so it doesn't seek to mouse-up position
       vfx._suppressNextClick = true;
