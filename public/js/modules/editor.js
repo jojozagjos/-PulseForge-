@@ -65,7 +65,7 @@ export class Editor {
     this.playing = false;
     this.playStartCtxTime = 0; // AudioContext time when current run started
     this.playStartMs = 0;      // Musical offset for the current run (ms)
-    this.playbackSpeed = 1.0;  // Playback speed multiplier
+  this.playbackSpeed = 1.0;  // Playback speed multiplier
 
     // Metronome
     this.metronome = { enabled: false, lookaheadMs: 120, nextBeatMs: 0, timer: null };
@@ -73,7 +73,7 @@ export class Editor {
     // Data
     this.manifest = null;
     this.manifestUrl = null;
-    this.chart = null; // { bpm, lanes, durationMs, notes:[{tMs,lane,dMs?}] }
+  this.chart = null; // { bpm, lanes, durationMs, notes:[{tMs,lane,dMs?}] }
     this.chartUrl = null;
     this.difficulty = "normal";
 
@@ -191,7 +191,7 @@ export class Editor {
         currentProperty: "background.color1",
         easingCurve: "linear",   // linear|quad|cubic|quart|quint|sine|expo|circ|back|elastic|bounce|bezier|instant
         easingStyle: "inOut",    // in|out|inOut (ignored for instant/linear/bezier)
-        zoom: 1.0,
+  zoom: 1.0,
         selectedKeyframe: null,
         playheadTime: 0,
         currentCategory: "background",
@@ -209,7 +209,7 @@ export class Editor {
       // Wiring flags
       _wiredVFX: false,
       _wiredVFXTimeline: false,
-      previewCamera: true
+  previewCamera: true
     };
 
     // Build default VFX set factory
@@ -224,10 +224,10 @@ export class Editor {
         flashIntensity: 30,
         flashDuration: 200
       },
-      camera: { x: 0, y: 0, z: 0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
-      // Removed 3D Depth slider; 2.5D comes from Rotate X/Y only
-      notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0, trails: false },
-      lanes: { opacity: 100 }
+  camera: { x: 0, y: 0, z: 0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
+  // Removed 3D Depth slider; 2.5D comes from Rotate X/Y only
+  notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0, trails: false },
+  lanes: { opacity: 100 }
     });
     const makeDefaultSet = () => ({ data: makeDefaultData(), keyframes: {} });
     vfx._sets = {
