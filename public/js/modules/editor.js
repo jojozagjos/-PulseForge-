@@ -501,10 +501,7 @@ export class Editor {
           display.textContent = value + unit;
         }
       }
-
-  // If not editing a selected keyframe, auto-keyframe at playhead
-  if (!editingSelected) this._autoKeyframe(propertyPath, vfx);
-  // Track this as the last changed property
+  // Track this as the last changed property (no automatic keyframing)
   vfx.timeline.lastChangedProperty = propertyPath;
   vfx.timeline.currentProperty = propertyPath; // fallback usage
   try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
@@ -535,20 +532,18 @@ export class Editor {
     element.addEventListener("input", () => {
       vfx.data.notes.colors[laneIndex] = element.value;
       const prop = `notes.colors.${laneIndex+1}`;
-      this._autoKeyframe(prop, vfx);
-  vfx.timeline.lastChangedProperty = prop;
-  vfx.timeline.currentProperty = prop;
-  try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
+      vfx.timeline.lastChangedProperty = prop;
+      vfx.timeline.currentProperty = prop;
+      try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
       this._updateVFXTimeline(vfx);
     });
 
     element.addEventListener("change", () => {
       vfx.data.notes.colors[laneIndex] = element.value;
       const prop = `notes.colors.${laneIndex+1}`;
-      this._autoKeyframe(prop, vfx);
-  vfx.timeline.lastChangedProperty = prop;
-  vfx.timeline.currentProperty = prop;
-  try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
+      vfx.timeline.lastChangedProperty = prop;
+      vfx.timeline.currentProperty = prop;
+      try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
       this._updateVFXTimeline(vfx);
     });
   }
@@ -740,8 +735,7 @@ export class Editor {
     } else {
       target[lastKey] = def;
     }
-    // Auto-keyframe at playhead
-    this._autoKeyframe(property, vfx);
+    // No automatic keyframe; only Add Keyframe button creates keyframes
     vfx.timeline.lastChangedProperty = property;
     vfx.timeline.currentProperty = property;
     try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${property}`; } catch {}
@@ -3555,27 +3549,7 @@ export class Editor {
     ctx.beginPath(); for (let i=0;i<sides;i++) { const a = (i/sides) * Math.PI * 2 - Math.PI/2; const x = cx + Math.cos(a) * r; const y = cy + Math.sin(a) * r; if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);} ctx.closePath(); ctx.fill(); ctx.stroke();
   }
 
-  _autoKeyframe(property, vfx) {
-    // Only when VFX tab is active (avoid unintended keyframes while editing elsewhere)
-    const vfxTab = document.querySelector('[data-panel="vfx"]');
-    if (!vfxTab || !vfxTab.classList.contains('active')) return;
-    const s = document.getElementById(this.ids.scrub);
-    let time = this.playStartMs; const v = Number(s?.value); if (Number.isFinite(v)) time = v;
-    const value = this._getCurrentVFXPropertyValue(property, vfx);
-    const easing = this._packEasing(vfx.timeline.easingCurve, vfx.timeline.easingStyle);
-    if (!vfx.keyframes[property]) vfx.keyframes[property] = [];
-    const idx = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
-    if (idx >= 0) vfx.keyframes[property][idx] = { time, value, easing }; else vfx.keyframes[property].push({ time, value, easing });
-    vfx.keyframes[property].sort((a,b)=>a.time-b.time);
-    const sel = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
-    if (sel >= 0) vfx.timeline.selectedKeyframe = { property, index: sel };
-    // Remember this property for its category, so switching tabs selects it
-    try {
-      const cat = this._propertyCategory(property);
-      if (!vfx.timeline.lastPropByCategory) vfx.timeline.lastPropByCategory = {};
-      vfx.timeline.lastPropByCategory[cat] = property;
-    } catch {}
-  }
+  // auto-keyframing disabled; users add keyframes explicitly via the button
 
   // ------- VFX preview in editor canvas -------
   _drawEditorVfxBackground(ctx, w, h) {

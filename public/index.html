@@ -458,7 +458,7 @@
             <div class="row" style="gap:8px; margin-top:8px; align-items:center; flex-wrap:wrap;">
               <button id="vfx-play-preview" class="primary">Preview: Off</button>
               <button id="vfx-test-in-game" class="secondary">Test in Game</button>
-              <label>Timeline Zoom: <input type="range" id="vfx-timeline-zoom" min="0.1" max="5" value="1" step="0.1" /> <span id="vfx-timeline-zoom-value">1.0x</span></label>
+              <label>Timeline Zoom: <input type="range" id="vfx-timeline-zoom" min="1" max="20" value="1" step="0.1" /> <span id="vfx-timeline-zoom-value">1.0x</span></label>
               <label style="display:flex;align-items:center;gap:6px;">
                 <input type="checkbox" id="vfx-timeline-follow" checked />
                 Follow Playhead
@@ -503,8 +503,8 @@
           <h4>VFX Editor</h4>
           <ul class="muted">
             <li><strong>Categories:</strong> Background, Camera, Notes, and Lanes each have their own property groups.</li>
-            <li><strong>Keyframes:</strong> Pick a <em>category</em> first (Background/Camera/Notes/Lanes). Change a control (color/slider/toggle) to set the active property automatically, choose an easing, move the scrubber/playhead to the time, then click "Add Keyframe". Subsequent changes auto-keyframe that property at the playhead.</li>
-            <li><strong>Timeline:</strong> Click to set the playhead and add keyframes at that time. (Drag-to-move coming soon.) Click a keyframe dot to select; use Delete Selected to remove.</li>
+            <li><strong>Keyframes:</strong> Pick a <em>category</em> first (Background/Camera/Notes/Lanes). Change a control (color/slider/toggle) to set the active property, choose an easing, move the scrubber/playhead to the time, then click "Add Keyframe". Keyframes are only added via the "Add Keyframe" button.</li>
+            <li><strong>Timeline:</strong> Click to set the playhead, then use "Add Keyframe" to insert at that time. (Drag-to-move coming soon.) Click a keyframe dot to select; use Delete Selected to remove.</li>
             <li><strong>Easing:</strong> Instant = snap change, Linear = constant speed, Ease In/Out = smooth acceleration/deceleration.</li>
             <li><strong>Background:</strong> Set colors, gradients, and beat-synced flash effects.</li>
             <li><strong>Camera:</strong> Control position (X,Y), Z-depth zoom, Rotate X/Y (2.5D skew), Rotate Z (spin), and camera shake.</li>
@@ -518,7 +518,7 @@
             <li>Switch to the VFX tab and select a category (Background, Camera, Notes, or Lanes).</li>
             <li>Adjust the property values using sliders, color pickers, and toggles.</li>
             <li>The last control you changed becomes the active property. Choose an easing.</li>
-            <li>Set the playhead to your desired time and click "Add Keyframe". Changes to that control will auto-keyframe at the playhead time.</li>
+            <li>Set the playhead to your desired time and click "Add Keyframe". Only the button adds keyframes; changing a control will not create them automatically.</li>
             <li>Move to another time, change the property value, and add another keyframe.</li>
             <li>Choose the easing type for smooth transitions between keyframes.</li>
             <li>Use "Preview VFX" to see your effects or "Test in Game" for full gameplay testing.</li>
