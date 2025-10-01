@@ -1,0 +1,340 @@
+{
+  "version": "1.1",
+  "metadata": {
+    "title": "Untitled",
+    "artist": "Unknown",
+    "activeDifficulty": "normal",
+    "duration": 255651,
+    "exportedAt": "2025-10-01T19:20:41.493Z"
+  },
+  "vfx": {
+    "properties": {
+      "background": {
+        "color1": "#ff0000",
+        "color2": "#ff0000",
+        "gradient": false,
+        "angle": 360,
+        "flashEnable": false,
+        "flashColor": "#ffffff",
+        "flashIntensity": 30,
+        "flashDuration": 200
+      },
+      "camera": {
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "rotateX": 0,
+        "rotateY": 0,
+        "rotateZ": 0,
+        "shakeAmp": 0,
+        "shakeFreq": 5
+      },
+      "notes": {
+        "colors": [
+          "#ee4949",
+          "#f1fe90",
+          "#ee4949",
+          "#f1fe90"
+        ],
+        "glow": 0,
+        "size": 1,
+        "trails": false
+      },
+      "lanes": {
+        "opacity": 100
+      }
+    },
+    "keyframes": {
+      "background.color1": [
+        {
+          "time": 145603,
+          "value": "#0d111a",
+          "easing": "linear"
+        },
+        {
+          "time": 147268,
+          "value": "#ffffff",
+          "easing": "linear"
+        },
+        {
+          "time": 170833,
+          "value": "#ffffff",
+          "easing": "linear"
+        },
+        {
+          "time": 178850,
+          "value": "#ff0000",
+          "easing": "linear"
+        },
+        {
+          "time": 184745.01715550636,
+          "value": "#0d111a",
+          "easing": "linear"
+        }
+      ],
+      "background.color2": [
+        {
+          "time": 145603,
+          "value": "#1a1f2e",
+          "easing": "linear"
+        },
+        {
+          "time": 148268,
+          "value": "#e6fe6c",
+          "easing": "linear"
+        },
+        {
+          "time": 170833.9845047039,
+          "value": "#e6fe6c",
+          "easing": "linear"
+        },
+        {
+          "time": 178850.0946319867,
+          "value": "#ff0000",
+          "easing": "linear"
+        },
+        {
+          "time": 184745.01715550636,
+          "value": "#1a1f2e",
+          "easing": "linear"
+        }
+      ],
+      "notes.colors.4": [
+        {
+          "time": 0,
+          "value": "#f1fe90",
+          "easing": "linear"
+        }
+      ],
+      "camera.z": [
+        {
+          "time": 0,
+          "value": -100,
+          "easing": "instant"
+        },
+        {
+          "time": 766.339928057554,
+          "value": -50,
+          "easing": "instant"
+        },
+        {
+          "time": 1628.4723471223022,
+          "value": 0,
+          "easing": "instant"
+        }
+      ],
+      "notes.colors.1": [
+        {
+          "time": 0,
+          "value": "#ee4949",
+          "easing": "instant"
+        }
+      ]
+    }
+  },
+  "byDifficulty": {
+    "easy": {
+      "properties": {
+        "background": {
+          "color1": "#0d111a",
+          "color2": "#1a1f2e",
+          "gradient": false,
+          "angle": 0,
+          "flashEnable": false,
+          "flashColor": "#ffffff",
+          "flashIntensity": 30,
+          "flashDuration": 200
+        },
+        "camera": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "rotateX": 0,
+          "rotateY": 0,
+          "rotateZ": 0,
+          "shakeAmp": 0,
+          "shakeFreq": 5
+        },
+        "notes": {
+          "colors": [
+            "#19cdd0",
+            "#8A5CFF",
+            "#C8FF4D",
+            "#FFA94D"
+          ],
+          "glow": 0,
+          "size": 1,
+          "trails": false
+        },
+        "lanes": {
+          "opacity": 100
+        }
+      },
+      "keyframes": {}
+    },
+    "normal": {
+      "properties": {
+        "background": {
+          "color1": "#ff0000",
+          "color2": "#ff0000",
+          "gradient": false,
+          "angle": 360,
+          "flashEnable": false,
+          "flashColor": "#ffffff",
+          "flashIntensity": 30,
+          "flashDuration": 200
+        },
+        "camera": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "rotateX": 0,
+          "rotateY": 0,
+          "rotateZ": 0,
+          "shakeAmp": 0,
+          "shakeFreq": 5
+        },
+        "notes": {
+          "colors": [
+            "#ee4949",
+            "#f1fe90",
+            "#ee4949",
+            "#f1fe90"
+          ],
+          "glow": 0,
+          "size": 1,
+          "trails": false
+        },
+        "lanes": {
+          "opacity": 100
+        }
+      },
+      "keyframes": {
+        "background.color1": [
+          {
+            "time": 145603,
+            "value": "#0d111a",
+            "easing": "linear"
+          },
+          {
+            "time": 147268,
+            "value": "#ffffff",
+            "easing": "linear"
+          },
+          {
+            "time": 170833,
+            "value": "#ffffff",
+            "easing": "linear"
+          },
+          {
+            "time": 178850,
+            "value": "#ff0000",
+            "easing": "linear"
+          },
+          {
+            "time": 184745.01715550636,
+            "value": "#0d111a",
+            "easing": "linear"
+          }
+        ],
+        "background.color2": [
+          {
+            "time": 145603,
+            "value": "#1a1f2e",
+            "easing": "linear"
+          },
+          {
+            "time": 148268,
+            "value": "#e6fe6c",
+            "easing": "linear"
+          },
+          {
+            "time": 170833.9845047039,
+            "value": "#e6fe6c",
+            "easing": "linear"
+          },
+          {
+            "time": 178850.0946319867,
+            "value": "#ff0000",
+            "easing": "linear"
+          },
+          {
+            "time": 184745.01715550636,
+            "value": "#1a1f2e",
+            "easing": "linear"
+          }
+        ],
+        "notes.colors.4": [
+          {
+            "time": 0,
+            "value": "#f1fe90",
+            "easing": "linear"
+          }
+        ],
+        "camera.z": [
+          {
+            "time": 0,
+            "value": -100,
+            "easing": "instant"
+          },
+          {
+            "time": 766.339928057554,
+            "value": -50,
+            "easing": "instant"
+          },
+          {
+            "time": 1628.4723471223022,
+            "value": 0,
+            "easing": "instant"
+          }
+        ],
+        "notes.colors.1": [
+          {
+            "time": 0,
+            "value": "#ee4949",
+            "easing": "instant"
+          }
+        ]
+      }
+    },
+    "hard": {
+      "properties": {
+        "background": {
+          "color1": "#0d111a",
+          "color2": "#1a1f2e",
+          "gradient": false,
+          "angle": 0,
+          "flashEnable": false,
+          "flashColor": "#ffffff",
+          "flashIntensity": 30,
+          "flashDuration": 200
+        },
+        "camera": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "rotateX": 0,
+          "rotateY": 0,
+          "rotateZ": 0,
+          "shakeAmp": 0,
+          "shakeFreq": 5
+        },
+        "notes": {
+          "colors": [
+            "#19cdd0",
+            "#8A5CFF",
+            "#C8FF4D",
+            "#FFA94D"
+          ],
+          "glow": 0,
+          "size": 1,
+          "trails": false
+        },
+        "lanes": {
+          "opacity": 100
+        }
+      },
+      "keyframes": {}
+    }
+  }
+}

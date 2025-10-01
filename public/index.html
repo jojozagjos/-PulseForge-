@@ -406,6 +406,11 @@
           <!-- VFX Timeline and Keyframes -->
           <div class="vfx-timeline-section" style="margin-top:20px; border-top:1px solid #2a3142; padding-top:12px;">
             <h4>Timeline & Keyframes</h4>
+
+            <!-- Property Tabs (like Blender's channels list) -->
+            <div id="vfx-prop-tabs" class="row" style="gap:6px; flex-wrap:wrap; margin-bottom:8px; align-items:center;">
+              <!-- tabs populated by editor.js (_renderVfxPropTabs) -->
+            </div>
             
             <!-- Easing Controls -->
             <div class="row" style="gap:8px; align-items:center; margin-bottom:12px;">
@@ -436,11 +441,12 @@
             </div>
 
             <!-- Keyframe Controls -->
-            <div class="row" style="gap:8px; margin-bottom:12px; flex-wrap:wrap; align-items:center;">
+            <div class="row" style="gap:8px; margin-bottom:12px; flex-wrap:wrap; align-items:center; min-width:0;">
               <button id="vfx-add-keyframe" class="secondary">Add Keyframe</button>
               <button id="vfx-delete-keyframe" class="ghost">Delete Selected</button>
               <button id="vfx-duplicate-keyframe" class="secondary">Duplicate</button>
               <button id="vfx-clear-keyframes" class="ghost">Clear All</button>
+              <button id="vfx-move-selected-to-playhead" class="secondary" title="Move selected keyframe to playhead">Move to Playhead</button>
               <span class="muted" style="margin-left:12px;">Jump:</span>
               <button id="vfx-prev-keyframe" class="ghost" title="Previous keyframe (active property)">◀ Prev</button>
               <button id="vfx-next-keyframe" class="ghost" title="Next keyframe (active property)">Next ▶</button>
@@ -448,15 +454,15 @@
               <span class="muted" id="vfx-selected-diff" style="margin-left:12px; opacity:.9;">—</span>
             </div>
 
-            <!-- VFX Timeline Canvas -->
-            <div class="vfx-timeline-container" style="background:#111725; border:1px solid #2a3142; border-radius:8px; height:200px; position:relative; overflow:hidden;">
+            <!-- VFX Timeline Canvas (fixed height; fits side panel; no vertical resize) -->
+            <div class="vfx-timeline-container" style="background:#111725; border:1px solid #2a3142; border-radius:8px; height:220px; position:relative; overflow:hidden; min-width:0; max-width:100%;">
               <canvas id="vfx-timeline-canvas" style="width:100%; height:100%; display:block;"></canvas>
             </div>
 
             <!-- Timeline Controls -->
             <div class="row" style="gap:8px; margin-top:8px; align-items:center; flex-wrap:wrap;">
               <button id="vfx-play-preview" class="primary">Preview: Off</button>
-              <button id="vfx-test-in-game" class="secondary">Test in Game</button>
+              <button id="vfx-test-in-game" class="zsecondary">Test in Game</button>
               <label>Timeline Zoom: <input type="range" id="vfx-timeline-zoom" min="1" max="20" value="1" step="0.1" /> <span id="vfx-timeline-zoom-value">1.0x</span></label>
               <label style="display:flex;align-items:center;gap:6px;">
                 <input type="checkbox" id="vfx-timeline-follow" checked />

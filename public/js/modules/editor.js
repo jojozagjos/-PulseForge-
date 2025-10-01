@@ -365,6 +365,8 @@ export class Editor {
         }
         // Ensure prop chooser options reflect this category
         try { this._ensureVfxPropChooser(vfx); } catch {}
+        // Render property tabs for quick switching
+        try { this._renderVfxPropTabs(vfx); } catch {}
         // Ensure canvas sized and redraw
         this._resizeVFXCanvas(vfx);
         this._updateVFXTimeline(vfx);
@@ -407,6 +409,7 @@ export class Editor {
 
   // Create property chooser UI (compact dropdown) for quick timeline switching
   try { this._ensureVfxPropChooser(vfx); } catch {}
+  try { this._renderVfxPropTabs(vfx); } catch {}
 
     // Wire property controls with live updates
     this._wireVFXProperty("vfx-bg-color1", "background.color1", vfx);
@@ -523,6 +526,7 @@ export class Editor {
       }
       try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
       this._updateVFXTimeline(vfx);
+      try { this._renderVfxPropTabs(vfx); } catch {}
     };
 
   element.addEventListener("input", updateValue);
@@ -612,6 +616,7 @@ export class Editor {
     const clearKeyframesBtn = document.getElementById("vfx-clear-keyframes");
   const prevKeyframeBtn = document.getElementById("vfx-prev-keyframe");
   const nextKeyframeBtn = document.getElementById("vfx-next-keyframe");
+  const moveSelectedBtn = document.getElementById("vfx-move-selected-to-playhead");
 
     if (addKeyframeBtn) {
       addKeyframeBtn.addEventListener("click", () => this._addVFXKeyframe(vfx));
@@ -627,6 +632,10 @@ export class Editor {
 
     if (clearKeyframesBtn) {
       clearKeyframesBtn.addEventListener("click", () => this._clearVFXKeyframes(vfx));
+    }
+
+    if (moveSelectedBtn) {
+      moveSelectedBtn.addEventListener("click", () => this._moveSelectedKeyframeToPlayhead(vfx));
     }
 
     // Generic per-control reset buttons
@@ -865,6 +874,7 @@ export class Editor {
     // Keep playhead view centered where we added
     this._centerVFXTimelineOnPlayhead(vfx);
     this._updateVFXTimeline(vfx);
+    try { this._renderVfxPropTabs(vfx); } catch {}
   }
 
   _deleteVFXKeyframe(vfx) {
@@ -879,6 +889,7 @@ export class Editor {
         this._assignVFXDefault(property, vfx);
       }
       this._updateVFXTimeline(vfx);
+      try { this._renderVfxPropTabs(vfx); } catch {}
     }
   }
 
@@ -894,6 +905,7 @@ export class Editor {
   vfx.keyframes[property].sort((a, b) => a.time - b.time);
     
     this._updateVFXTimeline(vfx);
+    try { this._renderVfxPropTabs(vfx); } catch {}
   }
 
   _clearVFXKeyframes(vfx) {
@@ -904,7 +916,66 @@ export class Editor {
       // Revert this property to its default when no keyframes are set
       this._assignVFXDefault(property, vfx);
       this._updateVFXTimeline(vfx);
+      try { this._renderVfxPropTabs(vfx); } catch {}
     }
+  }
+
+  // Move selected keyframe to current playhead time (scrubber)
+  _moveSelectedKeyframeToPlayhead(vfx) {
+    const sel = vfx.timeline.selectedKeyframe;
+    if (!sel) return;
+    const { property, index } = sel;
+    const list = vfx.keyframes[property];
+    if (!Array.isArray(list) || !list[index]) return;
+    // Determine playhead time from scrubber
+    let time = this.playStartMs;
+    const scrub = document.getElementById(this.ids.scrub);
+    if (scrub) {
+      const v = Number(scrub.value);
+      if (Number.isFinite(v)) time = v;
+    }
+    list[index].time = Math.max(0, time|0);
+    // Re-sort and update selected index to follow the moved keyframe
+    const moved = list[index];
+    list.sort((a,b)=>a.time-b.time);
+    const newIdx = list.findIndex(k=>k===moved);
+    if (newIdx >= 0) vfx.timeline.selectedKeyframe = { property, index: newIdx };
+    // Keep timeline focused and redraw
+    this._centerVFXTimelineOnPlayhead(vfx);
+    this._updateVFXTimeline(vfx);
+  }
+
+  // Render Blender-like tabs for properties in the current category for quick switching
+  _renderVfxPropTabs(vfx) {
+    const holder = document.getElementById('vfx-prop-tabs');
+    if (!holder) return;
+    const cat = vfx.timeline.currentCategory || 'background';
+    const props = this._getVFXPropertiesByCategory(cat) || [];
+    const cur = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
+    holder.innerHTML = '';
+    const makeBtn = (p) => {
+      const btn = document.createElement('button');
+      btn.textContent = p.label;
+      btn.setAttribute('data-prop', p.value);
+      btn.className = 'vfx-prop-tab';
+      Object.assign(btn.style, {
+        border: '1px solid #2a3142',
+        borderRadius: '6px',
+        padding: '4px 8px',
+        background: (p.value === cur ? '#2a3142' : '#0d111a'),
+        color: '#e7f0ff',
+        cursor: 'pointer'
+      });
+      btn.addEventListener('click', () => {
+        vfx.timeline.currentProperty = p.value;
+        vfx.timeline.lastChangedProperty = p.value;
+        try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${p.value}`; } catch {}
+        this._updateVFXTimeline(vfx);
+        this._renderVfxPropTabs(vfx);
+      });
+      return btn;
+    };
+    for (const p of props) holder.appendChild(makeBtn(p));
   }
 
   _getCurrentVFXPropertyValue(property, vfx) {
