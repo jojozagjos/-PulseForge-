@@ -1236,13 +1236,12 @@ export class Game {
             if (this.vfx && head) {
               const cHex = this._vfxColorForLaneAt(tMs, n.lane);
               if (cHex != null) {
-                // Don’t override white flash or active hold white
-                if (!head.__pfFlashUntil && !head.__pfHoldActive) head.tint = cHex;
+                // Determine if the playhead is anywhere along the hold tail
+                const onTail = !!(body && n.dMs && (tMs >= (n.tMs || 0)) && (tMs <= (n.tMs || 0) + Math.max(0, n.dMs || 0)));
+                // Don’t override white flash, active hold white, or when on the tail (we keep white then)
+                if (!onTail && !head.__pfFlashUntil && !head.__pfHoldActive) head.tint = cHex;
                 if (body && !body.__pfHoldActive) {
-                  // If tail is in its tail-end flash window, keep it white; else tint
-                  const tailEndMs = (n.tMs || 0) + Math.max(0, n.dMs || 0);
-                  const nearTail = Math.abs((this.state.timeMs || 0) - tailEndMs) <= 40;
-                  if (!nearTail) body.tint = cHex;
+                  if (!onTail) body.tint = cHex;
                 }
               }
             }
@@ -1266,11 +1265,10 @@ export class Game {
             this._beginFadeOut(body, MISS_FADE_RATE, true);
           }
 
-          // While the playhead is near the tail end, briefly turn the tail white
+          // While the playhead is anywhere along the tail, turn the entire tail white
           if (body) {
-            const tailEndMs = (n.tMs || 0) + Math.max(0, n.dMs || 0);
-            const nearTail = Math.abs((this.state.timeMs || 0) - tailEndMs) <= 40;
-            if (nearTail && body.__pfLen) {
+            const onTail = !!(n.dMs && (tMs >= (n.tMs || 0)) && (tMs <= (n.tMs || 0) + Math.max(0, n.dMs || 0)));
+            if (onTail && body.__pfLen) {
               body.texture = this._getBodyTexture(body.__pfLen, true);
               body.tint = 0xFFFFFF;
               body.alpha = 0.95;
@@ -1280,6 +1278,14 @@ export class Game {
               const vfxLane = this._vfxColorForLaneAt(tMs, n.lane);
               body.tint = vfxLane != null ? vfxLane : this.vis.laneColors[n.lane % this.vis.laneColors.length];
               body.alpha = 1.0;
+            }
+          }
+
+          // Also turn the head white while the playhead is on the tail timeline range
+          if (head) {
+            const onTail = !!(n.dMs && (tMs >= (n.tMs || 0)) && (tMs <= (n.tMs || 0) + Math.max(0, n.dMs || 0)));
+            if (onTail && !head.__pfHoldActive) {
+              head.tint = 0xFFFFFF;
             }
           }
         }

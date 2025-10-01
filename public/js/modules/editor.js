@@ -478,14 +478,7 @@ export class Editor {
         value = parseFloat(value);
       }
 
-      // Determine if we're editing a selected keyframe for this property
-      const sel = vfx.timeline.selectedKeyframe;
-      const editingSelected = sel && sel.property === propertyPath && vfx.keyframes[propertyPath]?.[sel.index];
-
-      if (editingSelected) {
-        // Update the selected keyframe's value directly
-        vfx.keyframes[propertyPath][sel.index].value = value;
-      }
+      // Do not mutate selected keyframes when changing controls; only update live data.
 
       // Always reflect value into live vfx.data so preview updates
       let target = vfx.data;
@@ -949,23 +942,16 @@ export class Editor {
     const rect = canvas.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return; // hidden
     
-  // While playing (and follow enabled), keep the playhead within the visible window; re-center near edges
+    // Follow: keep the playhead centered when follow is enabled
     try {
       const duration = this.chart?.durationMs || 180000;
       const timelineWidth = rect.width - 40;
-      const pixelsPerMs = (timelineWidth / duration) * Math.max(0.0001, vfx.timeline.zoom);
       const viewportMs = duration / Math.max(0.0001, vfx.timeline.zoom);
-      const leftTime = vfx.timeline.offsetMs || 0;
-      const rightTime = Math.min(duration, leftTime + viewportMs);
- 
-  const p = this.currentTimeMs();
-      const pad = viewportMs * 0.2;
-      if (this.playing && vfx.timeline.follow) {
-        if (p < leftTime + pad || p > rightTime - pad) {
-          let offset = p - viewportMs / 2;
-          const maxOffset = Math.max(0, duration - viewportMs);
-          vfx.timeline.offsetMs = Math.max(0, Math.min(maxOffset, offset));
-        }
+      const p = this.currentTimeMs();
+      if (vfx.timeline.follow) {
+        const maxOffset = Math.max(0, duration - viewportMs);
+        let offset = p - viewportMs / 2;
+        vfx.timeline.offsetMs = Math.max(0, Math.min(maxOffset, offset));
       }
     } catch { }
     
@@ -982,19 +968,7 @@ export class Editor {
     // Draw playhead and current value at playhead
     this._drawVFXPlayhead(ctx, rect, vfx);
 
-    // Orientation markers for VFX timeline (Top/Bottom)
-    try {
-      ctx.save();
-      ctx.fillStyle = "#9bb0c9";
-      ctx.font = "11px Inter";
-      ctx.textBaseline = "top";
-      ctx.textAlign = "left";
-      ctx.fillText("TOP", 6, 4);
-      ctx.textBaseline = "bottom";
-      ctx.textAlign = "right";
-      ctx.fillText("BOTTOM", rect.width - 6, rect.height - 4);
-      ctx.restore();
-    } catch {}
+    // Removed orientation markers (Top/Bottom)
   }
 
   // Property dropdown removed — selection is automatic based on lastChangedProperty
@@ -3360,8 +3334,8 @@ export class Editor {
       }
       if (maxY < -50 || minY > h + 50) continue;
 
-      // Head flash when its center is near the playhead (used by both head and tail logic)
-      const flash = Math.abs(n.tMs - now) <= flashWindow;
+  // Head flash when its center is near the playhead
+  const flashHead = Math.abs(n.tMs - now) <= flashWindow;
 
       // Hold body extends *after* the head (downwards)
       if (n.dMs && n.dMs > 0) {
@@ -3377,17 +3351,10 @@ export class Editor {
             if (rgb) tailFill = `rgba(${rgb.r},${rgb.g},${rgb.b},0.55)`;
           }
         } catch {}
-        ctx.fillStyle = tailFill;
+        // If playhead is anywhere along the tail, turn the entire tail white; otherwise use lane-colored tail
+        const onTail = (now >= n.tMs && now <= (n.tMs + n.dMs));
+        ctx.fillStyle = onTail ? "#ffffff" : tailFill;
         this._roundRect(ctx, bx, by, stemW, len, Math.min(6 * this.zoomY, stemW/2), true);
-        // Tail cap: turn just the end of the tail white when the playhead is near the tail end
-        const tailTime = n.tMs + n.dMs;
-        const flashTail = Math.abs(tailTime - now) <= flashWindow;
-        if (flashTail) {
-          const capH = Math.min(12, Math.floor(len * 0.25));
-          ctx.fillStyle = "#ffffff";
-          // Draw a small white cap at the bottom of the tail
-          ctx.fillRect(bx, by + len - capH, stemW, capH);
-        }
       }
 
       // flash head when its *center* is near playhead (computed above)
@@ -3399,8 +3366,11 @@ export class Editor {
     let glowPx = glowPxGlobal;
     // No proximity-based growth near judge; keep constant size.
     let perspScaleX = 1;
-      ctx.fillStyle   = flash ? "#ffffff" : headColor;
-      ctx.strokeStyle = flash ? "#ffffff" : this.colors.noteHeadStroke;
+  // Turn the head white if playhead is at head center OR anywhere along its tail
+  const isOnTail = (n.dMs && n.dMs > 0 && now >= n.tMs && now <= (n.tMs + n.dMs));
+  const headWhite = flashHead || isOnTail;
+  ctx.fillStyle   = headWhite ? "#ffffff" : headColor;
+  ctx.strokeStyle = headWhite ? "#ffffff" : this.colors.noteHeadStroke;
       ctx.lineWidth = 2;
       // Always draw normal round note heads; apply size scale + glow
       ctx.save();
