@@ -2138,15 +2138,29 @@ export class Editor {
   _generateVFXExport(vfx) {
     // Build byDifficulty export
     const buildSet = (set) => ({ properties: JSON.parse(JSON.stringify(set.data)), keyframes: JSON.parse(JSON.stringify(set.keyframes)) });
-    const byDifficulty = {
+    const rawByDifficulty = {
       easy: buildSet(vfx._sets.easy),
       normal: buildSet(vfx._sets.normal),
       hard: buildSet(vfx._sets.hard)
     };
+
+    // Normalize/guard sets before exporting
+    const byDifficulty = {};
+    const warnings = [];
+    for (const diff of ["easy","normal","hard"]) {
+      const { properties, keyframes, warnings: ws } = this._normalizeVFXSet(rawByDifficulty[diff]);
+      byDifficulty[diff] = { properties, keyframes };
+      if (ws?.length) warnings.push(...ws.map(w => `[${diff}] ${w}`));
+    }
+    if (warnings.length) {
+      console.warn("VFX export guard warnings:", warnings);
+    }
+
     // Back-compat: include active set as legacy vfx
-    const legacy = buildSet(vfx._sets[vfx.activeDiff] || vfx._sets.normal);
+    const legacy = byDifficulty[vfx.activeDiff] || byDifficulty.normal;
     return {
-      version: "1.1",
+      version: "1.2",
+      schemaVersion: 2,
       metadata: {
         title: this.manifest?.title || "Untitled",
         artist: this.manifest?.artist || "Unknown",
@@ -2162,51 +2176,14 @@ export class Editor {
   _loadVFXData(vfxData, vfx) {
     const applySet = (setObj) => {
       if (!setObj) return;
-      if (setObj.properties) {
-        vfx.data = JSON.parse(JSON.stringify(setObj.properties));
-        // Back-compat: map legacy camera.angle to camera.rotateZ if present
-        try {
-          if (vfx.data?.camera && typeof vfx.data.camera === 'object') {
-            if (typeof vfx.data.camera.angle === 'number' && (vfx.data.camera.rotateZ == null)) {
-              vfx.data.camera.rotateZ = vfx.data.camera.angle;
-            }
-            delete vfx.data.camera.angle;
-            // Ensure rotateX/rotateY defaults exist
-            if (vfx.data.camera.rotateX == null) vfx.data.camera.rotateX = 0;
-      if (vfx.data.camera.rotateY == null) vfx.data.camera.rotateY = 0;
-      if (vfx.data.camera.rotateZ == null) vfx.data.camera.rotateZ = 0;
-      // Drop any legacy view node
-      if (vfx.data.view) delete vfx.data.view;
-          }
-        } catch {}
-      }
-      if (setObj.keyframes) {
-        vfx.keyframes = JSON.parse(JSON.stringify(setObj.keyframes));
-        try {
-          for (const prop of Object.keys(vfx.keyframes)) {
-            const arr = vfx.keyframes[prop];
-            if (!Array.isArray(arr)) continue;
-            // Ensure sorted once at load time
-            arr.sort((a,b)=>a.time-b.time);
-            for (const kf of arr) {
-              if (!kf) continue;
-              if (!kf.easing) kf.easing = "linear";
-              const ez = this._unpackEasing(kf.easing);
-              kf.easing = this._packEasing(ez.curve, ez.style);
-            }
-          }
-          // Migrate any keyframes on camera.angle to camera.rotateZ
-          if (vfx.keyframes['camera.angle']) {
-            const arr = vfx.keyframes['camera.angle'];
-            if (!vfx.keyframes['camera.rotateZ']) vfx.keyframes['camera.rotateZ'] = [];
-            vfx.keyframes['camera.rotateZ'].push(...arr);
-            delete vfx.keyframes['camera.angle'];
-          }
-          // Remove any view.amount keyframes
-          if (vfx.keyframes['view.amount']) delete vfx.keyframes['view.amount'];
-        } catch {}
-      }
+      const norm = this._normalizeVFXSet(setObj);
+      vfx.data = norm.properties;
+      vfx.keyframes = norm.keyframes;
+      return norm.warnings || [];
     };
+
+    // Run high-level normalization of input payload before applying
+    const importWarnings = [];
 
     // Prefer byDifficulty if present
     if (vfxData.byDifficulty && typeof vfxData.byDifficulty === 'object') {
@@ -2216,7 +2193,8 @@ export class Editor {
         if (!setObj) continue;
         const prevActive = vfx.activeDiff;
         vfx.activeDiff = d;
-        applySet(setObj);
+        const ws = applySet(setObj) || [];
+        if (ws.length) importWarnings.push(...ws.map(w => `[${d}] ${w}`));
         vfx.activeDiff = prevActive;
       }
       // If metadata has activeDifficulty, switch to it
@@ -2226,11 +2204,23 @@ export class Editor {
       }
     } else if (vfxData.vfx) {
       // Legacy single-set import: apply to current difficulty set only
-      applySet(vfxData.vfx);
+      const ws = applySet(vfxData.vfx) || [];
+      if (ws.length) importWarnings.push(...ws);
     }
     
     this._syncVFXToUI(vfx);
     this._updateVFXTimeline(vfx);
+
+    if (importWarnings.length) {
+      console.warn("VFX import guard warnings:", importWarnings);
+      const summary = importWarnings.slice(0, 8).join("\n");
+      try {
+        alert(`Imported VFX with ${importWarnings.length} warning(s).\n\n` + summary + (importWarnings.length > 8 ? "\n…" : ""));
+      } catch {}
+      try { this._help(`Imported VFX with ${importWarnings.length} warning(s). See console for details.`); } catch {}
+    } else {
+      try { this._help("Imported VFX."); } catch {}
+    }
   }
 
   _syncVFXToUI(vfx) {
@@ -2369,6 +2359,157 @@ export class Editor {
     this._undo.push(cur);
     this._restore(next);
     this._help("Redid");
+  }
+
+  // ===== VFX Schema Guard & Normalization =====
+  _getDefaultVFXData() {
+    return {
+      background: {
+        color1: "#0d111a",
+        color2: "#1a1f2e",
+        gradient: false,
+        angle: 0,
+        flashEnable: false,
+        flashColor: "#ffffff",
+        flashIntensity: 30,
+        flashDuration: 200
+      },
+      camera: { x: 0, y: 0, z: 0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
+      notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0, trails: false },
+      lanes: { opacity: 100 }
+    };
+  }
+
+  _clamp(n, min, max) {
+    n = Number(n);
+    if (!Number.isFinite(n)) return min;
+    return Math.min(max, Math.max(min, n));
+  }
+
+  _ensureHexColor(val, fallback) {
+    if (typeof val !== "string") return fallback;
+    let s = val.trim();
+    // expand 3-digit to 6-digit
+    const m3 = /^#([0-9a-fA-F]{3})$/.exec(s);
+    if (m3) {
+      const r = m3[1];
+      s = `#${r[0]}${r[0]}${r[1]}${r[1]}${r[2]}${r[2]}`;
+    }
+    const ok = /^#([0-9a-fA-F]{6})$/.test(s);
+    return ok ? s.toLowerCase() : fallback;
+  }
+
+  _normalizeEasing(easing) {
+    try {
+      const { curve, style } = this._unpackEasing(easing || "linear");
+      return this._packEasing(curve, style);
+    } catch {
+      return "linear";
+    }
+  }
+
+  _normalizeVFXSet(setObj) {
+    const warnings = [];
+    const defaults = this._getDefaultVFXData();
+    const outProps = JSON.parse(JSON.stringify(defaults));
+
+    // Properties normalization (merge + coerce)
+    const src = setObj?.properties || {};
+    try {
+      // Background
+      if (src.background && typeof src.background === "object") {
+        outProps.background.color1 = this._ensureHexColor(src.background.color1, outProps.background.color1);
+        outProps.background.color2 = this._ensureHexColor(src.background.color2, outProps.background.color2);
+        outProps.background.angle = this._clamp(src.background.angle, 0, 360);
+        outProps.background.flashEnable = !!src.background.flashEnable;
+        outProps.background.flashColor = this._ensureHexColor(src.background.flashColor, outProps.background.flashColor);
+        outProps.background.flashIntensity = this._clamp(src.background.flashIntensity, 0, 100);
+        outProps.background.flashDuration = this._clamp(src.background.flashDuration, 0, 2000);
+      }
+
+      // Camera (migrate legacy angle)
+      const cam = src.camera || {};
+      let angleToZ = (typeof cam.angle === "number") ? cam.angle : null;
+      outProps.camera.x = Number.isFinite(cam.x) ? cam.x : outProps.camera.x;
+      outProps.camera.y = Number.isFinite(cam.y) ? cam.y : outProps.camera.y;
+      outProps.camera.z = Number.isFinite(cam.z) ? cam.z : outProps.camera.z;
+      outProps.camera.rotateX = this._clamp(cam.rotateX, -180, 180);
+      outProps.camera.rotateY = this._clamp(cam.rotateY, -180, 180);
+      outProps.camera.rotateZ = Number.isFinite(cam.rotateZ) ? this._clamp(cam.rotateZ, -180, 180)
+        : (angleToZ != null ? this._clamp(angleToZ, -180, 180) : outProps.camera.rotateZ);
+      outProps.camera.shakeAmp = this._clamp(cam.shakeAmp, 0, 50);
+      outProps.camera.shakeFreq = this._clamp(cam.shakeFreq, 0, 20);
+
+      // Notes
+      const n = src.notes || {};
+      const colors = Array.isArray(n.colors) ? n.colors : defaults.notes.colors;
+      outProps.notes.colors = [0,1,2,3].map(i => this._ensureHexColor(colors[i], defaults.notes.colors[i]));
+      outProps.notes.glow = this._clamp(n.glow, 0, 100);
+      outProps.notes.size = Number.isFinite(n.size) ? this._clamp(n.size, 0.5, 2.0) : defaults.notes.size;
+      outProps.notes.trails = !!n.trails;
+
+      // Lanes
+      const l = src.lanes || {};
+      outProps.lanes.opacity = this._clamp(l.opacity, 0, 100);
+    } catch (e) {
+      warnings.push("Failed to normalize properties object; using defaults for some fields.");
+    }
+
+    // Keyframes normalization
+    const allowedKFProps = new Set([
+      "background.angle",
+      "camera.rotateX","camera.rotateY","camera.rotateZ",
+      "notes.colors.1","notes.colors.2","notes.colors.3","notes.colors.4",
+      "lanes.opacity"
+    ]);
+    const outKfs = {};
+    const srcKfs = setObj?.keyframes || {};
+
+    // Legacy migrations: rename keys
+    if (srcKfs && srcKfs['camera.angle']) {
+      srcKfs['camera.rotateZ'] = (srcKfs['camera.rotateZ'] || []).concat(srcKfs['camera.angle']);
+      delete srcKfs['camera.angle'];
+      warnings.push("Migrated keyframes: camera.angle -> camera.rotateZ");
+    }
+    if (srcKfs && srcKfs['view.amount']) {
+      delete srcKfs['view.amount'];
+      warnings.push("Dropped legacy keyframes: view.amount");
+    }
+
+    for (const prop of Object.keys(srcKfs)) {
+      if (!allowedKFProps.has(prop)) {
+        warnings.push(`Removed unknown timeline property '${prop}'.`);
+        continue;
+      }
+      const arr = Array.isArray(srcKfs[prop]) ? srcKfs[prop] : [];
+      const normArr = [];
+      const seenTimes = new Set();
+      for (const kf of arr) {
+        if (!kf || typeof kf !== "object") { warnings.push(`Skipped invalid keyframe in '${prop}'.`); continue; }
+        const t = Number(kf.time);
+        if (!Number.isFinite(t) || t < 0) { warnings.push(`Dropped keyframe with invalid time in '${prop}'.`); continue; }
+        const tms = Math.round(t);
+        if (seenTimes.has(tms)) { warnings.push(`Deduped duplicate time ${tms}ms in '${prop}'.`); continue; }
+        seenTimes.add(tms);
+
+        let v = kf.value;
+        if (prop.startsWith("notes.colors.")) {
+          v = this._ensureHexColor(v, defaults.notes.colors[0]);
+        } else if (prop === "lanes.opacity" || prop === "background.angle" || prop.startsWith("camera.rotate")) {
+          // numeric
+          if (prop === "lanes.opacity") v = this._clamp(v, 0, 100);
+          else if (prop === "background.angle") v = this._clamp(v, 0, 360);
+          else v = this._clamp(v, -180, 180);
+        }
+
+        const e = this._normalizeEasing(kf.easing);
+        normArr.push({ time: tms, value: v, easing: e });
+      }
+      normArr.sort((a,b)=>a.time-b.time);
+      if (normArr.length) outKfs[prop] = normArr;
+    }
+
+    return { properties: outProps, keyframes: outKfs, warnings };
   }
 
   // ===== Small helpers =====
