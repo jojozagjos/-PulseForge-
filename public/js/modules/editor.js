@@ -65,7 +65,7 @@ export class Editor {
     this.playing = false;
     this.playStartCtxTime = 0; // AudioContext time when current run started
     this.playStartMs = 0;      // Musical offset for the current run (ms)
-  this.playbackSpeed = 1.0;  // Playback speed multiplier
+    this.playbackSpeed = 1.0;  // Playback speed multiplier
 
     // Metronome
     this.metronome = { enabled: false, lookaheadMs: 120, nextBeatMs: 0, timer: null };
@@ -73,7 +73,7 @@ export class Editor {
     // Data
     this.manifest = null;
     this.manifestUrl = null;
-  this.chart = null; // { bpm, lanes, durationMs, notes:[{tMs,lane,dMs?}] }
+    this.chart = null; // { bpm, lanes, durationMs, notes:[{tMs,lane,dMs?}] }
     this.chartUrl = null;
     this.difficulty = "normal";
 
@@ -191,14 +191,15 @@ export class Editor {
         currentProperty: "background.color1",
         easingCurve: "linear",   // linear|quad|cubic|quart|quint|sine|expo|circ|back|elastic|bounce|bezier|instant
         easingStyle: "inOut",    // in|out|inOut (ignored for instant/linear/bezier)
-  zoom: 1.0,
+        zoom: 1.0,
         selectedKeyframe: null,
         playheadTime: 0,
         currentCategory: "background",
         lastPropByCategory: {},   // remember last-used property per category
         offsetMs: 0,           // left edge time of the visible window
         hoverKeyframe: null,    // { property, index } when hovering
-        follow: true            // auto-follow playhead during playback
+        follow: true,           // auto-follow playhead during playback
+        autoKeyframe: false     // when true, edits auto-create keyframes at playhead for active property
       },
 
       // VFX timeline canvas
@@ -208,7 +209,7 @@ export class Editor {
       // Wiring flags
       _wiredVFX: false,
       _wiredVFXTimeline: false,
-  previewCamera: true
+      previewCamera: true
     };
 
     // Build default VFX set factory
@@ -223,10 +224,10 @@ export class Editor {
         flashIntensity: 30,
         flashDuration: 200
       },
-  camera: { x: 0, y: 0, z: 0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
-  // Removed 3D Depth slider; 2.5D comes from Rotate X/Y only
-  notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0, trails: false },
-  lanes: { opacity: 100 }
+      camera: { x: 0, y: 0, z: 0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
+      // Removed 3D Depth slider; 2.5D comes from Rotate X/Y only
+      notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0, trails: false },
+      lanes: { opacity: 100 }
     });
     const makeDefaultSet = () => ({ data: makeDefaultData(), keyframes: {} });
     vfx._sets = {
@@ -493,21 +494,7 @@ export class Editor {
       }
       target[keys[keys.length - 1]] = value;
 
-      // Live preview while editing: temporarily force preview on
-      try {
-        vfx._livePreviewActive = true;
-        // If adjusting a camera property, also force camera preview temporarily
-        if (propertyPath.startsWith('camera.')) {
-          vfx._livePreviewCameraActive = true;
-        }
-        if (vfx._livePreviewTimer) clearTimeout(vfx._livePreviewTimer);
-        vfx._livePreviewTimer = setTimeout(() => {
-          vfx._livePreviewActive = false;
-          vfx._livePreviewCameraActive = false;
-          // One more refresh to settle back to non-preview state
-          this._updateVFXTimeline(vfx);
-        }, 600);
-      } catch {}
+      // No live preview forcing on edit; rely on explicit Preview toggle only
 
       // Update value display if provided
       if (valueDisplayId) {
@@ -522,6 +509,31 @@ export class Editor {
       const hasKfs = Array.isArray(vfx.keyframes?.[propertyPath]) && vfx.keyframes[propertyPath].length > 0;
       if (hasKfs) {
         vfx.timeline.lastChangedProperty = propertyPath;
+      }
+
+      // Auto keyframe: if enabled, add/update a keyframe for the active property at the current playhead
+      if (vfx.timeline.autoKeyframe) {
+        try {
+          const property = propertyPath;
+          let time = this.playStartMs;
+          const scrub = document.getElementById(this.ids.scrub);
+          if (scrub) {
+            const v = Number(scrub.value);
+            if (Number.isFinite(v)) time = v;
+          }
+          const easing = this._packEasing(vfx.timeline.easingCurve, vfx.timeline.easingStyle);
+          if (!vfx.keyframes[property]) vfx.keyframes[property] = [];
+          const idx = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
+          if (idx >= 0) {
+            vfx.keyframes[property][idx] = { time, value, easing };
+            vfx.timeline.selectedKeyframe = { property, index: idx };
+          } else {
+            vfx.keyframes[property].push({ time, value, easing });
+            vfx.keyframes[property].sort((a,b)=>a.time-b.time);
+            const newIdx = vfx.keyframes[property].findIndex(kf => kf.time === time);
+            if (newIdx >= 0) vfx.timeline.selectedKeyframe = { property, index: newIdx };
+          }
+        } catch {}
       }
       try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
   this._updateVFXTimeline(vfx);
@@ -653,10 +665,11 @@ export class Editor {
       nextKeyframeBtn.addEventListener("click", () => this._jumpToAdjacentVFXKeyframe(vfx, +1));
     }
 
-    // Preview buttons
+    // Preview buttons & toggles
     const previewBtn = document.getElementById("vfx-play-preview");
     const testInGameBtn = document.getElementById("vfx-test-in-game");
   const followChk = document.getElementById("vfx-timeline-follow");
+    const autoKeyframeChk = document.getElementById("vfx-auto-keyframe");
 
     if (previewBtn) {
       previewBtn.addEventListener("click", () => {
@@ -693,6 +706,13 @@ export class Editor {
       followChk.checked = true;
       followChk.addEventListener("change", () => {
         vfx.timeline.follow = !!followChk.checked;
+      });
+    }
+
+    if (autoKeyframeChk) {
+      autoKeyframeChk.checked = !!vfx.timeline.autoKeyframe;
+      autoKeyframeChk.addEventListener("change", () => {
+        vfx.timeline.autoKeyframe = !!autoKeyframeChk.checked;
       });
     }
 
