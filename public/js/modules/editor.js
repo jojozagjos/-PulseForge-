@@ -3328,6 +3328,9 @@ export class Editor {
       const yCenter = n.tMs * pxPerMs - this.scrollY;
       const yHead   = Math.floor(yCenter - headH / 2);  // top of head from center
 
+      // Head flash when its center is near the playhead (used by both head and tail logic)
+      const flash = Math.abs(n.tMs - now) <= flashWindow;
+
       // Hold body extends *after* the head (downwards)
       if (n.dMs && n.dMs > 0) {
         const len = Math.max(6, n.dMs * pxPerMs);
@@ -3338,8 +3341,7 @@ export class Editor {
         this._roundRect(ctx, x + (headW - stemW) / 2, yHead + headH - 2, stemW, len, Math.min(6 * this.zoomY, stemW/2), true);
       }
 
-      // flash head when its *center* is near playhead
-      const flash = Math.abs(n.tMs - now) <= flashWindow;
+      // flash head when its *center* is near playhead (computed above)
   // VFX preview: per-lane note colors if enabled (shape stays normal; VFX easing shapes do NOT affect chart notes)
       let headColor = this.colors.noteHead;
       if (this.vfx?.previewEnabled) {
