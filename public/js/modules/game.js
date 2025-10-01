@@ -192,14 +192,34 @@ export class Game {
     if (!this.vfx) return null;
     const kfs = this.vfx.keyframes?.[property];
     if (!Array.isArray(kfs) || !kfs.length) {
-      // default from properties
+      // default from properties (no keyframes)
       const parts = property.split('.');
       let v = this.vfx.props;
       for (const p of parts) { if (v==null) return null; v = v[p]; }
       return v;
     }
     const arr = kfs.slice().sort((a,b)=>a.time-b.time);
-    if (timeMs <= arr[0].time) return arr[0].value;
+    if (timeMs <= arr[0].time) {
+      const first = arr[0];
+      // Starting value at t=0 comes from default properties unless a kf is at t=0
+      let startVal;
+      if (first && Math.abs(first.time) < 1) startVal = first.value; else {
+        const parts = property.split('.');
+        let v = this.vfx.props; for (const p of parts) { if (v==null) { v = null; break; } v = v[p]; }
+        startVal = v;
+      }
+      if (timeMs <= 0) return startVal;
+      if (first.time <= 0) return first.value;
+      const dur = Math.max(1, first.time);
+      const t = Math.max(0, Math.min(1, timeMs / dur));
+      const ez = this._vfxUnpack(first.easing || "linear");
+      const fn = this._vfxEaseFn(ez.curve, ez.style);
+      const f = fn(t);
+      if (typeof startVal === 'number' && typeof first.value === 'number') return startVal + (first.value - startVal) * f;
+      if (typeof startVal === 'string' && /^#/.test(startVal) && typeof first.value === 'string') return this._vfxInterpolateColor(startVal, first.value, f);
+      if (typeof startVal === 'boolean') return f < 0.5 ? startVal : first.value;
+      return f < 0.5 ? startVal : first.value;
+    }
     if (timeMs >= arr[arr.length-1].time) return arr[arr.length-1].value;
     let a = arr[0], b = arr[1];
     for (let i=0;i<arr.length-1;i++){ if (timeMs >= arr[i].time && timeMs <= arr[i+1].time) { a = arr[i]; b = arr[i+1]; break; } }

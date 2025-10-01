@@ -363,6 +363,8 @@ export class Editor {
           vfx.timeline.lastPropByCategory[cat] = pick;
           try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${pick}`; } catch {}
         }
+        // Ensure prop chooser options reflect this category
+        try { this._ensureVfxPropChooser(vfx); } catch {}
         // Ensure canvas sized and redraw
         this._resizeVFXCanvas(vfx);
         this._updateVFXTimeline(vfx);
@@ -401,7 +403,10 @@ export class Editor {
         vfx.timeline.lastPropByCategory[cat] = pick;
         try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${pick}`; } catch {}
       }
-    } catch {}
+  } catch {}
+
+  // Create property chooser UI (compact dropdown) for quick timeline switching
+  try { this._ensureVfxPropChooser(vfx); } catch {}
 
     // Wire property controls with live updates
     this._wireVFXProperty("vfx-bg-color1", "background.color1", vfx);
@@ -1087,13 +1092,15 @@ export class Editor {
     const timelineWidth = rect.width - 40;
     const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
     const leftTime = vfx.timeline.offsetMs || 0;
+    const baselineY = rect.height / 2;
+    const amp = Math.max(8, Math.min(16, Math.floor(rect.height * 0.14))); // fixed amplitude for visibility
 
     // Draw ghost default keyframe at t=0 if no kf at 0
     try {
       const hasZero = keyframes.some(k => Math.abs(k.time - 0) < 1e-3);
       if (!hasZero) {
         const x0 = 20 + ((0 - leftTime) * pixelsPerMs);
-        const y0 = rect.height / 2;
+        const y0 = baselineY;
         if (x0 >= 20 && x0 <= rect.width - 20) {
           ctx.save();
           ctx.globalAlpha = 0.45;
@@ -1102,6 +1109,28 @@ export class Editor {
         }
       }
     } catch {}
+
+    // Pre-first easing: draw from t=0 default to the first keyframe using first keyframe's easing
+    let selectedSegIndex = (vfx.timeline.selectedKeyframe?.property === property) ? (vfx.timeline.selectedKeyframe?.index ?? -1) : -1;
+    if (keyframes.length > 0) {
+      const first = keyframes[0];
+      if (first && first.time > 0) {
+        const xStart = 20 + ((0 - leftTime) * pixelsPerMs);
+        const xEnd = 20 + ((first.time - leftTime) * pixelsPerMs);
+        // Clip to visible area and sample partial segment if needed
+        const segL = Math.max(20, Math.min(rect.width - 20, Math.min(xStart, xEnd)));
+        const segR = Math.max(20, Math.min(rect.width - 20, Math.max(xStart, xEnd)));
+        if (segR - segL > 2) {
+          const totalW = Math.max(1, xEnd - xStart);
+          const tStart = Math.max(0, Math.min(1, (segL - xStart) / totalW));
+          const tEnd = Math.max(0, Math.min(1, (segR - xStart) / totalW));
+          const ez = this._unpackEasing(first.easing || "linear");
+          const color = this._easingStrokeFor(ez.curve);
+          const highlight = (selectedSegIndex === 0); // if first kf selected, highlight pre-first
+          this._drawEasingPolyline(ctx, segL, segR, baselineY, first.easing || "linear", amp, tStart, tEnd, { color, highlight });
+        }
+      }
+    }
 
     keyframes.forEach((keyframe, index) => {
       const x = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
@@ -1117,12 +1146,21 @@ export class Editor {
                       vfx.timeline.hoverKeyframe?.index === index;
       this._drawKeyframeMarker(ctx, x, y, keyframe.easing, { selected: isSelected, hover: isHover });
 
-      // Draw easing indicator
+      // Draw easing polyline segment for this range (start->next) using start's easing
       if (index < keyframes.length - 1) {
         const nextKeyframe = keyframes[index + 1];
         const nextX = 20 + ((nextKeyframe.time - leftTime) * pixelsPerMs);
-        
-        this._drawEasingCurve(ctx, x, y, nextX, y, keyframe.easing);
+        const segL = Math.max(20, Math.min(rect.width - 20, Math.min(x, nextX)));
+        const segR = Math.max(20, Math.min(rect.width - 20, Math.max(x, nextX)));
+        if (segR - segL > 2) {
+          const totalW = Math.max(1, nextX - x);
+          const tStart = Math.max(0, Math.min(1, (segL - x) / totalW));
+          const tEnd = Math.max(0, Math.min(1, (segR - x) / totalW));
+          const ez = this._unpackEasing(keyframe.easing || "linear");
+          const color = this._easingStrokeFor(ez.curve);
+          const highlight = (selectedSegIndex === index);
+          this._drawEasingPolyline(ctx, segL, segR, baselineY, keyframe.easing || "linear", amp, tStart, tEnd, { color, highlight });
+        }
       }
 
       // Diff vs previous
@@ -1150,6 +1188,10 @@ export class Editor {
         const d = this._formatVFXDelta(property, prev, keyframe.value);
         if (d && d.text) label += `  (Δ ${d.text})`;
         this._drawTooltip(ctx, x, y - 18, label);
+        if (isSelected) {
+          const ez = this._unpackEasing(keyframe.easing || "linear");
+          this._drawEasingBadge(ctx, x, y - 40, ez.curve, ez.style);
+        }
       }
     });
 
@@ -1182,6 +1224,7 @@ export class Editor {
     ctx.strokeStyle = baseStroke;
     ctx.lineWidth = 2;
     const r = 7;
+    if (selected) { ctx.save(); ctx.shadowColor = baseFill; ctx.shadowBlur = 14; }
 
     const drawTriUp = () => { ctx.beginPath(); ctx.moveTo(x, y - r); ctx.lineTo(x + r, y + r); ctx.lineTo(x - r, y + r); ctx.closePath(); ctx.fill(); ctx.stroke(); };
     const drawTriDown = () => { ctx.beginPath(); ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y - r); ctx.lineTo(x, y + r); ctx.closePath(); ctx.fill(); ctx.stroke(); };
@@ -1192,8 +1235,8 @@ export class Editor {
     const drawHex = () => { this._drawPolygon(ctx, x, y, r, 6); };
     const drawNotch = () => { const w=r*2, h=r*1.6, rx=x-w/2, ry=y-h/2; ctx.beginPath(); ctx.moveTo(rx + w*0.1, ry); ctx.lineTo(rx + w*0.9, ry); ctx.lineTo(rx + w, ry + h*0.6); ctx.lineTo(rx + w*0.5, ry + h); ctx.lineTo(rx, ry + h*0.6); ctx.closePath(); ctx.fill(); ctx.stroke(); };
 
-    if (c === "linear") return drawCircle();
-    if (c === "instant") { ctx.save(); ctx.fillStyle = baseFill; ctx.strokeStyle = baseStroke; ctx.beginPath(); ctx.rect(x - r, y - r, r*2, r*2); ctx.fill(); ctx.stroke(); ctx.restore(); return; }
+  if (c === "linear") { drawCircle(); if (selected) ctx.restore(); return; }
+  if (c === "instant") { ctx.save(); ctx.fillStyle = baseFill; ctx.strokeStyle = baseStroke; ctx.beginPath(); ctx.rect(x - r, y - r, r*2, r*2); ctx.fill(); ctx.stroke(); ctx.restore(); if (selected) ctx.restore(); return; }
     if (c === "quad" || c === "cubic") {
       if (s === "in") return drawTriUp();
       if (s === "out") return drawTriDown();
@@ -1204,7 +1247,9 @@ export class Editor {
     if (c === "elastic") return drawHex();
     if (c === "back") return drawNotch();
     if (c === "bezier") return drawDiamond();
-    return drawCircle();
+    const ret = drawCircle();
+    if (selected) ctx.restore();
+    return ret;
   }
 
   _formatVFXDelta(property, prev, curr) {
@@ -1274,6 +1319,124 @@ export class Editor {
     }
 
     ctx.stroke();
+  }
+
+  // Draw a sampled easing polyline bulging above/below the baseline to visualize curve shape
+  _drawEasingPolyline(ctx, x1, x2, baselineY, easing, amplitude = 12, tStart = 0, tEnd = 1, opts = {}) {
+    if (x2 <= x1) return;
+    const { curve, style } = this._unpackEasing(easing || "linear");
+    // pick easing function using existing table
+    let fn;
+    if (curve === "linear") fn = this._easingFunctions.linear();
+    else if (curve === "instant") fn = () => 0; // renders flat to start; still shows step-like line
+    else if (curve === "bezier") fn = this._easingFunctions.bezier();
+    else fn = this._easingFunctions[curve]?.[style || "inOut"] || this._easingFunctions.cubic.inOut;
+
+    // Sample N points between tStart..tEnd and map to screen x-range
+    const N = Math.max(8, Math.min(48, Math.floor((x2 - x1) / 10))); // density by pixel width
+    const dx = (x2 - x1) / N;
+    ctx.save();
+    const highlight = !!opts.highlight;
+    const color = opts.color || "rgba(37,244,238,0.55)";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = highlight ? 3 : 2;
+    if (highlight) { ctx.shadowColor = color; ctx.shadowBlur = 10; }
+    ctx.beginPath();
+    for (let i = 0; i <= N; i++) {
+      const x = x1 + dx * i;
+      const t = tStart + (tEnd - tStart) * (i / N);
+      const f = fn(Math.max(0, Math.min(1, t))); // easing sample
+      // Compare with linear to get signed bulge: positive -> above baseline, negative -> below
+      const lin = t;
+      const bulge = (f - lin) * 2; // exaggerate a bit
+      const y = baselineY - bulge * amplitude;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  _easingStrokeFor(curve) {
+    // Color-code by curve
+    const map = {
+      linear: "#25F4EE",
+      quad:   "#FFB703",
+      cubic:  "#8A5CFF",
+      quart:  "#FF7F50",
+      quint:  "#C8FF4D",
+      sine:   "#00D1B2",
+      expo:   "#FF2E88",
+      circ:   "#47A3FF",
+      back:   "#FF9F43",
+      elastic:"#6EE7FF",
+      bounce: "#F472B6",
+      bezier: "#9BB0C9"
+    };
+    return map[curve] || "#25F4EE";
+  }
+
+  _drawEasingBadge(ctx, x, y, curve, style) {
+    const txt = `${curve} • ${style || "inOut"}`;
+    ctx.save();
+    ctx.font = "10px Inter, system-ui";
+    const padX = 6, padY = 4;
+    const w = Math.ceil(ctx.measureText(txt).width) + padX * 2;
+    const h = 16;
+    const rx = Math.round(x - w / 2);
+    const ry = Math.max(6, y - h);
+    const color = this._easingStrokeFor(curve);
+    ctx.fillStyle = "rgba(0,0,0,0.65)";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(rx, ry, w, h, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#e7f0ff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(txt, rx + w / 2, ry + h / 2);
+    ctx.restore();
+  }
+
+  _ensureVfxPropChooser(vfx) {
+    const activeLabel = document.getElementById('vfx-active-prop');
+    if (!activeLabel || !activeLabel.parentNode) return;
+    let sel = document.getElementById('vfx-prop-chooser');
+    const parent = activeLabel.parentNode;
+    const cat = vfx.timeline.currentCategory || 'background';
+    const props = this._getVFXPropertiesByCategory(cat) || [];
+    if (!sel) {
+      sel = document.createElement('select');
+      sel.id = 'vfx-prop-chooser';
+      sel.title = 'Choose property timeline';
+      sel.style.marginLeft = '8px';
+      sel.style.background = '#0d111a';
+      sel.style.border = '1px solid #2a3142';
+      sel.style.color = '#e7f0ff';
+      sel.style.borderRadius = '6px';
+      sel.style.padding = '2px 6px';
+      sel.style.fontSize = '12px';
+      parent.insertBefore(sel, activeLabel);
+      sel.addEventListener('change', () => {
+        const val = sel.value;
+        if (!val) return;
+        vfx.timeline.currentProperty = val;
+        vfx.timeline.lastChangedProperty = val;
+        try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${val}`; } catch {}
+        this._updateVFXTimeline(vfx);
+      });
+    }
+    // refresh options
+    sel.innerHTML = '';
+    for (const p of props) {
+      const opt = document.createElement('option');
+      opt.value = p.value;
+      opt.textContent = p.label;
+      sel.appendChild(opt);
+    }
+    const cur = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
+    sel.value = props.find(pp => pp.value === cur) ? cur : (props[0]?.value || '');
   }
 
   _drawVFXPlayhead(ctx, rect, vfx) {
@@ -1724,18 +1887,50 @@ export class Editor {
     // Get current VFX property value at specified time
     _getVFXPropertyAtTime(property, time, vfx) {
       const keyframes = vfx.keyframes[property];
-      if (!keyframes || keyframes.length === 0) {
-        // No keyframes: use current live value
+      if (!Array.isArray(keyframes) || keyframes.length === 0) {
+        // No keyframes: use live value (so editor controls preview)
         return this._getCurrentVFXPropertyValue(property, vfx);
       }
-      // Has keyframes: before the first keyframe, use the property's default unless a kf exists at t=0
-      try {
-        const first = keyframes[0];
-        if (time < first.time) {
+      // Ensure sorted by time
+      keyframes.sort((a,b)=>a.time-b.time);
+      const first = keyframes[0];
+      // If we're before the first keyframe, ease from the default-at-0 to the first keyframe value
+      if (time <= first.time) {
+        // Default at 0 unless a keyframe exists at t=0
+        let startVal;
+        if (first && Math.abs(first.time) < 1) {
+          startVal = first.value; // exact t=0 keyframe is the start
+        } else {
           const def = this._defaultVFXFor(property);
-          return (def !== undefined) ? def : this._getCurrentVFXPropertyValue(property, vfx);
+          startVal = (def !== undefined) ? def : this._getCurrentVFXPropertyValue(property, vfx);
         }
-      } catch {}
+
+        // Edge cases
+        if (time <= 0) return startVal;
+        if (first.time <= 0) return first.value;
+
+        // Interpolate using the first keyframe's easing
+        const duration = first.time - 0;
+        const t = Math.max(0, Math.min(1, time / duration));
+        const ez = this._unpackEasing(first.easing || "linear");
+        let fn;
+        if (ez.curve === "linear") fn = this._easingFunctions.linear();
+        else if (ez.curve === "instant") fn = () => 0;
+        else if (ez.curve === "bezier") fn = this._easingFunctions.bezier();
+        else fn = this._easingFunctions[ez.curve]?.[ez.style || "inOut"] || this._easingFunctions.cubic.inOut;
+        const factor = fn(t);
+
+        if (typeof startVal === "number" && typeof first.value === "number") {
+          return startVal + (first.value - startVal) * factor;
+        } else if (typeof startVal === "string" && /^#/.test(startVal) && typeof first.value === "string") {
+          return this._interpolateColor(startVal, first.value, factor);
+        } else if (typeof startVal === "boolean") {
+          return factor < 0.5 ? startVal : first.value;
+        }
+        // Fallback for other types
+        return factor < 0.5 ? startVal : first.value;
+      }
+      // Otherwise, standard interpolation between surrounding keyframes
       return this._interpolateVFXValue(keyframes, time);
     }
 
