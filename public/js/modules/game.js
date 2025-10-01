@@ -1212,32 +1212,11 @@ export class Game {
             if (!head.__pfFade) this._beginFadeOut(head, head.__pfFadeRate, false);
           }
 
-          // Depth effect: simple proximity scaling near judge (2.5D feel)
-          let sx = 1;
-          try {
-            const centerY = y + (head?.height || 0) / 2;
-            const dist = Math.abs(this.judgeY - centerY);
-            const laneSpan = Math.max(1, this._laneHeight); // pixels
-            const closeness = Math.max(0, Math.min(1, 1 - (dist / laneSpan)));
-            // up to +20% scale at the judge line
-            sx = 1 + closeness * 0.2;
-          } catch {}
-          if (head) {
-            head.scale.x = sx;
-            const baseW = head.__pfBaseW || head.width;
-            head.x = (baseW - baseW * sx) / 2;
-          }
-          if (gloss) {
-            gloss.scale.x = sx;
-            const baseW = gloss.__pfBaseW || head?.__pfBaseW || gloss.width;
-            gloss.x = (baseW - baseW * sx) / 2;
-          }
-          if (body) {
-            const baseW = body.__pfBaseW || 12;
-            body.scale.x = sx;
-            const stemX = body.__pfStemX || ((head?.__pfBaseW || head?.width || this.laneWidth) - baseW) / 2;
-            body.x = stemX + (baseW - baseW * sx) / 2;
-          }
+          // Remove proximity-based horizontal scaling near the judge line.
+          // Keep note visuals at a constant size (no growth as they approach the judge).
+          if (head) { head.scale.x = 1; head.x = 0; }
+          if (gloss) { gloss.scale.x = 1; gloss.x = 0; }
+          if (body) { body.scale.x = 1; body.x = (body.__pfStemX || ((head?.__pfBaseW || head?.width || this.laneWidth) - (body.__pfBaseW || 12)) / 2); }
 
           // Per-frame fading
           if (head.parent && head.__pfFade) {

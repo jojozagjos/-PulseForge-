@@ -65,6 +65,7 @@ export class Editor {
     this.playing = false;
     this.playStartCtxTime = 0; // AudioContext time when current run started
     this.playStartMs = 0;      // Musical offset for the current run (ms)
+  this.playbackSpeed = 1.0;  // Playback speed multiplier
 
     // Metronome
     this.metronome = { enabled: false, lookaheadMs: 120, nextBeatMs: 0, timer: null };
@@ -188,7 +189,6 @@ export class Editor {
       // Current timeline state
       timeline: {
         currentProperty: "background.color1",
-          currentProperty: "camera.rotateZ",
         easingCurve: "linear",   // linear|quad|cubic|quart|quint|sine|expo|circ|back|elastic|bounce|bezier|instant
         easingStyle: "inOut",    // in|out|inOut (ignored for instant/linear/bezier)
   zoom: 1.0,
@@ -226,7 +226,7 @@ export class Editor {
   camera: { x: 0, y: 0, z: 0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
   // Removed 3D Depth slider; 2.5D comes from Rotate X/Y only
   notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0, trails: false },
-      lanes: { opacity: 100, pulsing: false, glow: 0 }
+  lanes: { opacity: 100 }
     });
     const makeDefaultSet = () => ({ data: makeDefaultData(), keyframes: {} });
     vfx._sets = {
@@ -272,9 +272,15 @@ export class Editor {
       }
     } catch {}
 
-    // Default preview on so changes are visible immediately
-    vfx.previewEnabled = true;
-    try { const btn = document.getElementById("vfx-play-preview"); if (btn) btn.textContent = "Preview: On"; } catch {}
+    // Default preview OFF so editor starts without VFX affecting the canvas
+    vfx.previewEnabled = false;
+    try {
+      const btn = document.getElementById("vfx-play-preview");
+      if (btn) btn.textContent = "Preview: Off";
+      // When global preview is off, also force camera preview off/disabled
+      const camPrev = document.getElementById("vfx-preview-camera");
+      if (camPrev) { vfx.previewCamera = false; camPrev.checked = false; camPrev.disabled = true; }
+    } catch {}
     return vfx;
   }
 
@@ -369,6 +375,31 @@ export class Editor {
       defaultTab?.classList.add('active');
       defaultPanel?.classList.add('active');
     }
+    // Initialize currentCategory/currentProperty to match the active tab (Background by default)
+    try {
+      const activePanel = document.querySelector('.vfx-category.active');
+      const cat = activePanel?.getAttribute('data-vfx-category') || 'background';
+      vfx.timeline.currentCategory = cat;
+      // Seed sensible defaults so jumping categories is stable
+      if (!vfx.timeline.lastPropByCategory) vfx.timeline.lastPropByCategory = {};
+      vfx.timeline.lastPropByCategory.background = vfx.timeline.lastPropByCategory.background || 'background.color1';
+      vfx.timeline.lastPropByCategory.camera = vfx.timeline.lastPropByCategory.camera || 'camera.rotateZ';
+      vfx.timeline.lastPropByCategory.notes = vfx.timeline.lastPropByCategory.notes || 'notes.colors.1';
+      vfx.timeline.lastPropByCategory.lanes = vfx.timeline.lastPropByCategory.lanes || 'lanes.opacity';
+      // Pick a property for the active category
+      const props = this._getVFXPropertiesByCategory(cat) || [];
+      const remembered = vfx.timeline.lastPropByCategory[cat];
+      const inList = (p) => props.some(pp => pp.value === p);
+      let pick = null;
+      if (remembered && inList(remembered)) pick = remembered;
+      if (!pick && props.length) pick = props[0].value;
+      if (pick) {
+        vfx.timeline.currentProperty = pick;
+        vfx.timeline.lastChangedProperty = pick;
+        vfx.timeline.lastPropByCategory[cat] = pick;
+        try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${pick}`; } catch {}
+      }
+    } catch {}
 
     // Wire property controls with live updates
     this._wireVFXProperty("vfx-bg-color1", "background.color1", vfx);
@@ -413,9 +444,7 @@ export class Editor {
     this._wireVFXProperty("vfx-note-size", "notes.size", vfx, "vfx-note-size-value", "x");
     this._wireVFXProperty("vfx-note-trails", "notes.trails", vfx);
 
-    this._wireVFXProperty("vfx-lane-opacity", "lanes.opacity", vfx, "vfx-lane-opacity-value", "%");
-    this._wireVFXProperty("vfx-lane-pulsing", "lanes.pulsing", vfx);
-    this._wireVFXProperty("vfx-lane-glow", "lanes.glow", vfx, "vfx-lane-glow-value", "%");
+  this._wireVFXProperty("vfx-lane-opacity", "lanes.opacity", vfx, "vfx-lane-opacity-value", "%");
 
     // Wire timeline controls
     this._wireVFXTimelineControls(vfx);
@@ -430,7 +459,7 @@ export class Editor {
     if (prop.startsWith('camera.')) return 'camera';
     if (prop.startsWith('view.')) return 'camera'; // view mode grouped with camera category
     if (prop.startsWith('notes.')) return 'notes';
-    if (prop.startsWith('lanes.')) return 'lanes';
+  if (prop.startsWith('lanes.')) return 'lanes';
     return 'background';
   }
 
@@ -447,7 +476,16 @@ export class Editor {
         value = parseFloat(value);
       }
 
-      // Set the value in vfx data
+      // Determine if we're editing a selected keyframe for this property
+      const sel = vfx.timeline.selectedKeyframe;
+      const editingSelected = sel && sel.property === propertyPath && vfx.keyframes[propertyPath]?.[sel.index];
+
+      if (editingSelected) {
+        // Update the selected keyframe's value directly
+        vfx.keyframes[propertyPath][sel.index].value = value;
+      }
+
+      // Always reflect value into live vfx.data so preview updates
       let target = vfx.data;
       for (let i = 0; i < keys.length - 1; i++) {
         target = target[keys[i]];
@@ -462,8 +500,8 @@ export class Editor {
         }
       }
 
-  // Auto-keyframe on change
-  this._autoKeyframe(propertyPath, vfx);
+  // If not editing a selected keyframe, auto-keyframe at playhead
+  if (!editingSelected) this._autoKeyframe(propertyPath, vfx);
   // Track this as the last changed property
   vfx.timeline.lastChangedProperty = propertyPath;
   vfx.timeline.currentProperty = propertyPath; // fallback usage
@@ -471,8 +509,8 @@ export class Editor {
       this._updateVFXTimeline(vfx);
     };
 
-    element.addEventListener("input", updateValue);
-    element.addEventListener("change", updateValue);
+  element.addEventListener("input", updateValue);
+  element.addEventListener("change", updateValue);
     
     // Initialize value display
     if (valueDisplayId) {
@@ -668,9 +706,7 @@ export class Editor {
   'notes.glow': 0,
       'notes.size': 1,
       'notes.trails': false,
-      'lanes.opacity': 100,
-      'lanes.pulsing': false,
-      'lanes.glow': 0,
+  'lanes.opacity': 100,
     };
     return defaults[property];
   }
@@ -1005,8 +1041,6 @@ export class Editor {
       case "lanes":
         return [
           { value: "lanes.opacity", label: "Lane Opacity" },
-          { value: "lanes.pulsing", label: "Lane Pulsing" },
-          { value: "lanes.glow", label: "Lane Glow" },
         ];
       default:
         return [];
@@ -1264,6 +1298,8 @@ export class Editor {
 
   // VFX Timeline Interaction
   _vfxTimelineClick(e, vfx) {
+    // If the last action was a keyframe drag or down-on-keyframe, suppress this click
+    if (vfx._suppressNextClick) { vfx._suppressNextClick = false; return; }
     const rect = vfx.timelineCanvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -1276,19 +1312,23 @@ export class Editor {
   const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
   const leftTime = vfx.timeline.offsetMs || 0;
 
-    let clickedKeyframe = null;
+  let clickedKeyframe = null;
+  const hitR = 10; // enlarge hit radius for easier selection
     
     keyframes.forEach((keyframe, index) => {
   const kfX = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
       const kfY = rect.height / 2;
       
-      if (Math.abs(x - kfX) < 8 && Math.abs(y - kfY) < 8) {
+      if (Math.abs(x - kfX) < hitR && Math.abs(y - kfY) < hitR) {
         clickedKeyframe = { property, index };
       }
     });
 
     if (clickedKeyframe) {
+      // Select keyframe only (do not move playhead on simple click)
       vfx.timeline.selectedKeyframe = clickedKeyframe;
+      // Sync UI controls to the selected keyframe value
+      this._syncSelectedKeyframeToUI(vfx);
     } else {
       // Click on timeline to set playhead
       const timeMs = Math.max(0, Math.min(duration, leftTime + (x - 20) / pixelsPerMs));
@@ -1317,13 +1357,14 @@ export class Editor {
     const leftTime = vfx.timeline.offsetMs || 0;
 
     let hover = null;
+    const hitR = 10;
     keyframes.forEach((kf, index) => {
       const kx = 20 + ((kf.time - leftTime) * pixelsPerMs);
       const ky = rect.height / 2;
-      if (Math.abs(x - kx) < 8 && Math.abs(y - ky) < 8) hover = { property, index };
+      if (Math.abs(x - kx) < hitR && Math.abs(y - ky) < hitR) hover = { property, index };
     });
 
-    const changed = JSON.stringify(hover) !== JSON.stringify(vfx.timeline.hoverKeyframe);
+  const changed = JSON.stringify(hover) !== JSON.stringify(vfx.timeline.hoverKeyframe);
     vfx.timeline.hoverKeyframe = hover;
     if (changed) this._updateVFXTimeline(vfx);
 
@@ -1336,7 +1377,7 @@ export class Editor {
       // Keep view centered as you drag
       this._centerVFXTimelineOnPlayhead(vfx);
       this._updateVFXTimeline(vfx);
-    } else if (vfx._drag && vfx._drag.type === 'keyframe' && vfx._drag.property === property) {
+  } else if (vfx._drag && vfx._drag.type === 'keyframe' && vfx._drag.property === property) {
       // Drag selected keyframe horizontally to change its time
       const idx = vfx._drag.index;
       const moved = vfx._drag.ref || keyframes[idx];
@@ -1347,6 +1388,8 @@ export class Editor {
         keyframes.sort((a,b)=>a.time-b.time);
         const newIdx = keyframes.findIndex(k=>k===moved);
         if (newIdx >= 0) vfx.timeline.selectedKeyframe = { property, index: newIdx };
+        // When moving a keyframe in time, keep UI value synced to that keyframe's current value
+        this._syncSelectedKeyframeToUI(vfx);
         this._updateVFXTimeline(vfx);
       }
     }
@@ -1366,10 +1409,11 @@ export class Editor {
 
     let onKeyframe = false;
     let hitIdx = -1;
+    const hitR = 10;
     for (let i = 0; i < keyframes.length; i++) {
       const kfX = 20 + ((keyframes[i].time - leftTime) * pixelsPerMs);
       const kfY = rect.height / 2;
-      if (Math.abs(x - kfX) < 8 && Math.abs(y - kfY) < 8) { onKeyframe = true; hitIdx = i; break; }
+      if (Math.abs(x - kfX) < hitR && Math.abs(y - kfY) < hitR) { onKeyframe = true; hitIdx = i; break; }
     }
 
     if (!onKeyframe) {
@@ -1381,16 +1425,74 @@ export class Editor {
     } else {
       // Start dragging this keyframe
       vfx.timeline.selectedKeyframe = { property, index: hitIdx };
-      vfx._drag = { type: 'keyframe', property, index: hitIdx, ref: keyframes[hitIdx] };
+      vfx._drag = { type: 'keyframe', property, index: hitIdx, ref: keyframes[hitIdx], wasPlaying: !!this.playing };
+      // Do not pause/resume playhead for keyframe drag; keep transport state unchanged
+      // Suppress the subsequent click so it doesn't seek to mouse-up position
+      vfx._suppressNextClick = true;
+      try { e.preventDefault(); e.stopPropagation(); } catch {}
     }
   }
 
   _vfxTimelineMouseUp(_e, vfx) {
-    if (vfx._drag && (vfx._drag.type === 'playhead' || vfx._drag.type === 'keyframe')) {
-      const resume = vfx._drag.wasPlaying;
-      vfx._drag = null;
-      if (resume) this.play();
+    if (!vfx._drag) return;
+    const drag = vfx._drag;
+    vfx._drag = null;
+    // Only resume playback if we were dragging the playhead
+    if (drag.type === 'playhead' && drag.wasPlaying) this.play();
+    // If dragging a keyframe, do not seek the playhead; leave transport untouched
+    if (drag.type === 'keyframe') { vfx._suppressNextClick = true; }
+  }
+
+  // When a keyframe is selected, update the visible control for that property to match its value
+  _syncSelectedKeyframeToUI(vfx) {
+    const sel = vfx?.timeline?.selectedKeyframe;
+    if (!sel) return;
+    const { property, index } = sel;
+    const kf = vfx.keyframes?.[property]?.[index];
+    if (!kf) return;
+    // Map property to element id like other wiring
+    const id = this._vfxElementIdForProperty(property);
+    if (!id) return;
+    const el = document.getElementById(id);
+    if (!el) return;
+    const val = kf.value;
+    if (el.type === "checkbox") {
+      el.checked = !!val;
+    } else {
+      el.value = val;
     }
+    // If there is a paired value label, update it as well via existing sync
+    this._syncVFXToUI(vfx);
+  }
+
+  _vfxElementIdForProperty(prop) {
+    const map = {
+      'background.color1': 'vfx-bg-color1',
+      'background.color2': 'vfx-bg-color2',
+      'background.gradient': 'vfx-bg-gradient',
+      'background.angle': 'vfx-bg-angle',
+      'background.flashEnable': 'vfx-bg-flash-enable',
+      'background.flashColor': 'vfx-bg-flash-color',
+      'background.flashIntensity': 'vfx-bg-flash-intensity',
+      'background.flashDuration': 'vfx-bg-flash-duration',
+      'camera.x': 'vfx-camera-x',
+      'camera.y': 'vfx-camera-y',
+      'camera.z': 'vfx-camera-z',
+      'camera.rotateX': 'vfx-camera-rotX',
+      'camera.rotateY': 'vfx-camera-rotY',
+      'camera.rotateZ': 'vfx-camera-rotZ',
+      'camera.shakeAmp': 'vfx-camera-shake-amp',
+      'camera.shakeFreq': 'vfx-camera-shake-freq',
+      'notes.colors.1': 'vfx-note-color-1',
+      'notes.colors.2': 'vfx-note-color-2',
+      'notes.colors.3': 'vfx-note-color-3',
+      'notes.colors.4': 'vfx-note-color-4',
+      'notes.glow': 'vfx-note-glow',
+      'notes.size': 'vfx-note-size',
+      'notes.trails': 'vfx-note-trails',
+      'lanes.opacity': 'vfx-lane-opacity'
+    };
+    return map[prop] || null;
   }
 
   // Center the visible window on the playhead time
@@ -1916,17 +2018,11 @@ export class Editor {
     if (noteTrails) noteTrails.checked = vfx.data.notes.trails;
 
     // Lane effects
-    const laneOpacity = document.getElementById("vfx-lane-opacity");
-    const laneOpacityValue = document.getElementById("vfx-lane-opacity-value");
-    const lanePulsing = document.getElementById("vfx-lane-pulsing");
-    const laneGlow = document.getElementById("vfx-lane-glow");
-    const laneGlowValue = document.getElementById("vfx-lane-glow-value");
+  const laneOpacity = document.getElementById("vfx-lane-opacity");
+  const laneOpacityValue = document.getElementById("vfx-lane-opacity-value");
     
-    if (laneOpacity) laneOpacity.value = vfx.data.lanes.opacity;
-    if (laneOpacityValue) laneOpacityValue.textContent = vfx.data.lanes.opacity + "%";
-    if (lanePulsing) lanePulsing.checked = vfx.data.lanes.pulsing;
-    if (laneGlow) laneGlow.value = vfx.data.lanes.glow;
-    if (laneGlowValue) laneGlowValue.textContent = vfx.data.lanes.glow + "%";
+  if (laneOpacity) laneOpacity.value = vfx.data.lanes.opacity;
+  if (laneOpacityValue) laneOpacityValue.textContent = vfx.data.lanes.opacity + "%";
   }
 
   // ===== History (Undo/Redo) =====
@@ -2063,6 +2159,28 @@ export class Editor {
     this._wireFollowToggle();
     this._wireMetronomeControl();
     this._wireZoomIndicator();
+    // Wire speed slider if present
+    try {
+      const speedEl = document.getElementById("ed-speed");
+      const speedLbl = document.getElementById("ed-speed-indicator");
+      if (speedEl) {
+        const apply = () => {
+          const v = Math.max(0.25, Math.min(1.5, Number(speedEl.value) || 1));
+          this.playbackSpeed = v;
+          if (speedLbl) speedLbl.textContent = v.toFixed(2) + "x";
+          // If currently playing, restart source at new rate preserving musical position
+          if (this.playing) {
+            const cur = this.currentTimeMs();
+            this._stopSourceOnly();
+            this.playStartMs = cur;
+            this.play();
+          }
+        };
+        speedEl.addEventListener("input", apply);
+        speedEl.addEventListener("change", apply);
+        apply();
+      }
+    } catch {}
     this._wireTestButton();
     this._wireHistoryButtons();
     this._help("Blank chart ready. Use Audio or File to load assets.");
@@ -2444,7 +2562,7 @@ export class Editor {
     if (!this.playing) return this.playStartMs;
     if (!this.audioCtx || this.audioCtx.state === "closed") return this.playStartMs;
     const delta = (this.audioCtx.currentTime - this.playStartCtxTime) * 1000;
-    return Math.max(0, this.playStartMs + delta);
+    return Math.max(0, this.playStartMs + delta * (this.playbackSpeed || 1));
   }
 
   play() {
@@ -2463,10 +2581,11 @@ export class Editor {
     const startMs = Math.max(0, Math.min(this.playStartMs, this.chart.durationMs));
     const offset = startMs / 1000;
 
-    this.audioSource = this.audioCtx.createBufferSource();
+  this.audioSource = this.audioCtx.createBufferSource();
     this.audioSource.buffer = this.audioBuffer;
     this.audioSource.connect(this.masterGain);
-    this.audioSource.start(0, offset);
+  try { this.audioSource.playbackRate.value = Math.max(0.25, Math.min(2.0, this.playbackSpeed || 1)); } catch {}
+  this.audioSource.start(0, offset);
 
     this.playStartCtxTime = this.audioCtx.currentTime;
     this.playStartMs = startMs;
@@ -3231,28 +3350,17 @@ export class Editor {
         if (typeof useVal === 'string' && /^#/.test(useVal)) headColor = useVal;
       }
       // Note size & glow previews
-      let noteSize = 1;
-      let glowPx = 0;
-  // Depth effect: minimal preview scaling near judge (fixed small amount)
-      let perspScaleX = 1;
+    let noteSize = 1;
+    let glowPx = 0;
+    // No proximity-based growth near judge; keep constant size.
+    let perspScaleX = 1;
       if (this.vfx?.previewEnabled) {
         try {
           const tNow = this.currentTimeMs();
           noteSize = Number(this._getVFXPropertyAtTime('notes.size', tNow, this.vfx) ?? this.vfx?.data?.notes?.size ?? 1);
           const glowPct = Number(this._getVFXPropertyAtTime('notes.glow', tNow, this.vfx) ?? this.vfx?.data?.notes?.glow ?? 0);
           glowPx = Math.max(0, Math.min(30, (glowPct / 100) * 20));
-          const legacyMode = (this._getVFXPropertyAtTime('view.mode', tNow, this.vfx) || this.vfx?.data?.view?.mode);
-          const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
-          const amountPct = 0;
-          const amt = Math.max(0, Math.min(1, amountPct / 100));
-          if (amt > 0) {
-            const centerY = cyh; // note center
-            const dist = Math.abs((this.currentTimeMs() * pxPerMs - this.scrollY) - centerY);
-            const laneSpan = Math.max(1, h - 32);
-            const closeness = Math.max(0, Math.min(1, 1 - (dist / laneSpan)));
-            // use same factor for x/y scaling here (perspScaleX only names; we apply uniform scale below)
-            perspScaleX = 1 + closeness * 0.25 * amt;
-          }
+          // Removed proximity scaling: keep perspScaleX at 1 for consistent size.
         } catch {}
       }
       ctx.fillStyle   = flash ? "#ffffff" : headColor;
@@ -3317,8 +3425,6 @@ export class Editor {
         }
       } catch {}
     }
-
-  // Removed canvas TOP/BOTTOM markers; now shown on VFX timeline instead
 
     // --- Gap badges for selected notes (same-lane Δprev/Δnext) ---
     ctx.font = "11px ui-sans-serif, system-ui";
