@@ -487,6 +487,22 @@ export class Editor {
       }
       target[keys[keys.length - 1]] = value;
 
+      // Live preview while editing: temporarily force preview on
+      try {
+        vfx._livePreviewActive = true;
+        // If adjusting a camera property, also force camera preview temporarily
+        if (propertyPath.startsWith('camera.')) {
+          vfx._livePreviewCameraActive = true;
+        }
+        if (vfx._livePreviewTimer) clearTimeout(vfx._livePreviewTimer);
+        vfx._livePreviewTimer = setTimeout(() => {
+          vfx._livePreviewActive = false;
+          vfx._livePreviewCameraActive = false;
+          // One more refresh to settle back to non-preview state
+          this._updateVFXTimeline(vfx);
+        }, 600);
+      } catch {}
+
       // Update value display if provided
       if (valueDisplayId) {
         const display = document.getElementById(valueDisplayId);
@@ -3116,7 +3132,9 @@ export class Editor {
     const h = this.canvas.height / (window.devicePixelRatio || 1);
 
     // bg (optionally overridden by VFX preview)
-    if (this.vfx?.previewEnabled) {
+    const previewOn = !!this.vfx?.previewEnabled;
+    const livePreview = previewOn && !!this.vfx?._livePreviewActive; // only honor live preview if global preview is ON
+    if (previewOn) {
       this._drawEditorVfxBackground(ctx, w, h);
     } else {
       ctx.fillStyle = this.colors.bg;
@@ -3133,7 +3151,8 @@ export class Editor {
 
     // Apply camera transform (preview) around gameplay elements
     let camSaved = false;
-    if (this.vfx?.previewEnabled && this.vfx?.previewCamera) {
+    const liveCam = previewOn && !!this.vfx?._livePreviewCameraActive; // only honor camera live preview if global preview is ON
+    if (previewOn && (this.vfx?.previewCamera || liveCam)) {
       try {
         const t = this.currentTimeMs();
         let cx = Number(this._getVFXPropertyAtTime('camera.x', t, this.vfx) ?? this.vfx?.data?.camera?.x ?? 0);
@@ -3174,7 +3193,7 @@ export class Editor {
 
     // If VFX preview is enabled, apply lane opacity to backboards
     let saved = false;
-    if (this.vfx?.previewEnabled) {
+    if (previewOn) {
       try {
         const t = this.currentTimeMs();
         const op = Number(this._getVFXPropertyAtTime('lanes.opacity', t, this.vfx) ?? this.vfx?.data?.lanes?.opacity ?? 100);
@@ -3185,7 +3204,7 @@ export class Editor {
 
   // 2.5D preview uses Rotate X/Y only; no view.amount
   let viewBlend = 0;
-  if (this.vfx?.previewEnabled) {
+  if (previewOn) {
     const legacyMode = (this._getVFXPropertyAtTime('view.mode', this.currentTimeMs(), this.vfx) || this.vfx?.data?.view?.mode);
     const legacyBoost = (String(legacyMode).toUpperCase()==='3D') ? 100 : 0;
   const viewAmtPct = 0;
@@ -3293,7 +3312,7 @@ export class Editor {
 
     // Precompute per-lane colors once this frame (if VFX preview is on)
     let laneColors = null;
-    if (this.vfx?.previewEnabled) {
+    if (previewOn) {
       laneColors = new Array(L);
       const tNow = this.currentTimeMs();
       for (let li = 0; li < L; li++) {
@@ -3306,7 +3325,7 @@ export class Editor {
     // Precompute note size and glow once per frame
     let noteSizeGlobal = 1;
     let glowPxGlobal = 0;
-    if (this.vfx?.previewEnabled) {
+    if (previewOn) {
       try {
         const tNow = this.currentTimeMs();
         noteSizeGlobal = Number(this._getVFXPropertyAtTime('notes.size', tNow, this.vfx) ?? this.vfx?.data?.notes?.size ?? 1);
@@ -3358,23 +3377,23 @@ export class Editor {
       }
 
       // flash head when its *center* is near playhead (computed above)
-  // VFX preview: per-lane note colors if enabled (shape stays normal; VFX easing shapes do NOT affect chart notes)
+      // VFX preview: per-lane note colors if enabled (shape stays normal; VFX easing shapes do NOT affect chart notes)
       let headColor = this.colors.noteHead;
       if (laneColors) headColor = laneColors[n.lane];
       // Note size & glow previews
-    let noteSize = noteSizeGlobal;
-    let glowPx = glowPxGlobal;
-    // No proximity-based growth near judge; keep constant size.
-    let perspScaleX = 1;
-  // Turn the head white if playhead is at head center OR anywhere along its tail
-  const isOnTail = (n.dMs && n.dMs > 0 && now >= n.tMs && now <= (n.tMs + n.dMs));
-  const headWhite = flashHead || isOnTail;
-  ctx.fillStyle   = headWhite ? "#ffffff" : headColor;
-  ctx.strokeStyle = headWhite ? "#ffffff" : this.colors.noteHeadStroke;
+      let noteSize = noteSizeGlobal;
+      let glowPx = glowPxGlobal;
+      // No proximity-based growth near judge; keep constant size.
+      let perspScaleX = 1;
+      // Turn the head white if playhead is at head center OR anywhere along its tail
+      const isOnTail = (n.dMs && n.dMs > 0 && now >= n.tMs && now <= (n.tMs + n.dMs));
+      const headWhite = flashHead || isOnTail;
+      ctx.fillStyle   = headWhite ? "#ffffff" : headColor;
+      ctx.strokeStyle = headWhite ? "#ffffff" : this.colors.noteHeadStroke;
       ctx.lineWidth = 2;
       // Always draw normal round note heads; apply size scale + glow
       ctx.save();
-      if (glowPx > 0 && !flash) { ctx.shadowBlur = glowPx; ctx.shadowColor = headColor; }
+  if (glowPx > 0 && !headWhite) { ctx.shadowBlur = glowPx; ctx.shadowColor = headColor; }
       // draw centered with scale
       const cxh = x + headW/2;
       const cyh = yHead + headH/2;
