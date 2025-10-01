@@ -252,7 +252,9 @@ export class Editor {
 
     // Listen for tab activation to resize and refresh VFX UI
     window.addEventListener("pf-editor-tab-activated", (e) => {
-      if (e?.detail?.tab === "vfx") {
+      // Track whether VFX tab is active to avoid querying every frame
+      vfx._tabActive = (e?.detail?.tab === "vfx");
+      if (vfx._tabActive) {
         this._resizeVFXCanvas(vfx);
         this._updateVFXTimeline(vfx);
       }
@@ -840,8 +842,9 @@ export class Editor {
     } else {
       // Add new keyframe and sort by time
       vfx.keyframes[property].push({ time, value, easing });
-      vfx.keyframes[property].sort((a, b) => a.time - b.time);
     }
+    // Ensure sorted once after mutation
+    vfx.keyframes[property].sort((a, b) => a.time - b.time);
 
     // Select the just-added/updated keyframe and set property context
     vfx.timeline.lastChangedProperty = property;
@@ -877,8 +880,8 @@ export class Editor {
     if (!keyframe) return;
 
     const newKeyframe = { ...keyframe, time: keyframe.time + 1000 }; // Add 1 second offset
-    vfx.keyframes[property].push(newKeyframe);
-    vfx.keyframes[property].sort((a, b) => a.time - b.time);
+  vfx.keyframes[property].push(newKeyframe);
+  vfx.keyframes[property].sort((a, b) => a.time - b.time);
     
     this._updateVFXTimeline(vfx);
   }
@@ -1345,6 +1348,10 @@ export class Editor {
   }
 
   _vfxTimelineMouseMove(e, vfx) {
+    // Lightweight throttle: bail if a recent frame already handled an identical move
+    const nowTs = performance.now();
+    if (vfx._mmTs && nowTs - vfx._mmTs < 8 && !vfx._drag) return; // ~120Hz cap when not dragging
+    vfx._mmTs = nowTs;
     const rect = vfx.timelineCanvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -1366,7 +1373,7 @@ export class Editor {
 
   const changed = JSON.stringify(hover) !== JSON.stringify(vfx.timeline.hoverKeyframe);
     vfx.timeline.hoverKeyframe = hover;
-    if (changed) this._updateVFXTimeline(vfx);
+  if (changed) this._updateVFXTimeline(vfx);
 
     // Handle dragging of playhead for scrubbing
   if (vfx._drag && vfx._drag.type === 'playhead') {
@@ -1375,8 +1382,12 @@ export class Editor {
       this.playStartMs = timeMs;
       try { const s = document.getElementById(this.ids.scrub); if (s) s.value = String(Math.floor(this.playStartMs)); } catch {}
       // Keep view centered as you drag
-      this._centerVFXTimelineOnPlayhead(vfx);
-      this._updateVFXTimeline(vfx);
+      // Debounce re-centering while scrubbing to reduce layout thrash
+      if (vfx._centerDebounce) cancelAnimationFrame(vfx._centerDebounce);
+      vfx._centerDebounce = requestAnimationFrame(()=>{
+        this._centerVFXTimelineOnPlayhead(vfx);
+        this._updateVFXTimeline(vfx);
+      });
   } else if (vfx._drag && vfx._drag.type === 'keyframe' && vfx._drag.property === property) {
       // Drag selected keyframe horizontally to change its time
       const idx = vfx._drag.index;
@@ -1385,7 +1396,7 @@ export class Editor {
         const newTime = Math.max(0, Math.min(duration, leftTime + (x - 20) / pixelsPerMs));
         moved.time = newTime;
         // Keep keyframes sorted and track the moved index by identity
-        keyframes.sort((a,b)=>a.time-b.time);
+  keyframes.sort((a,b)=>a.time-b.time);
         const newIdx = keyframes.findIndex(k=>k===moved);
         if (newIdx >= 0) vfx.timeline.selectedKeyframe = { property, index: newIdx };
         // When moving a keyframe in time, keep UI value synced to that keyframe's current value
@@ -1642,53 +1653,46 @@ export class Editor {
 
     _interpolateVFXValue(keyframes, time, easing = "linear") {
       if (!keyframes || keyframes.length === 0) return null;
-    
-      // Sort keyframes by time
-      const sorted = [...keyframes].sort((a, b) => a.time - b.time);
-    
-      // If before first keyframe, return first value
-      if (time <= sorted[0].time) return sorted[0].value;
-    
-      // If after last keyframe, return last value
-      if (time >= sorted[sorted.length - 1].time) return sorted[sorted.length - 1].value;
-    
-      // Find the two keyframes to interpolate between
-      let startKf = sorted[0];
-      let endKf = sorted[1];
-    
-      for (let i = 0; i < sorted.length - 1; i++) {
-        if (time >= sorted[i].time && time <= sorted[i + 1].time) {
-          startKf = sorted[i];
-          endKf = sorted[i + 1];
-          break;
-        }
+      const arr = keyframes; // assume sorted by time
+
+      // Before first or after last
+      if (time <= arr[0].time) return arr[0].value;
+      const lastIdx = arr.length - 1;
+      if (time >= arr[lastIdx].time) return arr[lastIdx].value;
+
+      // Binary search to find rightmost keyframe with time <= target
+      let lo = 0, hi = lastIdx;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (arr[mid].time === time) { lo = mid; break; }
+        if (arr[mid].time < time) lo = mid + 1; else hi = mid - 1;
       }
-    
-      // Calculate interpolation factor
+      const endIdx = Math.max(1, Math.min(lastIdx, lo));
+      const startIdx = endIdx - 1;
+      const startKf = arr[startIdx];
+      const endKf = arr[endIdx];
+
       const duration = endKf.time - startKf.time;
-      if (duration === 0) return startKf.value;
-    
+      if (duration <= 0) return startKf.value;
       const t = Math.max(0, Math.min(1, (time - startKf.time) / duration));
-    
-  // Apply easing function
-  const ez = this._unpackEasing(startKf.easing || easing);
-  let fn;
-  if (ez.curve === "linear") fn = this._easingFunctions.linear();
-  else if (ez.curve === "instant") fn = () => 0;
-  else if (ez.curve === "bezier") fn = this._easingFunctions.bezier();
-  else fn = this._easingFunctions[ez.curve]?.[ez.style || "inOut"] || this._easingFunctions.cubic.inOut;
-  const factor = fn(t);
-    
-      // Interpolate based on value type
+
+      // Easing
+      const ez = this._unpackEasing(startKf.easing || easing);
+      let fn;
+      if (ez.curve === "linear") fn = this._easingFunctions.linear();
+      else if (ez.curve === "instant") fn = () => 0;
+      else if (ez.curve === "bezier") fn = this._easingFunctions.bezier();
+      else fn = this._easingFunctions[ez.curve]?.[ez.style || "inOut"] || this._easingFunctions.cubic.inOut;
+      const factor = fn(t);
+
+      // Interpolate
       if (typeof startKf.value === "number") {
         return startKf.value + (endKf.value - startKf.value) * factor;
       } else if (typeof startKf.value === "string" && startKf.value.startsWith("#")) {
-        // Color interpolation
         return this._interpolateColor(startKf.value, endKf.value, factor);
       } else if (typeof startKf.value === "boolean") {
         return factor < 0.5 ? startKf.value : endKf.value;
       } else {
-        // For other types (like strings), use instant transition at midpoint
         return factor < 0.5 ? startKf.value : endKf.value;
       }
     }
@@ -1884,6 +1888,8 @@ export class Editor {
           for (const prop of Object.keys(vfx.keyframes)) {
             const arr = vfx.keyframes[prop];
             if (!Array.isArray(arr)) continue;
+            // Ensure sorted once at load time
+            arr.sort((a,b)=>a.time-b.time);
             for (const kf of arr) {
               if (!kf) continue;
               if (!kf.easing) kf.easing = "linear";
@@ -3114,12 +3120,9 @@ export class Editor {
       }
     } catch {}
     
-    // Update VFX timeline if visible
-    if (this.vfx && this.vfx.timelineCanvas) {
-      const vfxTab = document.querySelector('[data-panel="vfx"]');
-      if (vfxTab && vfxTab.classList.contains('active')) {
-        this._updateVFXTimeline(this.vfx);
-      }
+    // Update VFX timeline if the VFX tab is active (cached flag avoids per-frame DOM queries)
+    if (this.vfx && this.vfx.timelineCanvas && this.vfx._tabActive) {
+      this._updateVFXTimeline(this.vfx);
     }
     
     this._draw();
@@ -3320,6 +3323,30 @@ export class Editor {
 
     const flashWindow = 40; // ms around the center time
 
+    // Precompute per-lane colors once this frame (if VFX preview is on)
+    let laneColors = null;
+    if (this.vfx?.previewEnabled) {
+      laneColors = new Array(L);
+      const tNow = this.currentTimeMs();
+      for (let li = 0; li < L; li++) {
+        const prop = `notes.colors.${li+1}`;
+        const val = this._getVFXPropertyAtTime(prop, tNow, this.vfx);
+        const fb = (this.vfx?.data?.notes?.colors && Array.isArray(this.vfx.data.notes.colors)) ? this.vfx.data.notes.colors[li] : undefined;
+        laneColors[li] = (typeof val === 'string' && /^#/.test(val)) ? val : fb || this.colors.noteHead;
+      }
+    }
+    // Precompute note size and glow once per frame
+    let noteSizeGlobal = 1;
+    let glowPxGlobal = 0;
+    if (this.vfx?.previewEnabled) {
+      try {
+        const tNow = this.currentTimeMs();
+        noteSizeGlobal = Number(this._getVFXPropertyAtTime('notes.size', tNow, this.vfx) ?? this.vfx?.data?.notes?.size ?? 1);
+        const glowPct = Number(this._getVFXPropertyAtTime('notes.glow', tNow, this.vfx) ?? this.vfx?.data?.notes?.glow ?? 0);
+        glowPxGlobal = Math.max(0, Math.min(30, (glowPct / 100) * 20));
+      } catch {}
+    }
+
     for (let i = 0; i < this.chart.notes.length; i++) {
       const n = this.chart.notes[i];
       const x = startX + n.lane * (laneW + gap) + (laneW - headW) / 2;
@@ -3328,43 +3355,48 @@ export class Editor {
       const yCenter = n.tMs * pxPerMs - this.scrollY;
       const yHead   = Math.floor(yCenter - headH / 2);  // top of head from center
 
+      // Quick vertical cull (consider head and tail if any)
+      let minY = yHead;
+      let maxY = yHead + headH;
+      if (n.dMs && n.dMs > 0) {
+        const len = Math.max(6, n.dMs * pxPerMs);
+        const by = yHead + headH - 2;
+        const tailEnd = by + len;
+        if (tailEnd > maxY) maxY = tailEnd;
+      }
+      if (maxY < -50 || minY > h + 50) continue;
+
       // Head flash when its center is near the playhead (used by both head and tail logic)
       const flash = Math.abs(n.tMs - now) <= flashWindow;
 
       // Hold body extends *after* the head (downwards)
       if (n.dMs && n.dMs > 0) {
         const len = Math.max(6, n.dMs * pxPerMs);
-        // Tail flash: turn body white when playhead is near the head OR near the tail end
+        const bx = x + (headW - stemW) / 2;
+        const by = yHead + headH - 2;
+        // Base body
+        ctx.fillStyle = this.colors.holdBody;
+        this._roundRect(ctx, bx, by, stemW, len, Math.min(6 * this.zoomY, stemW/2), true);
+        // Tail cap: turn just the end of the tail white when the playhead is near the tail end
         const tailTime = n.tMs + n.dMs;
-        const flashTail = flash || Math.abs(tailTime - now) <= flashWindow;
-        ctx.fillStyle = flashTail ? "#ffffff" : this.colors.holdBody;
-        this._roundRect(ctx, x + (headW - stemW) / 2, yHead + headH - 2, stemW, len, Math.min(6 * this.zoomY, stemW/2), true);
+        const flashTail = Math.abs(tailTime - now) <= flashWindow;
+        if (flashTail) {
+          const capH = Math.min(12, Math.floor(len * 0.25));
+          ctx.fillStyle = "#ffffff";
+          // Draw a small white cap at the bottom of the tail
+          ctx.fillRect(bx, by + len - capH, stemW, capH);
+        }
       }
 
       // flash head when its *center* is near playhead (computed above)
   // VFX preview: per-lane note colors if enabled (shape stays normal; VFX easing shapes do NOT affect chart notes)
       let headColor = this.colors.noteHead;
-      if (this.vfx?.previewEnabled) {
-        const prop = `notes.colors.${n.lane+1}`;
-        const val = this._getVFXPropertyAtTime(prop, this.currentTimeMs(), this.vfx);
-        const fallback = this.vfx?.data?.notes?.colors && Array.isArray(this.vfx.data.notes.colors) ? this.vfx.data.notes.colors[n.lane] : undefined;
-        const useVal = val ?? fallback;
-        if (typeof useVal === 'string' && /^#/.test(useVal)) headColor = useVal;
-      }
+      if (laneColors) headColor = laneColors[n.lane];
       // Note size & glow previews
-    let noteSize = 1;
-    let glowPx = 0;
+    let noteSize = noteSizeGlobal;
+    let glowPx = glowPxGlobal;
     // No proximity-based growth near judge; keep constant size.
     let perspScaleX = 1;
-      if (this.vfx?.previewEnabled) {
-        try {
-          const tNow = this.currentTimeMs();
-          noteSize = Number(this._getVFXPropertyAtTime('notes.size', tNow, this.vfx) ?? this.vfx?.data?.notes?.size ?? 1);
-          const glowPct = Number(this._getVFXPropertyAtTime('notes.glow', tNow, this.vfx) ?? this.vfx?.data?.notes?.glow ?? 0);
-          glowPx = Math.max(0, Math.min(30, (glowPct / 100) * 20));
-          // Removed proximity scaling: keep perspScaleX at 1 for consistent size.
-        } catch {}
-      }
       ctx.fillStyle   = flash ? "#ffffff" : headColor;
       ctx.strokeStyle = flash ? "#ffffff" : this.colors.noteHeadStroke;
       ctx.lineWidth = 2;

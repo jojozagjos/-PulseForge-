@@ -1260,6 +1260,22 @@ export class Game {
             body.__pfHoldActive = false;
             this._beginFadeOut(body, MISS_FADE_RATE, true);
           }
+
+          // While the playhead is near the tail end, briefly turn the tail white
+          if (body) {
+            const tailEndMs = (n.tMs || 0) + Math.max(0, n.dMs || 0);
+            const nearTail = Math.abs((this.state.timeMs || 0) - tailEndMs) <= 40;
+            if (nearTail && body.__pfLen) {
+              body.texture = this._getBodyTexture(body.__pfLen, true);
+              body.tint = 0xFFFFFF;
+              body.alpha = 0.95;
+            } else if (!body.__pfHoldActive) {
+              // restore normal tail when not flashing and not actively held white
+              body.texture = this._getBodyTexture(body.__pfLen || 10, false);
+              body.tint = this.vis.laneColors[n.lane % this.vis.laneColors.length];
+              body.alpha = 1.0;
+            }
+          }
         }
 
         // Maintain active holds (success/early release)
