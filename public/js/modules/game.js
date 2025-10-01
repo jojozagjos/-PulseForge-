@@ -1044,10 +1044,19 @@ export class Game {
             const t = this.state.timeMs;
 
             // Background color/gradient (simple blend)
-            const bg1 = this._vfxValueAt('background.color1', t) || this.vfx.props?.background?.color1;
+            const bg1 = this._vfxValueAt('background.color1', t) || this.vfx.props?.background?.color1 || '#0a0c10';
             const bg2 = this._vfxValueAt('background.color2', t) || this.vfx.props?.background?.color2 || bg1;
-            const gradientOn = !!this._vfxValueAt('background.gradient', t);
-            const bgCol = parseInt(String((gradientOn ? bg2 : bg1) || '#0a0c10').replace('#','0x'), 16);
+            // PIXI background is a single color; approximate gradient by mid-blending the two colors
+            const mid = (a,b)=>{
+              const ha = String(a||'#000000'); const hb = String(b||ha);
+              const ar = parseInt(ha.slice(1,3),16)||0, ag=parseInt(ha.slice(3,5),16)||0, ab=parseInt(ha.slice(5,7),16)||0;
+              const br = parseInt(hb.slice(1,3),16)||0, bg=parseInt(hb.slice(3,5),16)||0, bb=parseInt(hb.slice(5,7),16)||0;
+              const r=((ar+br)>>1).toString(16).padStart(2,'0');
+              const g=((ag+bg)>>1).toString(16).padStart(2,'0');
+              const bch=((ab+bb)>>1).toString(16).padStart(2,'0');
+              return `#${r}${g}${bch}`;
+            };
+            const bgCol = parseInt(String(mid(bg1, bg2)).replace('#','0x'), 16);
             // PIXI v8: background is an object; set its color property
             if (this.app?.renderer?.background) {
               this.app.renderer.background.color = bgCol;

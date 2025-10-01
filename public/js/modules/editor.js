@@ -406,7 +406,6 @@ export class Editor {
     // Wire property controls with live updates
     this._wireVFXProperty("vfx-bg-color1", "background.color1", vfx);
     this._wireVFXProperty("vfx-bg-color2", "background.color2", vfx);
-    this._wireVFXProperty("vfx-bg-gradient", "background.gradient", vfx);
     this._wireVFXProperty("vfx-bg-angle", "background.angle", vfx, "vfx-bg-angle-value", "°");
     
     this._wireVFXProperty("vfx-bg-flash-enable", "background.flashEnable", vfx);
@@ -510,10 +509,14 @@ export class Editor {
           display.textContent = value + unit;
         }
       }
-  // Track this as the last changed property (no automatic keyframing)
-  vfx.timeline.lastChangedProperty = propertyPath;
-  vfx.timeline.currentProperty = propertyPath; // fallback usage
-  try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
+      // Always set currentProperty so Add Keyframe targets what you're editing
+      vfx.timeline.currentProperty = propertyPath;
+      // Only switch the visible timeline (lastChangedProperty) if this property has keyframes
+      const hasKfs = Array.isArray(vfx.keyframes?.[propertyPath]) && vfx.keyframes[propertyPath].length > 0;
+      if (hasKfs) {
+        vfx.timeline.lastChangedProperty = propertyPath;
+      }
+      try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
       this._updateVFXTimeline(vfx);
     };
 
@@ -688,7 +691,6 @@ export class Editor {
     const defaults = {
       'background.color1': '#0d111a',
       'background.color2': '#1a1f2e',
-      'background.gradient': false,
       'background.angle': 0,
       'background.flashEnable': false,
       'background.flashColor': '#ffffff',
@@ -995,7 +997,6 @@ export class Editor {
         return [
           { value: "background.color1", label: "Background Color 1" },
           { value: "background.color2", label: "Background Color 2" },
-          { value: "background.gradient", label: "Background Gradient" },
           { value: "background.angle", label: "Background Angle" },
           { value: "background.flashEnable", label: "Beat Flash Enable" },
           { value: "background.flashColor", label: "Beat Flash Color" },
@@ -1080,84 +1081,90 @@ export class Editor {
   }
 
   _drawVFXKeyframes(ctx, rect, vfx) {
+    const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
+    const keyframes = vfx.keyframes[property] || [];
     const duration = this.chart?.durationMs || 180000;
     const timelineWidth = rect.width - 40;
     const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
     const leftTime = vfx.timeline.offsetMs || 0;
 
-    // Draw all properties in the current category so keyframes don't disappear when switching controls
-    const category = vfx.timeline.currentCategory || "background";
-    const props = this._getVFXPropertiesByCategory(category).map(p => p.value);
-
-    for (const property of props) {
-      const keyframes = vfx.keyframes[property] || [];
-      keyframes.forEach((keyframe, index) => {
-        const x = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
-        const y = rect.height / 2;
-
-        // Skip if outside visible area
-        if (x < 20 || x > rect.width - 20) return;
-
-        // Draw keyframe marker (shape based on easing type/style)
-        const isSelected = vfx.timeline.selectedKeyframe?.property === property && 
-                          vfx.timeline.selectedKeyframe?.index === index;
-        const isHover = vfx.timeline.hoverKeyframe?.property === property &&
-                        vfx.timeline.hoverKeyframe?.index === index;
-        this._drawKeyframeMarker(ctx, x, y, keyframe.easing, { selected: isSelected, hover: isHover });
-
-        // Draw easing indicator per property
-        if (index < keyframes.length - 1) {
-          const nextKeyframe = keyframes[index + 1];
-          const nextX = 20 + ((nextKeyframe.time - leftTime) * pixelsPerMs);
-          this._drawEasingCurve(ctx, x, y, nextX, y, keyframe.easing);
+    // Draw ghost default keyframe at t=0 if no kf at 0
+    try {
+      const hasZero = keyframes.some(k => Math.abs(k.time - 0) < 1e-3);
+      if (!hasZero) {
+        const x0 = 20 + ((0 - leftTime) * pixelsPerMs);
+        const y0 = rect.height / 2;
+        if (x0 >= 20 && x0 <= rect.width - 20) {
+          ctx.save();
+          ctx.globalAlpha = 0.45;
+          this._drawKeyframeMarker(ctx, x0, y0, "instant", { selected: false, hover: false });
+          ctx.restore();
         }
+      }
+    } catch {}
 
-        // Diff vs previous of same property
-        const prevKf = keyframes[index - 1];
-        if (prevKf) {
-          const diff = this._formatVFXDelta(property, prevKf.value, keyframe.value);
-          if (diff) {
-            if (diff.type === "color" && diff.a && diff.b) {
-              this._drawColorSwatches(ctx, x - 10, y + 10, diff.a, diff.b);
-            } else if (diff.text) {
-              ctx.fillStyle = "#9bb0c9";
-              ctx.font = "10px Inter";
-              ctx.textAlign = "center";
-              ctx.fillText(diff.text, x, y - 12);
-            }
+    keyframes.forEach((keyframe, index) => {
+      const x = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
+      const y = rect.height / 2;
+
+      // Skip if outside visible area
+      if (x < 20 || x > rect.width - 20) return;
+
+      // Draw keyframe marker (shape based on easing type/style)
+      const isSelected = vfx.timeline.selectedKeyframe?.property === property && 
+                        vfx.timeline.selectedKeyframe?.index === index;
+      const isHover = vfx.timeline.hoverKeyframe?.property === property &&
+                      vfx.timeline.hoverKeyframe?.index === index;
+      this._drawKeyframeMarker(ctx, x, y, keyframe.easing, { selected: isSelected, hover: isHover });
+
+      // Draw easing indicator
+      if (index < keyframes.length - 1) {
+        const nextKeyframe = keyframes[index + 1];
+        const nextX = 20 + ((nextKeyframe.time - leftTime) * pixelsPerMs);
+        
+        this._drawEasingCurve(ctx, x, y, nextX, y, keyframe.easing);
+      }
+
+      // Diff vs previous
+      const prevKf = keyframes[index - 1];
+      if (prevKf) {
+        const diff = this._formatVFXDelta(property, prevKf.value, keyframe.value);
+        if (diff) {
+          if (diff.type === "color" && diff.a && diff.b) {
+            this._drawColorSwatches(ctx, x - 10, y + 10, diff.a, diff.b);
+          } else if (diff.text) {
+            ctx.fillStyle = "#9bb0c9";
+            ctx.font = "10px Inter";
+            ctx.textAlign = "center";
+            ctx.fillText(diff.text, x, y - 12);
           }
         }
+      }
 
-        // Tooltip for value/time and delta when hovered or selected
-        if (isHover || isSelected) {
-          const valStr = this._formatVFXValue(property, keyframe.value);
-          const timeStr = this._fmtTimeMsShort(keyframe.time);
-          let label = `${timeStr} • ${valStr}`;
-          const prev = keyframes[index - 1]?.value;
-          const d = this._formatVFXDelta(property, prev, keyframe.value);
-          if (d && d.text) label += `  (Δ ${d.text})`;
-          this._drawTooltip(ctx, x, y - 18, label);
-        }
-      });
-    }
+      // Tooltip for value/time and delta when hovered or selected
+      if (isHover || isSelected) {
+        const valStr = this._formatVFXValue(property, keyframe.value);
+        const timeStr = this._fmtTimeMsShort(keyframe.time);
+        let label = `${timeStr} • ${valStr}`;
+        const prev = keyframes[index - 1]?.value;
+        const d = this._formatVFXDelta(property, prev, keyframe.value);
+        if (d && d.text) label += `  (Δ ${d.text})`;
+        this._drawTooltip(ctx, x, y - 18, label);
+      }
+    });
 
-    // Update selected keyframe diff label in UI based on the selected property's own series
+    // Update selected keyframe diff label in UI
     try {
       const sel = vfx.timeline.selectedKeyframe;
       const out = document.getElementById("vfx-selected-diff");
       if (out) {
-        if (sel) {
-          const list = vfx.keyframes[sel.property] || [];
-          const cur = list[sel.index];
-          if (cur) {
-            const prev = list[sel.index - 1];
-            const d = prev ? this._formatVFXDelta(sel.property, prev.value, cur.value) : null;
-            const dText = d?.text || (d?.type === "color" ? `${cur.value}` : "");
-            const vStr = this._formatVFXValue(sel.property, cur.value);
-            out.textContent = `Selected: ${this._fmtTimeMsShort(cur.time)} • ${vStr}${dText ? ` (Δ ${dText})` : ""}`;
-          } else {
-            out.textContent = "—";
-          }
+        if (sel && keyframes[sel.index]) {
+          const cur = keyframes[sel.index];
+          const prev = keyframes[sel.index - 1];
+          const d = prev ? this._formatVFXDelta(property, prev.value, cur.value) : null;
+          const dText = d?.text || (d?.type === "color" ? `${cur.value}` : "");
+          const vStr = this._formatVFXValue(property, cur.value);
+          out.textContent = `Selected: ${this._fmtTimeMsShort(cur.time)} • ${vStr}${dText ? ` (Δ ${dText})` : ""}`;
         } else {
           out.textContent = "—";
         }
@@ -1300,11 +1307,9 @@ export class Editor {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-  // Check if clicking on a keyframe across all properties in the current category
-  const category = vfx.timeline.currentCategory || 'background';
-  const props = this._getVFXPropertiesByCategory(category).map(p=>p.value);
-  let property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
-  const keyframes = vfx.keyframes[property] || [];
+  // Check if clicking on a keyframe
+  const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
+    const keyframes = vfx.keyframes[property] || [];
   const duration = this.chart?.durationMs || 180000;
   const timelineWidth = rect.width - 40;
   const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
@@ -1313,19 +1318,14 @@ export class Editor {
   let clickedKeyframe = null;
   const hitR = 10; // enlarge hit radius for easier selection
     
-    for (const prop of props) {
-      const list = vfx.keyframes[prop] || [];
-      for (let index = 0; index < list.length; index++) {
-        const keyframe = list[index];
-        const kfX = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
-        const kfY = rect.height / 2;
-        if (Math.abs(x - kfX) < hitR && Math.abs(y - kfY) < hitR) {
-          clickedKeyframe = { property: prop, index };
-          break;
-        }
+    keyframes.forEach((keyframe, index) => {
+  const kfX = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
+      const kfY = rect.height / 2;
+      
+      if (Math.abs(x - kfX) < hitR && Math.abs(y - kfY) < hitR) {
+        clickedKeyframe = { property, index };
       }
-      if (clickedKeyframe) break;
-    }
+    });
 
     if (clickedKeyframe) {
       // Select keyframe only (do not move playhead on simple click)
@@ -1356,8 +1356,8 @@ export class Editor {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-  const category = vfx.timeline.currentCategory || 'background';
-    const props = this._getVFXPropertiesByCategory(category).map(p=>p.value);
+  const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
+    const keyframes = vfx.keyframes[property] || [];
     const duration = this.chart?.durationMs || 180000;
     const timelineWidth = rect.width - 40;
     const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
@@ -1365,16 +1365,11 @@ export class Editor {
 
     let hover = null;
     const hitR = 10;
-    for (const prop of props) {
-      const list = vfx.keyframes[prop] || [];
-      for (let index = 0; index < list.length; index++) {
-        const kf = list[index];
-        const kx = 20 + ((kf.time - leftTime) * pixelsPerMs);
-        const ky = rect.height / 2;
-        if (Math.abs(x - kx) < hitR && Math.abs(y - ky) < hitR) { hover = { property: prop, index }; break; }
-      }
-      if (hover) break;
-    }
+    keyframes.forEach((kf, index) => {
+      const kx = 20 + ((kf.time - leftTime) * pixelsPerMs);
+      const ky = rect.height / 2;
+      if (Math.abs(x - kx) < hitR && Math.abs(y - ky) < hitR) hover = { property, index };
+    });
 
   const changed = JSON.stringify(hover) !== JSON.stringify(vfx.timeline.hoverKeyframe);
     vfx.timeline.hoverKeyframe = hover;
@@ -1393,19 +1388,17 @@ export class Editor {
         this._centerVFXTimelineOnPlayhead(vfx);
         this._updateVFXTimeline(vfx);
       });
-  } else if (vfx._drag && vfx._drag.type === 'keyframe') {
-      // Drag selected keyframe horizontally to change its time (respect the specific property)
-      const prop = vfx._drag.property;
-      const list = vfx.keyframes[prop] || [];
+  } else if (vfx._drag && vfx._drag.type === 'keyframe' && vfx._drag.property === property) {
+      // Drag selected keyframe horizontally to change its time
       const idx = vfx._drag.index;
-      const moved = vfx._drag.ref || list[idx];
+      const moved = vfx._drag.ref || keyframes[idx];
       if (moved) {
         const newTime = Math.max(0, Math.min(duration, leftTime + (x - 20) / pixelsPerMs));
         moved.time = newTime;
-        // Keep keyframes for that property sorted and track the moved index by identity
-        list.sort((a,b)=>a.time-b.time);
-        const newIdx = list.findIndex(k=>k===moved);
-        if (newIdx >= 0) vfx.timeline.selectedKeyframe = { property: prop, index: newIdx };
+        // Keep keyframes sorted and track the moved index by identity
+  keyframes.sort((a,b)=>a.time-b.time);
+        const newIdx = keyframes.findIndex(k=>k===moved);
+        if (newIdx >= 0) vfx.timeline.selectedKeyframe = { property, index: newIdx };
         // When moving a keyframe in time, keep UI value synced to that keyframe's current value
         this._syncSelectedKeyframeToUI(vfx);
         this._updateVFXTimeline(vfx);
@@ -1420,8 +1413,6 @@ export class Editor {
     const y = e.clientY - rect.top;
   const property = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
     const keyframes = vfx.keyframes[property] || [];
-  const category = vfx.timeline.currentCategory || 'background';
-  const props = this._getVFXPropertiesByCategory(category).map(p=>p.value);
     const duration = this.chart?.durationMs || 180000;
     const timelineWidth = rect.width - 40;
     const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
@@ -1429,16 +1420,11 @@ export class Editor {
 
     let onKeyframe = false;
     let hitIdx = -1;
-    let hitProp = null;
     const hitR = 10;
-    for (const prop of props) {
-      const list = vfx.keyframes[prop] || [];
-      for (let i = 0; i < list.length; i++) {
-        const kfX = 20 + ((list[i].time - leftTime) * pixelsPerMs);
-        const kfY = rect.height / 2;
-        if (Math.abs(x - kfX) < hitR && Math.abs(y - kfY) < hitR) { onKeyframe = true; hitIdx = i; hitProp = prop; break; }
-      }
-      if (onKeyframe) break;
+    for (let i = 0; i < keyframes.length; i++) {
+      const kfX = 20 + ((keyframes[i].time - leftTime) * pixelsPerMs);
+      const kfY = rect.height / 2;
+      if (Math.abs(x - kfX) < hitR && Math.abs(y - kfY) < hitR) { onKeyframe = true; hitIdx = i; break; }
     }
 
     if (!onKeyframe) {
@@ -1449,9 +1435,8 @@ export class Editor {
       }
     } else {
       // Start dragging this keyframe
-      vfx.timeline.selectedKeyframe = { property: hitProp, index: hitIdx };
-      const list = vfx.keyframes[hitProp] || [];
-      vfx._drag = { type: 'keyframe', property: hitProp, index: hitIdx, ref: list[hitIdx], wasPlaying: !!this.playing };
+      vfx.timeline.selectedKeyframe = { property, index: hitIdx };
+      vfx._drag = { type: 'keyframe', property, index: hitIdx, ref: keyframes[hitIdx], wasPlaying: !!this.playing };
       // Do not pause/resume playhead for keyframe drag; keep transport state unchanged
       // Suppress the subsequent click so it doesn't seek to mouse-up position
       vfx._suppressNextClick = true;
@@ -1495,7 +1480,6 @@ export class Editor {
     const map = {
       'background.color1': 'vfx-bg-color1',
       'background.color2': 'vfx-bg-color2',
-      'background.gradient': 'vfx-bg-gradient',
       'background.angle': 'vfx-bg-angle',
       'background.flashEnable': 'vfx-bg-flash-enable',
       'background.flashColor': 'vfx-bg-flash-color',
@@ -1741,10 +1725,17 @@ export class Editor {
     _getVFXPropertyAtTime(property, time, vfx) {
       const keyframes = vfx.keyframes[property];
       if (!keyframes || keyframes.length === 0) {
-        // Return default value from vfx.data
+        // No keyframes: use current live value
         return this._getCurrentVFXPropertyValue(property, vfx);
       }
-    
+      // Has keyframes: before the first keyframe, use the property's default unless a kf exists at t=0
+      try {
+        const first = keyframes[0];
+        if (time < first.time) {
+          const def = this._defaultVFXFor(property);
+          return (def !== undefined) ? def : this._getCurrentVFXPropertyValue(property, vfx);
+        }
+      } catch {}
       return this._interpolateVFXValue(keyframes, time);
     }
 
@@ -1956,13 +1947,11 @@ export class Editor {
     // Background properties
     const bgColor1 = document.getElementById("vfx-bg-color1");
     const bgColor2 = document.getElementById("vfx-bg-color2");
-    const bgGradient = document.getElementById("vfx-bg-gradient");
     const bgAngle = document.getElementById("vfx-bg-angle");
     const bgAngleValue = document.getElementById("vfx-bg-angle-value");
     
     if (bgColor1) bgColor1.value = vfx.data.background.color1;
     if (bgColor2) bgColor2.value = vfx.data.background.color2;
-    if (bgGradient) bgGradient.checked = vfx.data.background.gradient;
     if (bgAngle) bgAngle.value = vfx.data.background.angle;
     if (bgAngleValue) bgAngleValue.textContent = vfx.data.background.angle + "°";
 
@@ -3577,10 +3566,8 @@ export class Editor {
       const t = this.currentTimeMs();
       const bg1 = this._getVFXPropertyAtTime('background.color1', t, this.vfx) || this.vfx?.data?.background?.color1 || '#0a0c10';
       const bg2 = this._getVFXPropertyAtTime('background.color2', t, this.vfx) || this.vfx?.data?.background?.color2 || bg1;
-      const gradientOn = !!(this._getVFXPropertyAtTime('background.gradient', t, this.vfx) ?? this.vfx?.data?.background?.gradient);
       const angle = Number(this._getVFXPropertyAtTime('background.angle', t, this.vfx) ?? this.vfx?.data?.background?.angle ?? 0);
-
-      if (gradientOn && typeof ctx.createLinearGradient === 'function') {
+      if (typeof ctx.createLinearGradient === 'function') {
         // Convert angle to start/end points
         const rad = (angle - 90) * Math.PI / 180;
         const cx = w / 2, cy = h / 2;
