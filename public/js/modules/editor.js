@@ -365,8 +365,7 @@ export class Editor {
         }
         // Ensure prop chooser options reflect this category
         try { this._ensureVfxPropChooser(vfx); } catch {}
-        // Render property tabs for quick switching
-        try { this._renderVfxPropTabs(vfx); } catch {}
+  // Property tabs removed
         // Ensure canvas sized and redraw
         this._resizeVFXCanvas(vfx);
         this._updateVFXTimeline(vfx);
@@ -409,7 +408,7 @@ export class Editor {
 
   // Create property chooser UI (compact dropdown) for quick timeline switching
   try { this._ensureVfxPropChooser(vfx); } catch {}
-  try { this._renderVfxPropTabs(vfx); } catch {}
+  // Property tabs removed
 
     // Wire property controls with live updates
     this._wireVFXProperty("vfx-bg-color1", "background.color1", vfx);
@@ -525,8 +524,7 @@ export class Editor {
         vfx.timeline.lastChangedProperty = propertyPath;
       }
       try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
-      this._updateVFXTimeline(vfx);
-      try { this._renderVfxPropTabs(vfx); } catch {}
+  this._updateVFXTimeline(vfx);
     };
 
   element.addEventListener("input", updateValue);
@@ -873,8 +871,7 @@ export class Editor {
     if (idx >= 0) vfx.timeline.selectedKeyframe = { property, index: idx };
     // Keep playhead view centered where we added
     this._centerVFXTimelineOnPlayhead(vfx);
-    this._updateVFXTimeline(vfx);
-    try { this._renderVfxPropTabs(vfx); } catch {}
+  this._updateVFXTimeline(vfx);
   }
 
   _deleteVFXKeyframe(vfx) {
@@ -888,8 +885,7 @@ export class Editor {
       if (!vfx.keyframes[property] || vfx.keyframes[property].length === 0) {
         this._assignVFXDefault(property, vfx);
       }
-      this._updateVFXTimeline(vfx);
-      try { this._renderVfxPropTabs(vfx); } catch {}
+  this._updateVFXTimeline(vfx);
     }
   }
 
@@ -904,8 +900,7 @@ export class Editor {
   vfx.keyframes[property].push(newKeyframe);
   vfx.keyframes[property].sort((a, b) => a.time - b.time);
     
-    this._updateVFXTimeline(vfx);
-    try { this._renderVfxPropTabs(vfx); } catch {}
+  this._updateVFXTimeline(vfx);
   }
 
   _clearVFXKeyframes(vfx) {
@@ -915,8 +910,7 @@ export class Editor {
       vfx.timeline.selectedKeyframe = null;
       // Revert this property to its default when no keyframes are set
       this._assignVFXDefault(property, vfx);
-      this._updateVFXTimeline(vfx);
-      try { this._renderVfxPropTabs(vfx); } catch {}
+  this._updateVFXTimeline(vfx);
     }
   }
 
@@ -945,38 +939,7 @@ export class Editor {
     this._updateVFXTimeline(vfx);
   }
 
-  // Render Blender-like tabs for properties in the current category for quick switching
-  _renderVfxPropTabs(vfx) {
-    const holder = document.getElementById('vfx-prop-tabs');
-    if (!holder) return;
-    const cat = vfx.timeline.currentCategory || 'background';
-    const props = this._getVFXPropertiesByCategory(cat) || [];
-    const cur = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
-    holder.innerHTML = '';
-    const makeBtn = (p) => {
-      const btn = document.createElement('button');
-      btn.textContent = p.label;
-      btn.setAttribute('data-prop', p.value);
-      btn.className = 'vfx-prop-tab';
-      Object.assign(btn.style, {
-        border: '1px solid #2a3142',
-        borderRadius: '6px',
-        padding: '4px 8px',
-        background: (p.value === cur ? '#2a3142' : '#0d111a'),
-        color: '#e7f0ff',
-        cursor: 'pointer'
-      });
-      btn.addEventListener('click', () => {
-        vfx.timeline.currentProperty = p.value;
-        vfx.timeline.lastChangedProperty = p.value;
-        try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${p.value}`; } catch {}
-        this._updateVFXTimeline(vfx);
-        this._renderVfxPropTabs(vfx);
-      });
-      return btn;
-    };
-    for (const p of props) holder.appendChild(makeBtn(p));
-  }
+  // Property tabs removed
 
   _getCurrentVFXPropertyValue(property, vfx) {
     const keys = property.split(".");
@@ -1113,6 +1076,7 @@ export class Editor {
 
   _drawVFXTimelineBackground(ctx, rect, vfx) {
     const duration = this.chart?.durationMs || 180000; // 3 minutes default
+    const headerH = 24; // top ruler/header height
     const timelineWidth = rect.width - 40; // Leave margin for labels
     const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
     const viewportMs = duration / Math.max(0.0001, vfx.timeline.zoom);
@@ -1124,35 +1088,61 @@ export class Editor {
     const leftTime = vfx.timeline.offsetMs;
     const rightTime = Math.min(duration, leftTime + viewportMs);
 
-    // Draw time grid
+    // Header (time ruler)
+    ctx.save();
+    const grad = ctx.createLinearGradient(0, 0, 0, headerH);
+    grad.addColorStop(0, "#0f1522");
+    grad.addColorStop(1, "#0b111d");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, rect.width, headerH);
     ctx.strokeStyle = "#2a3142";
     ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, headerH + 0.5);
+    ctx.lineTo(rect.width, headerH + 0.5);
+    ctx.stroke();
+    // Minor ticks every 1s in header, major every 10s with labels
+    const majorStep = 10000, minorStep = 1000;
+    const startMinor = Math.floor(leftTime / minorStep) * minorStep;
+    for (let t = startMinor; t <= rightTime + minorStep; t += minorStep) {
+      const x = 20 + ((t - leftTime) * pixelsPerMs);
+      if (x < 20 || x > rect.width - 20) continue;
+      const isMajor = (t % majorStep) === 0;
+      ctx.strokeStyle = isMajor ? "#3a4864" : "#273149";
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, 2);
+      ctx.lineTo(x + 0.5, isMajor ? headerH - 2 : Math.floor(headerH * 0.6));
+      ctx.stroke();
+      if (isMajor) {
+        ctx.fillStyle = "#9bb0c9";
+        ctx.font = "10px Inter";
+        ctx.textAlign = "center";
+        ctx.fillText(this._fmtTimeMsShort(t), x, headerH - 4);
+      }
+    }
+    ctx.restore();
 
-    // Draw vertical grid lines every 10 seconds in visible window
-    const step = 10000; // 10s
-    const startGrid = Math.floor(leftTime / step) * step;
-    for (let time = startGrid; time <= rightTime + step; time += step) {
+    // Grid in content area
+    ctx.strokeStyle = "#2a3142";
+    ctx.lineWidth = 1;
+    const contentTop = headerH;
+    // Vertical major grid every 10s across content
+    const startGrid = Math.floor(leftTime / majorStep) * majorStep;
+    for (let time = startGrid; time <= rightTime + majorStep; time += majorStep) {
       const x = 20 + ((time - leftTime) * pixelsPerMs);
       if (x < 20) continue;
       if (x > rect.width - 20) break;
-
       ctx.beginPath();
-      ctx.moveTo(x, 0);
+      ctx.moveTo(x, contentTop);
       ctx.lineTo(x, rect.height);
       ctx.stroke();
-
-      // Draw time labels
-      ctx.fillStyle = "#9bb0c9";
-      ctx.font = "11px Inter";
-      ctx.textAlign = "center";
-      ctx.fillText(this._fmtTimeMsShort(time), x, rect.height - 5);
     }
 
-    // Draw horizontal center line
+    // Horizontal center line
     ctx.strokeStyle = "#2a3142";
     ctx.beginPath();
-    ctx.moveTo(20, rect.height / 2);
-    ctx.lineTo(rect.width - 20, rect.height / 2);
+    ctx.moveTo(20, contentTop + (rect.height - contentTop) / 2);
+    ctx.lineTo(rect.width - 20, contentTop + (rect.height - contentTop) / 2);
     ctx.stroke();
   }
 
@@ -1163,7 +1153,10 @@ export class Editor {
     const timelineWidth = rect.width - 40;
     const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
     const leftTime = vfx.timeline.offsetMs || 0;
-    const baselineY = rect.height / 2;
+    const headerH = 24;
+    const contentTop = headerH;
+    const contentH = rect.height - contentTop;
+    const baselineY = contentTop + contentH / 2;
     const amp = Math.max(8, Math.min(16, Math.floor(rect.height * 0.14))); // fixed amplitude for visibility
 
     // Draw ghost default keyframe at t=0 if no kf at 0
@@ -1198,6 +1191,12 @@ export class Editor {
           const ez = this._unpackEasing(first.easing || "linear");
           const color = this._easingStrokeFor(ez.curve);
           const highlight = (selectedSegIndex === 0); // if first kf selected, highlight pre-first
+          if (highlight) {
+            ctx.save();
+            ctx.fillStyle = this._withAlpha(color, 0.08);
+            ctx.fillRect(segL, contentTop, segR - segL, rect.height - contentTop);
+            ctx.restore();
+          }
           this._drawEasingPolyline(ctx, segL, segR, baselineY, first.easing || "linear", amp, tStart, tEnd, { color, highlight });
         }
       }
@@ -1205,7 +1204,7 @@ export class Editor {
 
     keyframes.forEach((keyframe, index) => {
       const x = 20 + ((keyframe.time - leftTime) * pixelsPerMs);
-      const y = rect.height / 2;
+      const y = baselineY;
 
       // Skip if outside visible area
       if (x < 20 || x > rect.width - 20) return;
@@ -1230,6 +1229,12 @@ export class Editor {
           const ez = this._unpackEasing(keyframe.easing || "linear");
           const color = this._easingStrokeFor(ez.curve);
           const highlight = (selectedSegIndex === index);
+          if (highlight) {
+            ctx.save();
+            ctx.fillStyle = this._withAlpha(color, 0.08);
+            ctx.fillRect(segL, contentTop, segR - segL, rect.height - contentTop);
+            ctx.restore();
+          }
           this._drawEasingPolyline(ctx, segL, segR, baselineY, keyframe.easing || "linear", amp, tStart, tEnd, { color, highlight });
         }
       }
@@ -1446,6 +1451,15 @@ export class Editor {
     return map[curve] || "#25F4EE";
   }
 
+  _withAlpha(hex, alpha = 0.1) {
+    if (!hex) return `rgba(255,255,255,${alpha})`;
+    // accept #RRGGBB or already-rgba strings
+    if (/^rgba?\(/i.test(hex)) return hex;
+    const rgb = this._hexToRgb(hex);
+    if (!rgb) return `rgba(255,255,255,${alpha})`;
+    return `rgba(${rgb.r},${rgb.g},${rgb.b},${Math.max(0, Math.min(1, alpha))})`;
+  }
+
   _drawEasingBadge(ctx, x, y, curve, style) {
     const txt = `${curve} • ${style || "inOut"}`;
     ctx.save();
@@ -1512,6 +1526,7 @@ export class Editor {
 
   _drawVFXPlayhead(ctx, rect, vfx) {
     const duration = this.chart?.durationMs || 180000;
+    const headerH = 24;
     const timelineWidth = rect.width - 40;
     const pixelsPerMs = (timelineWidth / duration) * vfx.timeline.zoom;
     const leftTime = vfx.timeline.offsetMs || 0;
@@ -1519,18 +1534,29 @@ export class Editor {
     const x = 20 + ((nowMs - leftTime) * pixelsPerMs);
 
     if (x >= 20 && x <= rect.width - 20) {
+      // Header playhead handle
+      ctx.save();
+      ctx.fillStyle = "#FF2E88";
       ctx.strokeStyle = "#FF2E88";
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(x, 0);
+      ctx.moveTo(x, 4);
+      ctx.lineTo(x - 6, headerH - 6);
+      ctx.lineTo(x + 6, headerH - 6);
+      ctx.closePath();
+      ctx.fill();
+      // Vertical line through content area
+      ctx.beginPath();
+      ctx.moveTo(x, headerH);
       ctx.lineTo(x, rect.height);
       ctx.stroke();
+      ctx.restore();
     }
   // Show current value at playhead for the active property (auto)
   const prop = vfx.timeline.lastChangedProperty || vfx.timeline.currentProperty;
       const val = this._getVFXPropertyAtTime(prop, nowMs, vfx);
-      const label = `${this._fmtTimeMsShort(nowMs)} • ${this._formatVFXValue(prop, val)}`;
-      this._drawTooltip(ctx, Math.min(rect.width - 20, x + 8), 16, label, true);
+    const label = `${this._fmtTimeMsShort(nowMs)} • ${this._formatVFXValue(prop, val)}`;
+    this._drawTooltip(ctx, Math.min(rect.width - 20, x + 8), 16, label, true);
   }
 
   // VFX Timeline Interaction
@@ -1601,7 +1627,7 @@ export class Editor {
     const hitR = 10;
     keyframes.forEach((kf, index) => {
       const kx = 20 + ((kf.time - leftTime) * pixelsPerMs);
-      const ky = rect.height / 2;
+      const headerH = 24; const ky = headerH + (rect.height - headerH) / 2;
       if (Math.abs(x - kx) < hitR && Math.abs(y - ky) < hitR) hover = { property, index };
     });
 
@@ -1657,7 +1683,7 @@ export class Editor {
     const hitR = 10;
     for (let i = 0; i < keyframes.length; i++) {
       const kfX = 20 + ((keyframes[i].time - leftTime) * pixelsPerMs);
-      const kfY = rect.height / 2;
+      const headerH = 24; const kfY = headerH + (rect.height - headerH) / 2;
       if (Math.abs(x - kfX) < hitR && Math.abs(y - kfY) < hitR) { onKeyframe = true; hitIdx = i; break; }
     }
 
