@@ -1231,14 +1231,19 @@ export class Game {
             }
           }
 
-          // Per-frame lane color override from VFX
+          // Per-frame lane color override from VFX (heads and tails)
           try {
             if (this.vfx && head) {
               const cHex = this._vfxColorForLaneAt(tMs, n.lane);
               if (cHex != null) {
                 // Don’t override white flash or active hold white
                 if (!head.__pfFlashUntil && !head.__pfHoldActive) head.tint = cHex;
-                if (body && !body.__pfHoldActive && !head.__pfFlashUntil) body.tint = cHex;
+                if (body && !body.__pfHoldActive) {
+                  // If tail is in its tail-end flash window, keep it white; else tint
+                  const tailEndMs = (n.tMs || 0) + Math.max(0, n.dMs || 0);
+                  const nearTail = Math.abs((this.state.timeMs || 0) - tailEndMs) <= 40;
+                  if (!nearTail) body.tint = cHex;
+                }
               }
             }
           } catch {}
@@ -1272,7 +1277,8 @@ export class Game {
             } else if (!body.__pfHoldActive) {
               // restore normal tail when not flashing and not actively held white
               body.texture = this._getBodyTexture(body.__pfLen || 10, false);
-              body.tint = this.vis.laneColors[n.lane % this.vis.laneColors.length];
+              const vfxLane = this._vfxColorForLaneAt(tMs, n.lane);
+              body.tint = vfxLane != null ? vfxLane : this.vis.laneColors[n.lane % this.vis.laneColors.length];
               body.alpha = 1.0;
             }
           }

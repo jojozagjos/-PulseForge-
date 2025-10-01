@@ -3374,8 +3374,16 @@ export class Editor {
         const len = Math.max(6, n.dMs * pxPerMs);
         const bx = x + (headW - stemW) / 2;
         const by = yHead + headH - 2;
-        // Base body
-        ctx.fillStyle = this.colors.holdBody;
+        // Base body color: match lane color (VFX if enabled), with hold alpha
+        let tailFill = this.colors.holdBody;
+        try {
+          const hex = (laneColors ? laneColors[n.lane] : null) || null;
+          if (hex && typeof hex === 'string' && /^#/.test(hex)) {
+            const rgb = this._hexToRgb(hex);
+            if (rgb) tailFill = `rgba(${rgb.r},${rgb.g},${rgb.b},0.55)`;
+          }
+        } catch {}
+        ctx.fillStyle = tailFill;
         this._roundRect(ctx, bx, by, stemW, len, Math.min(6 * this.zoomY, stemW/2), true);
         // Tail cap: turn just the end of the tail white when the playhead is near the tail end
         const tailTime = n.tMs + n.dMs;
