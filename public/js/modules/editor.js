@@ -560,23 +560,39 @@ export class Editor {
     const element = document.getElementById(elementId);
     if (!element) return;
 
-    element.addEventListener("input", () => {
+    const onChange = () => {
       vfx.data.notes.colors[laneIndex] = element.value;
       const prop = `notes.colors.${laneIndex+1}`;
       vfx.timeline.lastChangedProperty = prop;
       vfx.timeline.currentProperty = prop;
+      // Auto-keyframe if enabled
+      if (vfx.timeline.autoKeyframe) {
+        const easing = this._packEasing(vfx.timeline.easingCurve, vfx.timeline.easingStyle);
+        if (!vfx.keyframes[prop]) vfx.keyframes[prop] = [];
+        let time = this.playStartMs;
+        const scrub = document.getElementById(this.ids.scrub);
+        if (scrub) {
+          const v = Number(scrub.value);
+          if (Number.isFinite(v)) time = v;
+        }
+        const idx = vfx.keyframes[prop].findIndex(kf => Math.abs(kf.time - time) < 10);
+        if (idx >= 0) {
+          vfx.keyframes[prop][idx] = { time, value: element.value, easing };
+          vfx.timeline.selectedKeyframe = { property: prop, index: idx };
+        } else {
+          vfx.keyframes[prop].push({ time, value: element.value, easing });
+          vfx.keyframes[prop].sort((a,b)=>a.time-b.time);
+          const newIdx = vfx.keyframes[prop].findIndex(kf => Math.abs(kf.time - time) < 1e-3);
+          if (newIdx >= 0) vfx.timeline.selectedKeyframe = { property: prop, index: newIdx };
+        }
+      }
       try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
       this._updateVFXTimeline(vfx);
-    });
+    };
 
-    element.addEventListener("change", () => {
-      vfx.data.notes.colors[laneIndex] = element.value;
-      const prop = `notes.colors.${laneIndex+1}`;
-      vfx.timeline.lastChangedProperty = prop;
-      vfx.timeline.currentProperty = prop;
-      try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
-      this._updateVFXTimeline(vfx);
-    });
+    element.addEventListener("input", onChange);
+
+    element.addEventListener("change", onChange);
   }
 
   _wireVFXTimelineControls(vfx) {
@@ -1179,23 +1195,29 @@ export class Editor {
     const baselineY = contentTop + contentH / 2;
     const amp = Math.max(8, Math.min(16, Math.floor(rect.height * 0.14))); // fixed amplitude for visibility
 
-    // Draw ghost default keyframe at t=0 if no kf at 0
+    // Draw implicit default marker at t=0 if no kf at 0
     try {
       const hasZero = keyframes.some(k => Math.abs(k.time - 0) < 1e-3);
       if (!hasZero) {
         const x0 = 20 + ((0 - leftTime) * pixelsPerMs);
         const y0 = baselineY;
         if (x0 >= 20 && x0 <= rect.width - 20) {
+          // Gray circle to represent the default-at-0 implicit value
           ctx.save();
-          ctx.globalAlpha = 0.45;
-          this._drawKeyframeMarker(ctx, x0, y0, "instant", { selected: false, hover: false });
+          ctx.globalAlpha = 0.85;
+          ctx.fillStyle = "#8c94a6"; // soft gray
+          ctx.strokeStyle = "#0d111a";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(x0, y0, 7, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
           ctx.restore();
         }
       }
     } catch {}
 
     // Pre-first easing: draw from t=0 default to the first keyframe using first keyframe's easing
-    let selectedSegIndex = (vfx.timeline.selectedKeyframe?.property === property) ? (vfx.timeline.selectedKeyframe?.index ?? -1) : -1;
     if (keyframes.length > 0) {
       const first = keyframes[0];
       if (first && first.time > 0) {
@@ -1210,14 +1232,7 @@ export class Editor {
           const tEnd = Math.max(0, Math.min(1, (segR - xStart) / totalW));
           const ez = this._unpackEasing(first.easing || "linear");
           const color = this._easingStrokeFor(ez.curve);
-          const highlight = (selectedSegIndex === 0); // if first kf selected, highlight pre-first
-          if (highlight) {
-            ctx.save();
-            ctx.fillStyle = this._withAlpha(color, 0.08);
-            ctx.fillRect(segL, contentTop, segR - segL, rect.height - contentTop);
-            ctx.restore();
-          }
-          this._drawEasingPolyline(ctx, segL, segR, baselineY, first.easing || "linear", amp, tStart, tEnd, { color, highlight });
+          this._drawEasingPolyline(ctx, segL, segR, baselineY, first.easing || "linear", amp, tStart, tEnd, { color });
         }
       }
     }
@@ -1248,14 +1263,7 @@ export class Editor {
           const tEnd = Math.max(0, Math.min(1, (segR - x) / totalW));
           const ez = this._unpackEasing(keyframe.easing || "linear");
           const color = this._easingStrokeFor(ez.curve);
-          const highlight = (selectedSegIndex === index);
-          if (highlight) {
-            ctx.save();
-            ctx.fillStyle = this._withAlpha(color, 0.08);
-            ctx.fillRect(segL, contentTop, segR - segL, rect.height - contentTop);
-            ctx.restore();
-          }
-          this._drawEasingPolyline(ctx, segL, segR, baselineY, keyframe.easing || "linear", amp, tStart, tEnd, { color, highlight });
+          this._drawEasingPolyline(ctx, segL, segR, baselineY, keyframe.easing || "linear", amp, tStart, tEnd, { color });
         }
       }
 
@@ -1316,11 +1324,14 @@ export class Editor {
     const c = ez.curve, s = ez.style;
     const baseFill = selected ? "#C8FF4D" : (hover ? "#FF2E88" : "#25F4EE");
     const baseStroke = selected ? "#8A5CFF" : "#0d111a";
+    const r = 7;
+
+    // Ensure no drawing state leaks (shadow/alpha/etc.)
+    ctx.save();
     ctx.fillStyle = baseFill;
     ctx.strokeStyle = baseStroke;
     ctx.lineWidth = 2;
-    const r = 7;
-    if (selected) { ctx.save(); ctx.shadowColor = baseFill; ctx.shadowBlur = 14; }
+    if (selected) { ctx.shadowColor = baseFill; ctx.shadowBlur = 14; }
 
     const drawTriUp = () => { ctx.beginPath(); ctx.moveTo(x, y - r); ctx.lineTo(x + r, y + r); ctx.lineTo(x - r, y + r); ctx.closePath(); ctx.fill(); ctx.stroke(); };
     const drawTriDown = () => { ctx.beginPath(); ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y - r); ctx.lineTo(x, y + r); ctx.closePath(); ctx.fill(); ctx.stroke(); };
@@ -1331,21 +1342,29 @@ export class Editor {
     const drawHex = () => { this._drawPolygon(ctx, x, y, r, 6); };
     const drawNotch = () => { const w=r*2, h=r*1.6, rx=x-w/2, ry=y-h/2; ctx.beginPath(); ctx.moveTo(rx + w*0.1, ry); ctx.lineTo(rx + w*0.9, ry); ctx.lineTo(rx + w, ry + h*0.6); ctx.lineTo(rx + w*0.5, ry + h); ctx.lineTo(rx, ry + h*0.6); ctx.closePath(); ctx.fill(); ctx.stroke(); };
 
-  if (c === "linear") { drawCircle(); if (selected) ctx.restore(); return; }
-  if (c === "instant") { ctx.save(); ctx.fillStyle = baseFill; ctx.strokeStyle = baseStroke; ctx.beginPath(); ctx.rect(x - r, y - r, r*2, r*2); ctx.fill(); ctx.stroke(); ctx.restore(); if (selected) ctx.restore(); return; }
-    if (c === "quad" || c === "cubic") {
-      if (s === "in") return drawTriUp();
-      if (s === "out") return drawTriDown();
-      return drawDiamond();
+    if (c === "linear") {
+      drawCircle();
+    } else if (c === "instant") {
+      ctx.beginPath(); ctx.rect(x - r, y - r, r*2, r*2); ctx.fill(); ctx.stroke();
+    } else if (c === "quad" || c === "cubic") {
+      if (s === "in") drawTriUp();
+      else if (s === "out") drawTriDown();
+      else drawDiamond();
+    } else if (c === "sine" || c === "circ") {
+      drawPill();
+    } else if (c === "bounce") {
+      drawStar();
+    } else if (c === "elastic") {
+      drawHex();
+    } else if (c === "back") {
+      drawNotch();
+    } else if (c === "bezier") {
+      drawDiamond();
+    } else {
+      drawCircle();
     }
-    if (c === "sine" || c === "circ") return drawPill();
-    if (c === "bounce") return drawStar();
-    if (c === "elastic") return drawHex();
-    if (c === "back") return drawNotch();
-    if (c === "bezier") return drawDiamond();
-    const ret = drawCircle();
-    if (selected) ctx.restore();
-    return ret;
+
+    ctx.restore();
   }
 
   _formatVFXDelta(property, prev, curr) {
@@ -1432,11 +1451,9 @@ export class Editor {
     const N = Math.max(8, Math.min(48, Math.floor((x2 - x1) / 10))); // density by pixel width
     const dx = (x2 - x1) / N;
     ctx.save();
-    const highlight = !!opts.highlight;
-    const color = opts.color || "rgba(37,244,238,0.55)";
-    ctx.strokeStyle = color;
-    ctx.lineWidth = highlight ? 3 : 2;
-    if (highlight) { ctx.shadowColor = color; ctx.shadowBlur = 10; }
+  const color = opts.color || "rgba(37,244,238,0.55)";
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
     ctx.beginPath();
     for (let i = 0; i <= N; i++) {
       const x = x1 + dx * i;
@@ -2005,7 +2022,10 @@ export class Editor {
     _getVFXPropertyAtTime(property, time, vfx) {
       const keyframes = vfx.keyframes[property];
       if (!Array.isArray(keyframes) || keyframes.length === 0) {
-        // No keyframes: use live value (so editor controls preview)
+        // No keyframes: show the hard default as the baseline to avoid confusion at 0:00
+        const def = this._defaultVFXFor(property);
+        if (def !== undefined) return def;
+        // Fallback for unknown/legacy properties
         return this._getCurrentVFXPropertyValue(property, vfx);
       }
       // Ensure sorted by time
@@ -2013,7 +2033,7 @@ export class Editor {
       const first = keyframes[0];
       // If we're before the first keyframe, ease from the default-at-0 to the first keyframe value
       if (time <= first.time) {
-        // Default at 0 unless a keyframe exists at t=0
+        // Baseline comes from the hard-coded defaults unless a keyframe exists at t=0
         let startVal;
         if (first && Math.abs(first.time) < 1) {
           startVal = first.value; // exact t=0 keyframe is the start
@@ -2476,10 +2496,19 @@ export class Editor {
     }
 
     // Keyframes normalization
+    // Allow keyframes for all properties exposed in the UI so import/export preserves timelines
     const allowedKFProps = new Set([
-      "background.angle",
+      // Background
+      "background.color1","background.color2","background.angle",
+      "background.flashEnable","background.flashColor","background.flashIntensity","background.flashDuration",
+      // Camera
+      "camera.x","camera.y","camera.z",
       "camera.rotateX","camera.rotateY","camera.rotateZ",
+      "camera.shakeAmp","camera.shakeFreq",
+      // Notes
       "notes.colors.1","notes.colors.2","notes.colors.3","notes.colors.4",
+      "notes.glow","notes.size","notes.trails",
+      // Lanes
       "lanes.opacity"
     ]);
     const outKfs = {};
@@ -2513,13 +2542,35 @@ export class Editor {
         seenTimes.add(tms);
 
         let v = kf.value;
+        // Per-property coercion/clamping
         if (prop.startsWith("notes.colors.")) {
           v = this._ensureHexColor(v, defaults.notes.colors[0]);
-        } else if (prop === "lanes.opacity" || prop === "background.angle" || prop.startsWith("camera.rotate")) {
-          // numeric
-          if (prop === "lanes.opacity") v = this._clamp(v, 0, 100);
-          else if (prop === "background.angle") v = this._clamp(v, 0, 360);
-          else v = this._clamp(v, -180, 180);
+        } else if (prop === "background.color1" || prop === "background.color2" || prop === "background.flashColor") {
+          v = this._ensureHexColor(v, outProps.background.color1);
+        } else if (prop === "background.flashEnable" || prop === "notes.trails") {
+          v = !!v;
+        } else if (prop === "lanes.opacity") {
+          v = this._clamp(v, 0, 100);
+        } else if (prop === "background.angle") {
+          v = this._clamp(v, 0, 360);
+        } else if (prop.startsWith("camera.rotate")) {
+          v = this._clamp(v, -180, 180);
+        } else if (prop === "camera.x" || prop === "camera.y") {
+          v = Number.isFinite(Number(v)) ? Number(v) : 0;
+          // generous range; editor UI may further constrain visually
+          v = this._clamp(v, -1000, 1000);
+        } else if (prop === "camera.z") {
+          v = Number.isFinite(Number(v)) ? Number(v) : 0;
+          v = this._clamp(v, -2000, 2000);
+        } else if (prop === "camera.shakeAmp") {
+          v = this._clamp(v, 0, 50);
+        } else if (prop === "camera.shakeFreq") {
+          v = this._clamp(v, 0, 20);
+        } else if (prop === "notes.glow") {
+          v = this._clamp(v, 0, 100);
+        } else if (prop === "notes.size") {
+          v = Number.isFinite(Number(v)) ? Number(v) : defaults.notes.size;
+          v = this._clamp(v, 0.5, 2.0);
         }
 
         const e = this._normalizeEasing(kf.easing);
