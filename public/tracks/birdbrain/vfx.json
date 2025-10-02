@@ -6,7 +6,7 @@
     "artist": "Unknown",
     "activeDifficulty": "normal",
     "duration": 255651,
-    "exportedAt": "2025-10-02T01:07:56.495Z"
+    "exportedAt": "2025-10-02T07:18:40.926Z"
   },
   "vfx": {
     "properties": {
@@ -27,7 +27,7 @@
         "rotateX": 0,
         "rotateY": 0,
         "rotateZ": 0,
-        "shakeAmp": 0,
+        "shakeAmp": 1,
         "shakeFreq": 5
       },
       "notes": {
@@ -37,8 +37,9 @@
           "#fe6767",
           "#fefa86"
         ],
-  "glow": 0,
-  "size": 1
+        "glow": 0,
+        "size": 1,
+        "trails": false
       },
       "lanes": {
         "opacity": 100
@@ -80,12 +81,12 @@
           "easing": "linear"
         },
         {
-          "time": 146211,
+          "time": 152249,
           "value": "#fefa76",
           "easing": "linear"
         },
         {
-          "time": 172191,
+          "time": 170453,
           "value": "#fefa76",
           "easing": "linear"
         },
@@ -165,6 +166,23 @@
           "value": 0,
           "easing": "instant"
         }
+      ],
+      "camera.shakeAmp": [
+        {
+          "time": 171249,
+          "value": 0,
+          "easing": "linear"
+        },
+        {
+          "time": 176794,
+          "value": 1,
+          "easing": "linear"
+        },
+        {
+          "time": 184687,
+          "value": 0,
+          "easing": "linear"
+        }
       ]
     }
   },
@@ -199,7 +217,8 @@
             "#ffa94d"
           ],
           "glow": 0,
-          "size": 1
+          "size": 1,
+          "trails": false
         },
         "lanes": {
           "opacity": 100
@@ -226,7 +245,7 @@
           "rotateX": 0,
           "rotateY": 0,
           "rotateZ": 0,
-          "shakeAmp": 0,
+          "shakeAmp": 1,
           "shakeFreq": 5
         },
         "notes": {
@@ -237,7 +256,8 @@
             "#fefa86"
           ],
           "glow": 0,
-          "size": 1
+          "size": 1,
+          "trails": false
         },
         "lanes": {
           "opacity": 100
@@ -279,12 +299,12 @@
             "easing": "linear"
           },
           {
-            "time": 146211,
+            "time": 152249,
             "value": "#fefa76",
             "easing": "linear"
           },
           {
-            "time": 172191,
+            "time": 170453,
             "value": "#fefa76",
             "easing": "linear"
           },
@@ -364,6 +384,23 @@
             "value": 0,
             "easing": "instant"
           }
+        ],
+        "camera.shakeAmp": [
+          {
+            "time": 171249,
+            "value": 0,
+            "easing": "linear"
+          },
+          {
+            "time": 176794,
+            "value": 1,
+            "easing": "linear"
+          },
+          {
+            "time": 184687,
+            "value": 0,
+            "easing": "linear"
+          }
         ]
       }
     },
@@ -397,7 +434,8 @@
             "#ffa94d"
           ],
           "glow": 0,
-          "size": 1
+          "size": 1,
+          "trails": false
         },
         "lanes": {
           "opacity": 100
