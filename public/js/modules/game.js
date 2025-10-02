@@ -137,6 +137,10 @@ export class Game {
     // For restoring global key handlers
     this._prevOnKeyDown = undefined;
     this._prevOnKeyUp = undefined;
+
+    // Live settings listeners (attached in run, removed in quit/destroy)
+    this._onMaxFpsChange = null;
+    this._onRenderScaleChange = null;
   }
 
   // ===== VFX Runtime support (subset for background/lanes/notes) =====
@@ -263,8 +267,9 @@ export class Game {
 
     // New PIXI app each run
     this.app = new PIXI.Application();
-    const perf = (typeof this.settings.getPerformance === "function") ? this.settings.getPerformance() : { maxFps: this.settings.maxFps, renderScale: this.settings.renderScale };
-    const clampRes = Math.max(1, Math.min(perf?.renderScale || 1, (window?.devicePixelRatio || 1)));
+  const perf = (typeof this.settings.getPerformance === "function") ? this.settings.getPerformance() : { maxFps: this.settings.maxFps, renderScale: this.settings.renderScale };
+  // Honor renderScale directly (0.5..2). Using values <1 reduces internal resolution for performance.
+  const clampRes = Math.max(0.5, Math.min(2, perf?.renderScale || 1));
     await this.app.init({
       canvas: this.canvas,
       width: this.width,
@@ -278,6 +283,28 @@ export class Game {
     const maxFps = (perf?.maxFps ?? 120);
     this.app.ticker.maxFPS = maxFps > 0 ? maxFps : Infinity;
     this.app.ticker.minFPS = this.settings.minFps || 50;
+
+    // React live to Settings events (editor UI)
+    this._onMaxFpsChange = (e) => {
+      try {
+        const v = Math.max(0, Math.floor(Number(e?.detail?.maxFps) || 0));
+        this.app.ticker.maxFPS = v > 0 ? v : Infinity;
+      } catch {}
+    };
+    this._onRenderScaleChange = (e) => {
+      try {
+        const newRes = Math.max(0.5, Math.min(2, Number(e?.detail?.renderScale) || 1));
+        if (this.app?.renderer) {
+          // PIXI v8: updating resolution then resizing reapplies buffers
+          this.app.renderer.resolution = newRes;
+          this.app.renderer.resize(this.width, this.height);
+        }
+      } catch {}
+    };
+    try {
+      window.addEventListener("pf-maxfps-changed", this._onMaxFpsChange);
+      window.addEventListener("pf-render-scale-changed", this._onRenderScaleChange);
+    } catch {}
 
   this._buildScene();
 
@@ -309,6 +336,12 @@ export class Game {
     this._prevOnKeyDown = undefined;
     this._prevOnKeyUp   = undefined;
 
+    // Remove live settings listeners
+    try {
+      if (this._onMaxFpsChange) window.removeEventListener("pf-maxfps-changed", this._onMaxFpsChange);
+      if (this._onRenderScaleChange) window.removeEventListener("pf-render-scale-changed", this._onRenderScaleChange);
+    } catch {}
+
     // Do not remove the results overlay here; user closes it.
   }
 
@@ -326,6 +359,12 @@ export class Game {
     if (this._prevOnKeyUp   !== undefined) window.onkeyup   = this._prevOnKeyUp;
     this._prevOnKeyDown = undefined;
     this._prevOnKeyUp   = undefined;
+
+    // Remove live settings listeners
+    try {
+      if (this._onMaxFpsChange) window.removeEventListener("pf-maxfps-changed", this._onMaxFpsChange);
+      if (this._onRenderScaleChange) window.removeEventListener("pf-render-scale-changed", this._onRenderScaleChange);
+    } catch {}
 
     try { this.activeHoldsByLane?.clear?.(); } catch {}
   }
@@ -1619,60 +1658,76 @@ export class Game {
 
     el = document.createElement("div");
     el.id = overlayId;
-    Object.assign(el.style, {
-      position: "absolute",
-      inset: "0",
-      background: "linear-gradient(0deg, rgba(10,12,16,.86), rgba(10,12,16,.86))",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      zIndex: "2000",
-      color: "#e8eefc",
-      fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto"
-    });
+    el.className = "pf-results-overlay";
+    el.setAttribute("role", "dialog");
+    el.setAttribute("aria-modal", "true");
+    el.setAttribute("aria-label", "Results");
 
     el.innerHTML = `
-      <div style="display:grid;grid-template-columns:220px 1fr;gap:20px;max-width:860px;width:92%;border:1px solid #2a3142;border-radius:14px;padding:20px;background:#111827cc;backdrop-filter:blur(4px);">
-        <div style="display:flex;align-items:center;justify-content:center;">
-          <div style="width:180px;height:180px;border-radius:999px;background:${pie};box-shadow:inset 0 0 0 8px rgba(255,255,255,0.06);"></div>
+      <div class="pf-results-card">
+        <div class="pf-results-left">
+          <div class="pf-results-pie"></div>
         </div>
-        <div>
-          <div style="font-size:22px;font-weight:700;margin-bottom:8px;">Results</div>
-          <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;">
-            <div><span style="opacity:.9;">Score:</span> <b>${this.state.score.toLocaleString()}</b></div>
-            <div><span style="opacity:.9;">Accuracy:</span> <b>${accPct}%</b></div>
-            <div><span style="opacity:.9;">Max Combo:</span> <b>${this.maxCombo}x</b></div>
+        <div class="pf-results-right">
+          <div class="pf-results-title">Results</div>
+          <div class="pf-results-metrics">
+            <div class="pf-metric"><span class="muted">Score:</span> <b>${this.state.score.toLocaleString()}</b></div>
+            <div class="pf-metric"><span class="muted">Accuracy:</span> <b>${accPct}%</b></div>
+            <div class="pf-metric"><span class="muted">Max Combo:</span> <b>${this.maxCombo}x</b></div>
           </div>
 
-          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px;">
+          <div class="pf-results-chips">
             ${this._resultChip("#25F4EE","Perfect",counts.Perfect)}
             ${this._resultChip("#C8FF4D","Great",counts.Great)}
             ${this._resultChip("#8A5CFF","Good",counts.Good)}
             ${this._resultChip("#aa4b5b","Miss",counts.Miss)}
           </div>
 
-          <div id="pf-lb-block" style="border:1px solid #233046;border-radius:10px;padding:10px 12px;background:#0f1420;margin-bottom:16px;">
-            <div style="font-weight:700;margin-bottom:6px;">Leaderboard</div>
-            <div id="pf-lb-projected" class="muted" style="margin-bottom:4px;">Projected rank: <b>…</b></div>
-            <div id="pf-lb-official" class="muted">Official rank: <b>…</b></div>
+          <div id="pf-lb-block" class="pf-lb-block">
+            <div class="pf-lb-title">Leaderboard</div>
+            <div id="pf-lb-projected" class="muted pf-lb-line">Projected rank: <b>…</b></div>
+            <div id="pf-lb-official" class="muted pf-lb-line">Official rank: <b>…</b></div>
           </div>
 
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button id="pf-results-close" class="primary" style="padding:8px 14px;background:#25f4ee;border:none;border-radius:10px;color:#00222a;font-weight:700;cursor:pointer;">Close</button>
+          <div class="pf-actions">
+            <button id="pf-results-close" class="primary">Close</button>
           </div>
         </div>
       </div>
     `;
 
-    el.querySelector("#pf-results-close")?.addEventListener("click", () => {
+    // Apply dynamic styles via CSS variables
+    try {
+      const pieEl = el.querySelector('.pf-results-pie');
+      if (pieEl) pieEl.style.setProperty('--pf-pie', pie);
+    } catch {}
+
+    const closeOverlay = () => {
+      try { document.removeEventListener('keydown', onKeyDown, true); } catch {}
       el.remove();
-      // tell the loop/caller we’re done
       try { this._resultsCloseResolver?.(); } catch {}
       this._resultsCloseResolver = null;
+    };
+
+    const onKeyDown = (e) => {
+      if ((e.key || e.code) === 'Escape') {
+        e.stopPropagation();
+        e.preventDefault();
+        closeOverlay();
+      }
+    };
+
+    el.addEventListener('click', (e) => {
+      if (e.target === el) closeOverlay();
     });
+    try { document.addEventListener('keydown', onKeyDown, true); } catch {}
+
+    el.querySelector("#pf-results-close")?.addEventListener("click", () => closeOverlay());
 
     document.body.appendChild(el);
     this._resultsOverlay = el;
+    // Focus the close button for accessibility
+    try { el.querySelector('#pf-results-close')?.focus?.(); } catch {}
   }
 
   _setProjectedRankText(text) {
@@ -1685,12 +1740,13 @@ export class Game {
   }
 
   _resultChip(color, label, value) {
-    return `<div style="border:1px solid ${'#2a3142'};border-radius:10px;padding:10px;background:#0f1420;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};"></span>
-        <span style="opacity:.9">${label}</span>
+    const safeColor = String(color || '#25F4EE');
+    return `<div class="pf-chip" style="--pf-chip-dot:${safeColor};">
+      <div class="pf-chip-head">
+        <span class="pf-chip-dot"></span>
+        <span class="pf-chip-label">${label}</span>
       </div>
-      <div style="font-size:18px;font-weight:700;">${value}</div>
+      <div class="pf-chip-value">${value}</div>
     </div>`;
   }
 

@@ -5,8 +5,8 @@
     "title": "Untitled",
     "artist": "Unknown",
     "activeDifficulty": "normal",
-    "duration": 255651,
-    "exportedAt": "2025-10-02T07:18:40.926Z"
+    "duration": 180000,
+    "exportedAt": "2025-10-02T07:40:49.193Z"
   },
   "vfx": {
     "properties": {
@@ -27,7 +27,7 @@
         "rotateX": 0,
         "rotateY": 0,
         "rotateZ": 0,
-        "shakeAmp": 1,
+        "shakeAmp": 0,
         "shakeFreq": 5
       },
       "notes": {
@@ -245,7 +245,7 @@
           "rotateX": 0,
           "rotateY": 0,
           "rotateZ": 0,
-          "shakeAmp": 1,
+          "shakeAmp": 0,
           "shakeFreq": 5
         },
         "notes": {

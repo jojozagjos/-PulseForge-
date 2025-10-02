@@ -67,7 +67,7 @@
           <div class="row" style="gap:10px; flex-wrap:wrap;">
             <!-- <label for="latency-bpm">BPM</label> -->
             <!-- <input id="latency-bpm" type="number" min="40" max="240" step="1" style="width:80px;"> -->
-            <div class="muted">Testing BPM: <span id="latency-bpm-live">—</span></div>
+            <div class="muted">Testing BPM: <span id="latency-bpm-live"></span></div>
             <button id="latency-start" class="secondary">Start</button>
             <button id="latency-stop" class="secondary">Stop</button>
             <button id="latency-tap" class="secondary">Tap</button>
@@ -93,6 +93,15 @@
           <label for="set-render-scale">Render Scale</label>
           <input id="set-render-scale" type="range" min="0.5" max="2" step="0.1" value="1" />
           <span id="set-render-scale-label">1.0x</span>
+        </div>
+        <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+          <span class="muted">Defaults: Max FPS <b>120</b>, Render Scale <b>1.0x</b></span>
+        </div>
+        <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center;">
+          <button id="set-perf-test" class="secondary" title="Runs a short stress test (~10s)">Run Performance Test (takes ~10s)</button>
+          <button id="set-perf-apply" class="secondary" disabled>Apply Suggested</button>
+          <button id="set-perf-reset" class="ghost">Reset to Defaults</button>
+          <span id="set-perf-status" class="muted" style="opacity:.9;"></span>
         </div>
 
         <div class="row" style="margin-top:16px;">

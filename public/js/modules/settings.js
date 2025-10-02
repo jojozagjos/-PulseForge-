@@ -34,6 +34,11 @@ export class Settings {
       _pageHideHandler: null
     };
 
+    // Performance test state
+    this._perfTesting = false;
+    this._perfSuggestion = null;
+    this._perfApp = null; // temporary PIXI app for stress testing
+
     // Persist button may be on the page chrome
     // qs("#btn-save-settings")?.addEventListener("click", () => this.save(true));
 
@@ -127,6 +132,40 @@ export class Settings {
       this._playTestPattern();
     });
 
+  // Performance helpers
+    qs("#set-perf-reset")?.addEventListener("click", () => {
+      this.maxFps = 120;
+      this.renderScale = 1.0;
+      const $maxfps = qs("#set-maxfps");
+      const $renderScale = qs("#set-render-scale");
+      const $renderScaleLabel = qs("#set-render-scale-label");
+      if ($maxfps) $maxfps.value = String(this.maxFps);
+      if ($renderScale) $renderScale.value = String(this.renderScale);
+      if ($renderScaleLabel) $renderScaleLabel.textContent = `${this.renderScale.toFixed(1)}x`;
+      window.dispatchEvent(new CustomEvent("pf-maxfps-changed", { detail: { maxFps: this.maxFps } }));
+      window.dispatchEvent(new CustomEvent("pf-render-scale-changed", { detail: { renderScale: this.renderScale } }));
+      this._setPerfStatus("Reset to defaults (Max FPS 120, Render Scale 1.0x)");
+    });
+  qs("#set-perf-test")?.addEventListener("click", () => this._runPerfTest());
+  qs("#set-perf-apply")?.addEventListener("click", () => this._applySuggestedPerf());
+    // Guard Back/Save while testing
+    const backBtn = qs('#btn-back-main');
+    backBtn?.addEventListener('click', (e) => {
+      if (this._perfTesting) {
+        e?.preventDefault?.();
+        e?.stopImmediatePropagation?.();
+        this._setPerfStatus('Performance test running — please wait…');
+      }
+    }, true);
+    const saveBtn = qs('#btn-save-settings');
+    saveBtn?.addEventListener('click', (e) => {
+      if (this._perfTesting) {
+        e?.preventDefault?.();
+        e?.stopImmediatePropagation?.();
+        this._setPerfStatus('Performance test running — please wait…');
+      }
+    }, true);
+
     // Latency tester controls (no manual BPM UI — beat comes from current song)
     qs("#latency-start")?.addEventListener("click", () => this._startLatencyTest());
     qs("#latency-stop")?.addEventListener("click", () => this._stopLatencyTest());
@@ -137,6 +176,193 @@ export class Settings {
 
     // Auto-stop when leaving settings / page hidden
     this._setupAutoStopGuards();
+  }
+
+  _setPerfStatus(text){ const el = qs('#set-perf-status'); if (el) el.textContent = text || ''; }
+
+  async _runPerfTest() {
+    if (this._perfTesting) return;
+    this._perfTesting = true;
+    this._perfSuggestion = null;
+    this._lockPerfUI(true);
+    this._setPerfStatus('Preparing performance test…');
+    try { await this._ap.ensureReady(); } catch {}
+
+    // Try combos of Max FPS caps and Render Scales; score them and suggest best.
+    const orig = { maxFps: this.maxFps, renderScale: this.renderScale };
+    const results = [];
+    const caps = [60, 120, 0]; // 0 = uncapped
+    const scales = [1.0, 0.8, 0.6]; // keep total time ~9–10s
+
+    const setCap = (cap) => {
+      this.maxFps = cap;
+      const sel = qs('#set-maxfps'); if (sel) sel.value = String(cap);
+      window.dispatchEvent(new CustomEvent('pf-maxfps-changed', { detail: { maxFps: cap } }));
+    };
+    const setScale = (rs) => {
+      this.renderScale = rs;
+      const slider = qs('#set-render-scale'); if (slider) slider.value = String(rs);
+      const labelEl = qs('#set-render-scale-label'); if (labelEl) labelEl.textContent = `${rs.toFixed(1)}x`;
+      window.dispatchEvent(new CustomEvent('pf-render-scale-changed', { detail: { renderScale: rs } }));
+    };
+
+    // Ensure stress scene is running during measurement
+    this._ensurePerfApp();
+    const measureFps = (durationMs = 1000) => new Promise(resolve => {
+      let frames = 0;
+      const start = performance.now();
+      const endAt = start + durationMs;
+      const onFrame = () => {
+        frames++;
+        if (performance.now() < endAt) requestAnimationFrame(onFrame);
+        else resolve(Math.round((frames * 1000) / durationMs));
+      };
+      requestAnimationFrame(onFrame);
+    });
+
+    try {
+      for (const cap of caps) {
+        for (const rs of scales) {
+          this._setPerfStatus(`Testing Max FPS ${cap === 0 ? 'Unlimited' : cap}, Render ${rs.toFixed(1)}x…`);
+          setCap(cap);
+          setScale(rs);
+          // Apply to stress app as well
+          try {
+            if (this._perfApp?.ticker) this._perfApp.ticker.maxFPS = cap > 0 ? cap : Infinity;
+            if (this._perfApp?.renderer) {
+              const newRes = Math.max(0.5, Math.min(2, rs));
+              this._perfApp.renderer.resolution = newRes;
+              this._perfApp.renderer.resize(window.innerWidth||1280, window.innerHeight||720);
+            }
+          } catch {}
+          const fps = await measureFps();
+          // Score: prioritize hitting >= 60 FPS, then higher render scale, then higher FPS
+          const meets60 = fps >= 60 ? 1 : 0;
+          const score = (meets60 * 1000) + (rs * 100) + (fps / 100);
+          results.push({ cap, rs, fps, score });
+        }
+      }
+    } finally {
+      // Restore original
+      setCap(orig.maxFps);
+      setScale(orig.renderScale);
+      this._destroyPerfApp();
+      this._perfTesting = false;
+      this._lockPerfUI(false);
+    }
+
+    // Suggest best combo
+    const best = results.slice().sort((a,b)=> b.score - a.score)[0] || { cap: orig.maxFps, rs: orig.renderScale, fps: 60 };
+    const humanCap = best.cap === 0 ? 'Unlimited' : String(best.cap);
+    const summary = results
+      .slice(0, 8)
+      .map(r=>`(${r.cap===0?'∞':r.cap}, ${r.rs.toFixed(1)}x → ${r.fps} FPS)`).join(' • ');
+    this._perfSuggestion = { maxFps: best.cap, renderScale: best.rs };
+    const applyBtn = qs('#set-perf-apply'); if (applyBtn) applyBtn.disabled = false;
+    this._setPerfStatus(`${summary}${results.length>8?' …':''} Suggested → Max FPS ${humanCap}, Render ${best.rs.toFixed(1)}x (${best.fps} FPS).`);
+  }
+
+  _applySuggestedPerf() {
+    const sug = this._perfSuggestion;
+    if (!sug) return;
+    this.maxFps = sug.maxFps;
+    this.renderScale = sug.renderScale;
+    const sel = qs('#set-maxfps'); if (sel) sel.value = String(this.maxFps);
+    const slider = qs('#set-render-scale'); if (slider) slider.value = String(this.renderScale);
+    const labelEl = qs('#set-render-scale-label'); if (labelEl) labelEl.textContent = `${this.renderScale.toFixed(1)}x`;
+    window.dispatchEvent(new CustomEvent('pf-maxfps-changed', { detail: { maxFps: this.maxFps } }));
+    window.dispatchEvent(new CustomEvent('pf-render-scale-changed', { detail: { renderScale: this.renderScale } }));
+    this._setPerfStatus(`Applied suggested: Max FPS ${this.maxFps===0?'Unlimited':this.maxFps}, Render ${this.renderScale.toFixed(1)}x.`);
+  }
+
+  _lockPerfUI(locked) {
+    const ids = ['#set-perf-test', '#set-perf-apply', '#set-perf-reset', '#btn-save-settings', '#btn-back-main'];
+    ids.forEach(sel => { const el = qs(sel); if (el) el.disabled = !!locked; });
+    // Visual overlay on the Settings screen
+    const screen = qs('#screen-settings');
+    if (screen) {
+      if (locked) {
+        screen.classList.add('perf-locked');
+        let overlay = screen.querySelector('.pf-perf-lock-overlay');
+        if (!overlay) {
+          overlay = document.createElement('div');
+          overlay.className = 'pf-perf-lock-overlay';
+          overlay.setAttribute('aria-live', 'polite');
+          overlay.innerHTML = `
+            <div class="pf-perf-lock-card">
+              <div class="pf-spinner" aria-hidden="true"></div>
+              <div class="pf-perf-lock-text">Performance test running…</div>
+              <div class="pf-perf-lock-sub muted">Saving and leaving are disabled until it finishes.</div>
+            </div>
+          `;
+          screen.appendChild(overlay);
+        }
+      } else {
+        screen.classList.remove('perf-locked');
+        const overlay = screen.querySelector('.pf-perf-lock-overlay');
+        if (overlay) overlay.remove();
+      }
+    }
+  }
+
+  _ensurePerfApp() {
+    if (this._perfApp) return this._perfApp;
+    try {
+      const w = window.innerWidth || 1280; const h = window.innerHeight || 720;
+      const canvas = document.createElement('canvas');
+      canvas.id = 'pf-perf-canvas';
+      Object.assign(canvas.style, { position:'fixed', left:'-9999px', top:'-9999px', width: w+'px', height: h+'px' });
+      document.body.appendChild(canvas);
+      // PIXI global
+      // eslint-disable-next-line no-undef
+      const app = new PIXI.Application();
+      app.init({ canvas, width: w, height: h, background: 0x000000, antialias:false, resolution: Math.max(0.5, Math.min(2, this.renderScale||1)) });
+      app.ticker.maxFPS = this.maxFps > 0 ? this.maxFps : Infinity;
+      this._setupPerfScene(app);
+      this._perfApp = app;
+    } catch {}
+    return this._perfApp;
+  }
+
+  _setupPerfScene(app) {
+    try {
+      const count = 400; // moving sprites
+      const g = new (PIXI.Graphics)();
+      g.circle(8, 8, 8); g.fill({ color: 0xffffff });
+      const tex = app.renderer.generateTexture(g);
+      const cont = new (PIXI.Container)();
+      app.stage.addChild(cont);
+      const rnd = (a,b)=> a + Math.random()*(b-a);
+      for (let i=0;i<count;i++) {
+        const s = new (PIXI.Sprite)(tex);
+        s.x = rnd(0, app.renderer.width);
+        s.y = rnd(0, app.renderer.height);
+        s.tint = Math.random()*0xffffff;
+        s.__vx = rnd(-3, 3);
+        s.__vy = rnd(-3, 3);
+        cont.addChild(s);
+      }
+        app.ticker.add(() => {
+          for (const s of cont.children) {
+            s.x += s.__vx; s.y += s.__vy;
+            if (s.x < -16) s.x = app.renderer.width + 16;
+            if (s.x > app.renderer.width + 16) s.x = -16;
+            if (s.y < -16) s.y = app.renderer.height + 16;
+            if (s.y > app.renderer.height + 16) s.y = -16;
+            s.rotation += 0.02;
+          }
+        });
+    } catch {}
+  }
+
+  _destroyPerfApp() {
+    try {
+      const c = document.getElementById('pf-perf-canvas');
+      if (this._perfApp?.ticker) this._perfApp.ticker.stop();
+      if (this._perfApp) this._perfApp.destroy(true, { children:true, texture:true, baseTexture:true });
+      this._perfApp = null;
+      if (c) c.remove();
+    } catch {}
   }
 
   save(alertUser = true) {
@@ -200,13 +426,21 @@ export class Settings {
     };
     window.addEventListener("keydown", this._lt.keyHandler);
 
-    // Drift-corrected scheduling to absolute performance.now() targets
+    // Drift-corrected scheduling: use performance.now() for cadence and align audio on the WebAudio clock
     const schedule = () => {
       if (!this._lt.running) return;
-      const dueIn = Math.max(0, this._lt.nextBeatPerfMs - performance.now());
+      const targetPerf = this._lt.nextBeatPerfMs;
+      const dueIn = Math.max(0, targetPerf - performance.now());
       this._lt.scheduler = setTimeout(() => {
-        // Emit *only* if still running (leaving screen cancels)
-        if (this._lt.running) this._emitLatencyBeat(this._lt.nextBeatPerfMs);
+        if (!this._lt.running) return;
+        // Convert the performance.now()-based target to AudioContext time with a tiny lookahead
+        const nowPerf = performance.now();
+        const ctx = this._ap.ctx;
+        const nowAudio = ctx.currentTime;
+        // Estimate conversion: assume constant offset between perf and audio clocks during the test
+        const offsetSec = (targetPerf - nowPerf) / 1000;
+        const when = Math.max(nowAudio + 0.01, nowAudio + offsetSec);
+        this._emitLatencyBeat(targetPerf, when);
         this._lt.nextBeatPerfMs += this._lt.beatMs;
         schedule();
       }, dueIn);
@@ -243,7 +477,7 @@ export class Settings {
     if (flash) flash.style.opacity = "0";
   }
 
-  _emitLatencyBeat(scheduledPerfMs) {
+  _emitLatencyBeat(scheduledPerfMs, whenAudio = null) {
     // Visual flash bar (blue)
     const flash = qs("#latency-flash");
     if (flash) {
@@ -255,8 +489,8 @@ export class Settings {
       });
     }
 
-    // Audible click (short blip; routes through master)
-    this._click(1000, 60);
+    // Audible click (short blip; routes through master) aligned to 'whenAudio' if provided
+    this._click(1000, 60, whenAudio);
 
     // Show instruction when the first beat hits
     if (Math.abs(scheduledPerfMs - this._lt.startPerfMs) < 4) {
@@ -329,25 +563,26 @@ export class Settings {
     });
   }
 
-  _click(freq = 1000, durMs = 60) {
+  _click(freq = 1000, durMs = 60, when = null) {
     const ctx = this._ap.ctx;
     const now = ctx.currentTime;
+    const startAt = (Number.isFinite(when) ? when : now);
 
     const osc = ctx.createOscillator();
     osc.type = "sine";
-    osc.frequency.setValueAtTime(freq, now);
+    osc.frequency.setValueAtTime(freq, startAt);
 
     // Short envelope
     const g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.linearRampToValueAtTime(0.6, now + 0.005);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + durMs / 1000);
+    g.gain.setValueAtTime(0.0001, startAt);
+    g.gain.linearRampToValueAtTime(0.6, startAt + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, startAt + durMs / 1000);
 
     osc.connect(g);
     g.connect(this._ap.master); // goes through master -> volume applies
 
-    try { osc.start(now); } catch {}
-    try { osc.stop(now + durMs / 1000 + 0.01); } catch {}
+  try { osc.start(startAt); } catch {}
+  try { osc.stop(startAt + durMs / 1000 + 0.01); } catch {}
   }
 
   // ----------------- Auto-stop guards -----------------

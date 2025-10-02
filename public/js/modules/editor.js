@@ -2576,6 +2576,66 @@ export class Editor {
       if (normArr.length) outKfs[prop] = normArr;
     }
 
+    // Export guard: for any property with its first keyframe after t=0,
+    // set the base (properties) value to the schema default so runtime starts at default
+    try {
+      const getDefaultForProp = (path) => {
+        const parts = String(path).split('.');
+        let cur = defaults;
+        for (let i = 0; i < parts.length; i++) {
+          const p = parts[i];
+          if (/^\d+$/.test(p)) {
+            const idx = Math.max(0, parseInt(p, 10) - 1);
+            if (!Array.isArray(cur)) return undefined;
+            cur = cur[idx];
+          } else {
+            cur = cur?.[p];
+          }
+          if (cur === undefined) break;
+        }
+        return cur;
+      };
+      const setBaseToDefault = (path) => {
+        const defVal = getDefaultForProp(path);
+        if (defVal === undefined) return;
+        const parts = String(path).split('.');
+        let tgt = outProps;
+        for (let i = 0; i < parts.length - 1; i++) {
+          const p = parts[i];
+          if (/^\d+$/.test(p)) {
+            const idx = Math.max(0, parseInt(p, 10) - 1);
+            if (!Array.isArray(tgt)) return;
+            tgt = tgt[idx];
+          } else {
+            if (!(p in tgt)) tgt[p] = {};
+            tgt = tgt[p];
+          }
+          if (tgt === undefined) return;
+        }
+        const last = parts[parts.length - 1];
+        if (/^\d+$/.test(last)) {
+          const idx = Math.max(0, parseInt(last, 10) - 1);
+          // handle arrays like notes.colors
+          // find parent array
+          const parentPath = parts.slice(0, -1).join('.');
+          let parent = outProps;
+          for (const pp of parts.slice(0, -1)) parent = parent?.[pp];
+          if (Array.isArray(parent)) parent[idx] = defVal;
+        } else {
+          tgt[last] = defVal;
+        }
+      };
+
+      for (const [prop, arr] of Object.entries(outKfs)) {
+        if (Array.isArray(arr) && arr.length > 0) {
+          const first = arr[0];
+          if (first && Number.isFinite(first.time) && first.time > 0) {
+            setBaseToDefault(prop);
+          }
+        }
+      }
+    } catch {}
+
     return { properties: outProps, keyframes: outKfs, warnings };
   }
 
