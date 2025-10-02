@@ -804,6 +804,7 @@ export class Game {
     if (isHold) {
       // Head flashes white; tail turns white, remains full-length.
       this._paintHeadWhite(vis.head);
+      vis.head.__pfWhiteSticky = true; // keep head white after hit
       if (vis.body) {
         vis.body.texture = this._getBodyTexture(vis.body.__pfLen, true);
         vis.body.tint = 0xFFFFFF;
@@ -812,6 +813,11 @@ export class Game {
 
       vis.head.__pfHoldActive = true;
       if (vis.body) vis.body.__pfHoldActive = true;
+      // Enable tail mask when actively holding (if judge-clip mode is on)
+      if (this.holdTailClipsAtJudge && vis.body?.__pfMask) {
+        vis.body.__pfMaskPersist = false;
+        vis.body.mask = vis.body.__pfMask;
+      }
 
       const endMs = (note.tMs || 0) + (note.dMs || 0);
       this.activeHoldsByLane.set(lane, {
@@ -829,6 +835,7 @@ export class Game {
     } else {
       // Tap: brief head white flash
       this._paintHeadWhite(vis.head);
+      vis.head.__pfWhiteSticky = true; // keep head white after hit
       const until = (this.state.timeMs || 0) + WHITE_FLASH_MS;
       vis.head.__pfFlashUntil = until;
       vis.head.__pfFadeRate   = HIT_FADE_RATE;
@@ -948,7 +955,8 @@ export class Game {
         if (this.holdTailClipsAtJudge) {
           const bm = new PIXI.Graphics();
           bm.isMask = true;
-          body.mask = bm;
+          bm.visible = false; // never render as a visible beam unless actively used as a mask
+          // Do not activate the mask yet; only enable once the hold is actually hit/active
           cont.addChild(bm);
           body.__pfMask = bm;
         }
@@ -961,6 +969,7 @@ export class Game {
       head.__pfFlashUntil = null;
       head.__pfFadeRate   = HIT_FADE_RATE;
       head.__pfHoldActive = false;
+  head.__pfWhiteSticky = false;
 
       this.laneNoteLayers[n.lane].addChild(cont);
       const rec = { cont, head, body, n, gloss };
@@ -1184,27 +1193,36 @@ export class Game {
             cont.y = y;
           }
 
-          // Tap miss: after window passes, mark miss and fade head
+          // Tap miss: after window passes, mark miss (no fade; let it scroll off-screen)
           if (tMs >= 0 && !n.hit && (!body)) {
             if (tMs - n.tMs > 120) {
               n.hit = true;
               this.state.combo = 0;
               this._recordJudge("Miss");
               this._judgment("Miss", true);
-              head && this._beginFadeOut(head, MISS_FADE_RATE, false);
+              // No fade here; culling will remove once fully below the lane
             }
           }
 
-          // Update per-note hold mask (only in judge-clip mode)
+          // Update per-note hold mask (only apply when hold is actively held)
           if (body && this.holdTailClipsAtJudge && body.__pfMask) {
-            const localJudge = cont.toLocal(new PIXI.Point(0, this.judgeY));
-            const cutY = localJudge.y;
+            const shouldMask = !!(head?.__pfHoldActive || body.__pfHoldActive || body.__pfMaskPersist);
+            if (shouldMask) {
+              if (body.mask !== body.__pfMask) body.mask = body.__pfMask;
+              body.__pfMask.visible = true;
+              const localJudge = cont.toLocal(new PIXI.Point(0, this.judgeY));
+              const cutY = localJudge.y;
 
-            body.__pfMask.clear();
-            const stemX = body.x - 4;
-            body.__pfMask.rect(stemX, -50000, 24, cutY + 50000);
-            body.__pfMask.fill(0xffffff);
-            body.__pfMask.isMask = true;
+              body.__pfMask.clear();
+              const stemX = body.x - 4;
+              body.__pfMask.rect(stemX, -50000, 24, cutY + 50000);
+              body.__pfMask.fill(0xffffff);
+              body.__pfMask.isMask = true;
+            } else {
+              if (body.mask) body.mask = null; // disable mask when not actively holding
+              body.__pfMask.visible = false;
+              body.__pfMask.clear();
+            }
           }
 
           // compute full visual bounds (head + tail)
@@ -1216,7 +1234,8 @@ export class Game {
           if (body) {
             const bodyTop = cont.y - (body.__pfLen - 2);
             let bodyBottom = cont.y; // where tail meets head
-            if (this.holdTailClipsAtJudge) {
+            // Only clip visual extent to judge line while masking is active
+            if (this.holdTailClipsAtJudge && body?.mask) {
               bodyBottom = Math.min(bodyBottom, this.judgeY);
             }
             topY = Math.min(topY, bodyTop);
@@ -1229,7 +1248,7 @@ export class Game {
           // Only cull once the entire note is past the bottom
           const fullyBelowLane = topY > (laneBottom + 80);
           if (fullyBelowLane) {
-            if (body?.__pfMask) { body.mask = null; body.__pfMask.removeFromParent(); }
+            if (body?.__pfMask) { body.mask = null; body.__pfMask.removeFromParent(); body.__pfMaskPersist = false; }
             cont.parent?.removeChild(cont);
             continue;
           }
@@ -1265,13 +1284,9 @@ export class Game {
             if (this.vfx && head) {
               const cHex = this._vfxColorForLaneAt(tMs, n.lane);
               if (cHex != null) {
-                // Determine if the playhead is anywhere along the hold tail
-                const onTail = !!(body && n.dMs && (tMs >= (n.tMs || 0)) && (tMs <= (n.tMs || 0) + Math.max(0, n.dMs || 0)));
-                // Don’t override white flash, active hold white, or when on the tail (we keep white then)
-                if (!onTail && !head.__pfFlashUntil && !head.__pfHoldActive) head.tint = cHex;
-                if (body && !body.__pfHoldActive) {
-                  if (!onTail) body.tint = cHex;
-                }
+                // Don’t override white flash or active hold white
+                if (!head.__pfFlashUntil && !head.__pfHoldActive && !head.__pfWhiteSticky) head.tint = cHex;
+                if (body && !body.__pfHoldActive) body.tint = cHex;
               }
             }
           } catch {}
@@ -1283,25 +1298,28 @@ export class Game {
             gloss.visible = dy < 420 && head.alpha > 0.05;
           }
 
-          // Hold miss at head
+          // Hold miss at head (no fade; unmask tail so it scrolls off-screen)
           if (body && !n.hit && (tMs - n.tMs > 120)) {
             n.hit = true;
             this.state.combo = 0;
             this._recordJudge("Miss");
             this._judgment("Miss", true);
-            this._beginFadeOut(head, MISS_FADE_RATE, false);
             body.__pfHoldActive = false;
-            this._beginFadeOut(body, MISS_FADE_RATE, true);
+            body.__pfMaskPersist = false;
+            // Let the tail continue off-screen like other notes: remove judge-line clip mask
+            if (body.__pfMask) { body.mask = null; body.__pfMask.removeFromParent(); body.__pfMask = null; }
+            // No fade for head/body on miss; they will scroll and be culled off-screen
           }
 
-          // While the playhead is anywhere along the tail, turn the entire tail white
+          // While actively holding, turn the entire tail white; otherwise keep normal color
           if (body) {
+            const isActiveHold = !!(body.__pfHoldActive || (head && head.__pfHoldActive));
             const onTail = !!(n.dMs && (tMs >= (n.tMs || 0)) && (tMs <= (n.tMs || 0) + Math.max(0, n.dMs || 0)));
-            if (onTail && body.__pfLen) {
+            if (isActiveHold && onTail && body.__pfLen) {
               body.texture = this._getBodyTexture(body.__pfLen, true);
               body.tint = 0xFFFFFF;
               body.alpha = 0.95;
-            } else if (!body.__pfHoldActive) {
+            } else if (!isActiveHold) {
               // restore normal tail when not flashing and not actively held white
               body.texture = this._getBodyTexture(body.__pfLen || 10, false);
               const vfxLane = this._vfxColorForLaneAt(tMs, n.lane);
@@ -1310,10 +1328,11 @@ export class Game {
             }
           }
 
-          // Also turn the head white while the playhead is on the tail timeline range
+          // Also turn the head white only while actively holding during the tail timeline range
           if (head) {
+            const isActiveHold = !!head.__pfHoldActive;
             const onTail = !!(n.dMs && (tMs >= (n.tMs || 0)) && (tMs <= (n.tMs || 0) + Math.max(0, n.dMs || 0)));
-            if (onTail && !head.__pfHoldActive) {
+            if (isActiveHold && onTail) {
               head.tint = 0xFFFFFF;
             }
           }
@@ -1331,17 +1350,25 @@ export class Game {
                 this._judgment("Miss", true);
                 if (hold.bodyRef) {
                   hold.bodyRef.__pfHoldActive = false;
-                  this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE, true);
+                  hold.bodyRef.__pfMaskPersist = false;
+                  // Unmask so tail scrolls off-screen; do not fade
+                  if (hold.bodyRef.__pfMask) { hold.bodyRef.mask = null; hold.bodyRef.__pfMask.removeFromParent(); hold.bodyRef.__pfMask = null; }
                 }
                 if (hold.headRef) {
                   hold.headRef.__pfHoldActive = false;
-                  this._beginFadeOut(hold.headRef, MISS_FADE_RATE, false);
+                  // Do not fade; it will scroll and be culled
                 }
                 this.activeHoldsByLane.delete(lane);
               }
             } else {
               if (hold.bodyRef) {
                 hold.bodyRef.__pfHoldActive = false;
+                // Keep masking after successful end so the remaining tail stays clipped at judge line
+                if (hold.bodyRef.__pfMask) {
+                  hold.bodyRef.__pfMaskPersist = true;
+                  hold.bodyRef.mask = hold.bodyRef.__pfMask;
+                }
+                // Optional: small fade; remove if you want no fade on success
                 this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE, true);
               }
               if (hold.headRef) {
