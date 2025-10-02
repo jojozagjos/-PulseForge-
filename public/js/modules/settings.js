@@ -39,6 +39,16 @@ export class Settings {
     this._perfSuggestion = null;
     this._perfApp = null; // temporary PIXI app for stress testing
 
+    // Persisted snapshot for unsaved-changes detection
+    this._persisted = {
+      name: this.name,
+      latencyMs: this.latencyMs,
+      keys: [...this.keys],
+      volume: this.volume,
+      maxFps: this.maxFps,
+      renderScale: this.renderScale
+    };
+
     // Persist button may be on the page chrome
     // qs("#btn-save-settings")?.addEventListener("click", () => this.save(true));
 
@@ -65,9 +75,19 @@ export class Settings {
       this.name = name || "";
       this.latencyMs = isFiniteNumber(s.latencyMs) ? s.latencyMs : this.latencyMs;
       this.keys = Array.isArray(s.keys) && s.keys.length ? s.keys : this.keys;
-  this.volume = isFiniteNumber(s.volume) ? clamp01(s.volume) : this.volume;
-  this.maxFps = isFiniteNumber(s.maxFps) ? Math.max(0, Math.floor(s.maxFps)) : this.maxFps;
-  this.renderScale = isFiniteNumber(s.renderScale) ? Math.max(0.5, Math.min(2, s.renderScale)) : this.renderScale;
+      this.volume = isFiniteNumber(s.volume) ? clamp01(s.volume) : this.volume;
+      this.maxFps = isFiniteNumber(s.maxFps) ? Math.max(0, Math.floor(s.maxFps)) : this.maxFps;
+      this.renderScale = isFiniteNumber(s.renderScale) ? Math.max(0.5, Math.min(2, s.renderScale)) : this.renderScale;
+
+      // Update persisted snapshot baseline
+      this._persisted = {
+        name: this.name,
+        latencyMs: this.latencyMs,
+        keys: [...this.keys],
+        volume: this.volume,
+        maxFps: this.maxFps,
+        renderScale: this.renderScale
+      };
     } catch {}
 
     // Reflect → UI
@@ -151,11 +171,26 @@ export class Settings {
     // Guard Back/Save while testing
     const backBtn = qs('#btn-back-main');
     backBtn?.addEventListener('click', (e) => {
+      // During perf test, block nav
       if (this._perfTesting) {
         e?.preventDefault?.();
         e?.stopImmediatePropagation?.();
         this._setPerfStatus('Performance test running — please wait…');
+        return;
       }
+      // Warn on unsaved changes if leaving Settings
+      try {
+        const screen = document.getElementById('screen-settings');
+        const isActive = screen?.classList?.contains('active');
+        if (!isActive) return; // ignore if not on settings
+        if (this._hasUnsavedChanges()) {
+          const ok = window.confirm('You have unsaved changes. Leave without saving?');
+          if (!ok) {
+            e?.preventDefault?.();
+            e?.stopImmediatePropagation?.();
+          }
+        }
+      } catch {}
     }, true);
     const saveBtn = qs('#btn-save-settings');
     saveBtn?.addEventListener('click', (e) => {
@@ -382,20 +417,63 @@ export class Settings {
   this.maxFps = Math.max(0, Math.floor(Number(qs("#set-maxfps")?.value || this.maxFps)));
   this.renderScale = Math.max(0.5, Math.min(2, Number(qs("#set-render-scale")?.value || this.renderScale)));
 
-    localStorage.setItem("pf-settings", JSON.stringify({
+    const payload = {
       name: this.name,
       latencyMs: this.latencyMs,
       keys: this.keys,
       volume: this.volume,
       maxFps: this.maxFps,
       renderScale: this.renderScale
-    }));
+    };
+    localStorage.setItem("pf-settings", JSON.stringify(payload));
+
+    // Update persisted baseline
+    this._persisted = { ...payload, keys: [...payload.keys] };
 
     // Keep AudioPlayer aligned with saved volume
     this._ap.setMasterVolume(this.volume);
     window.dispatchEvent(new CustomEvent("pf-volume-changed", { detail: { volume: this.volume } }));
 
     if (alertUser) alert("Saved.");
+  }
+
+  // ----------------- Unsaved changes helpers -----------------
+  _readUiSnapshot() {
+    const $name = qs('#set-name');
+    const $lat  = qs('#set-latency');
+    const $keys = qs('#set-keys');
+    const $vol  = qs('#set-volume');
+    const $max  = qs('#set-maxfps');
+    const $rs   = qs('#set-render-scale');
+    const name = ($name?.value || '').trim();
+    const latencyMs = parseInt($lat?.value || '0', 10) || 0;
+    const keys = (($keys?.value || '').trim() || 'D,F,J,K')
+      .split(',').map(s=>s.trim().toUpperCase()).filter(Boolean).slice(0,4);
+    const volume = clamp01(((Number($vol?.value) || Math.round(this.volume*100)) / 100));
+    const maxFps = Math.max(0, Math.floor(Number($max?.value || this.maxFps)));
+    const renderScale = Math.max(0.5, Math.min(2, Number($rs?.value || this.renderScale)));
+    return { name, latencyMs, keys, volume, maxFps, renderScale };
+  }
+
+  _hasUnsavedChanges() {
+    // Compare current UI snapshot to persisted baseline
+    try {
+      const cur = this._readUiSnapshot();
+      const p = this._persisted || {};
+      if ((cur.name || '') !== (p.name || '')) return true;
+      if ((cur.latencyMs|0) !== (p.latencyMs|0)) return true;
+      const pk = Array.isArray(p.keys) ? p.keys.map(s=>String(s).toUpperCase()) : [];
+      const ck = Array.isArray(cur.keys) ? cur.keys.map(s=>String(s).toUpperCase()) : [];
+      if (pk.length !== ck.length) return true;
+      for (let i=0;i<ck.length;i++){ if (ck[i] !== pk[i]) return true; }
+      // compare volume with small tolerance
+      if (Math.abs(Number(cur.volume||0) - Number(p.volume||0)) > 0.005) return true;
+      if ((cur.maxFps|0) !== (p.maxFps|0)) return true;
+      if (Math.abs(Number(cur.renderScale||0) - Number(p.renderScale||0)) > 0.0001) return true;
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   // Simple getters for other modules
