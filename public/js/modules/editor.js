@@ -933,10 +933,10 @@ export class Editor {
     if (!keyframe) return;
 
     const newKeyframe = { ...keyframe, time: keyframe.time + 1000 }; // Add 1 second offset
-  vfx.keyframes[property].push(newKeyframe);
-  vfx.keyframes[property].sort((a, b) => a.time - b.time);
-    
-  this._updateVFXTimeline(vfx);
+    vfx.keyframes[property].push(newKeyframe);
+    vfx.keyframes[property].sort((a, b) => a.time - b.time);
+      
+    this._updateVFXTimeline(vfx);
   }
 
   _clearVFXKeyframes(vfx) {
@@ -946,7 +946,7 @@ export class Editor {
       vfx.timeline.selectedKeyframe = null;
       // Revert this property to its default when no keyframes are set
       this._assignVFXDefault(property, vfx);
-  this._updateVFXTimeline(vfx);
+      this._updateVFXTimeline(vfx);
     }
   }
 
