@@ -1,9 +1,6 @@
-import { Boot } from "./modules/boot.js?v=19";
-import { Solo } from "./modules/solo.js?v=19";
-import { Game } from "./modules/game.js?v=19";
-import { Settings } from "./modules/settings.js?v=19";
-import { Editor } from "./modules/editor.js?v=19";
-import { Leaderboard } from "./modules/leaderboard.js?v=19";
+import { Boot } from "./modules/boot.js?v=19"; // optional eager
+import { Settings } from "./modules/settings.js?v=19"; // keep eager (small, used often)
+// Solo, Game, Editor, Leaderboard are now lazy-loaded via dynamic import()
 
 function q(id) { return document.getElementById(id); }
 
@@ -76,6 +73,39 @@ window.addEventListener("DOMContentLoaded", () => {
   let lbInstance = null;
   let editorInstance = null;
 
+  // ---- Module loader: cache + retry + tiny UX overlay ----
+  const __pfModCache = new Map();
+  let __pfLoaderEl = null;
+  function __pfShowLoader(msg = "Loading…") {
+    if (__pfLoaderEl) { try { __pfLoaderEl.querySelector('.msg').textContent = msg; } catch {} return; }
+    const el = document.createElement('div');
+    el.id = 'pf-loader';
+    el.innerHTML = `<div class="card"><div class="spinner"></div><div class="msg">${msg}</div></div>`;
+    Object.assign(el.style, { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', display:'grid', placeItems:'center', zIndex: 3000 });
+    const card = el.querySelector('.card');
+    Object.assign(card.style, { background:'#0e1624', color:'#d9e7ff', border:'1px solid #2a3142', borderRadius:'10px', padding:'14px 18px', font:'600 14px system-ui' });
+    const sp = el.querySelector('.spinner');
+    Object.assign(sp.style, { width:'16px', height:'16px', border:'2px solid #2a3142', borderTopColor:'#6ab3ff', borderRadius:'50%', margin:'0 auto 10px', animation:'pfspin 1s linear infinite' });
+    const style = document.createElement('style'); style.textContent = `@keyframes pfspin{to{transform:rotate(360deg)}}`;
+    el.appendChild(style);
+    document.body.appendChild(el);
+    __pfLoaderEl = el;
+  }
+  function __pfHideLoader(){ if (__pfLoaderEl) { try { __pfLoaderEl.remove(); } catch {} __pfLoaderEl = null; } }
+  async function loadModule(path, tries = 2) {
+    if (__pfModCache.has(path)) return __pfModCache.get(path);
+    const p = (async () => {
+      let lastErr;
+      for (let i = 0; i < tries; i++) {
+        try { return await import(path); }
+        catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 400 * (i + 1))); }
+      }
+      throw lastErr;
+    })();
+    __pfModCache.set(path, p);
+    return p;
+  }
+
   // Active game guard so we can force-stop on quit or new launches
   let PF_activeGame = null;
   let PF_quitOverlay = null;
@@ -125,8 +155,14 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     show("solo");
     if (!soloInstance) {
-      soloInstance = new Solo(settings);
-      await soloInstance.mount();
+      __pfShowLoader("Loading Solo…");
+      try {
+        const { Solo } = await loadModule("./modules/solo.js?v=19", 2);
+        soloInstance = new Solo(settings);
+        await soloInstance.mount();
+      } catch (e) {
+        console.error(e); alert("Could not load Solo. Please try again.");
+      } finally { __pfHideLoader(); }
     }
   });
 
@@ -140,8 +176,14 @@ window.addEventListener("DOMContentLoaded", () => {
   async function openLeaderboard() {
     show("leaderboard");
     if (!lbInstance) {
-      lbInstance = new Leaderboard(settings);
-      await lbInstance.mount?.();
+      __pfShowLoader("Loading Leaderboard…");
+      try {
+        const { Leaderboard } = await loadModule("./modules/leaderboard.js?v=19", 2);
+        lbInstance = new Leaderboard(settings);
+        await lbInstance.mount?.();
+      } catch (e) {
+        console.error(e); alert("Could not load Leaderboard. Please try again.");
+      } finally { __pfHideLoader(); }
     }
   }
   q("btn-view-leaderboard")?.addEventListener("click", openLeaderboard);
@@ -194,8 +236,11 @@ window.addEventListener("DOMContentLoaded", () => {
 async function openEditor() {
     show("editor");
     __wireEditorTabs();
-    if (!editorInstance && typeof Editor !== "undefined") {
-      editorInstance = new Editor({
+    if (!editorInstance) {
+      __pfShowLoader("Loading Editor…");
+      try {
+        const { Editor } = await loadModule("./modules/editor.js?v=19", 2);
+        editorInstance = new Editor({
         canvasId: "editor-canvas",
         scrubId: "ed-scrub",
         bpmInputId: "ed-bpm",
@@ -205,9 +250,12 @@ async function openEditor() {
         timeLabelId: "ed-time",
         helpLabelId: "ed-help",
         onExport: (json) => console.log("Exported chart JSON:", json),
-      });
-      editorInstance.newChart({ bpm: 120, lanes: 4, notes: [], durationMs: 180000 });
-      editorInstance.mountToolbar();
+        });
+        editorInstance.newChart({ bpm: 120, lanes: 4, notes: [], durationMs: 180000 });
+        editorInstance.mountToolbar();
+      } catch (e) {
+        console.error(e); alert("Could not load Editor. Please try again.");
+      } finally { __pfHideLoader(); }
     }
   }
   q("btn-editor")?.addEventListener("click", openEditor);
@@ -286,7 +334,7 @@ async function openEditor() {
   const parseAccPct = (s) => (Number(String(s || "0").replace(/[^\d.]/g, "")) || 0) / 100;
 
   // Used by Leaderboard + Solo + Editor to start a run.
-  window.PF_startGame = function(runtime) {
+  window.PF_startGame = async function(runtime) {
     const nm = (settings.name || "").trim();
     if (!nm) {
       alert("Please set your Player Name in Settings before you start.");
@@ -328,7 +376,17 @@ async function openEditor() {
     try { document.getElementById("pf-results-overlay")?.remove(); } catch {}
 
 
-    const game = new Game(runtime, settings);
+    __pfShowLoader("Loading Game…");
+    let game;
+    try {
+      const { Game } = await loadModule("./modules/game.js?v=19", 2);
+      game = new Game(runtime, settings);
+    } catch (e) {
+      console.error(e); __pfHideLoader();
+      alert("Could not load Game. Please try again.");
+      show(returnTo);
+      return;
+    } finally { __pfHideLoader(); }
     PF_activeGame = game;
 
     // If the Game exposes a seek method and a startAtMs was provided, use it
@@ -343,7 +401,7 @@ async function openEditor() {
     });
 
     // Start the run
-    game.run().then(async (results) => {
+  game.run().then(async (results) => {
       // If user quit early, ignore late resolves
       if (PF_activeGame !== game) return;
 
@@ -403,6 +461,21 @@ async function openEditor() {
 
   // Ensure we start on main menu
   show("main");
+
+  // Preload heavy modules after idle on capable devices; backup on first interaction
+  try {
+    const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 1200));
+    const canWarm = !(navigator.connection && navigator.connection.saveData) && ((navigator.deviceMemory || 4) >= 4);
+    let warmed = false;
+    const doWarm = () => { if (warmed) return; warmed = true;
+      loadModule("./modules/game.js?v=19").catch(()=>{});
+      loadModule("./modules/solo.js?v=19").catch(()=>{});
+      loadModule("./modules/editor.js?v=19").catch(()=>{});
+      loadModule("./modules/leaderboard.js?v=19").catch(()=>{});
+    };
+    if (canWarm) idle(doWarm);
+    window.addEventListener('pointerdown', doWarm, { once: true });
+  } catch {}
 
   // ---------------- Dev: Debug overlay + Safe Mode + error hooks ----------------
   (function PF_debugTools(){
