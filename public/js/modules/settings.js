@@ -11,6 +11,8 @@ export class Settings {
   // Performance
   this.maxFps = 120;      // 0 = unlimited
   this.renderScale = 1.0; // 0.5 .. 2
+    // Optional: disable background warm-preload for very low-end devices
+    this.disableWarmPreload = false;
 
     // Small, shared audio helper (routes through a master Gain)
     this._ap = new AudioPlayer();
@@ -46,7 +48,8 @@ export class Settings {
       keys: [...this.keys],
       volume: this.volume,
       maxFps: this.maxFps,
-      renderScale: this.renderScale
+      renderScale: this.renderScale,
+      disableWarmPreload: this.disableWarmPreload
     };
 
     // Persist button may be on the page chrome
@@ -78,6 +81,7 @@ export class Settings {
       this.volume = isFiniteNumber(s.volume) ? clamp01(s.volume) : this.volume;
       this.maxFps = isFiniteNumber(s.maxFps) ? Math.max(0, Math.floor(s.maxFps)) : this.maxFps;
       this.renderScale = isFiniteNumber(s.renderScale) ? Math.max(0.5, Math.min(2, s.renderScale)) : this.renderScale;
+  this.disableWarmPreload = Boolean(s.disableWarmPreload);
 
       // Update persisted snapshot baseline
       this._persisted = {
@@ -86,7 +90,8 @@ export class Settings {
         keys: [...this.keys],
         volume: this.volume,
         maxFps: this.maxFps,
-        renderScale: this.renderScale
+        renderScale: this.renderScale,
+        disableWarmPreload: this.disableWarmPreload
       };
     } catch {}
 
@@ -99,6 +104,7 @@ export class Settings {
   const $maxfps = qs("#set-maxfps");
   const $renderScale = qs("#set-render-scale");
   const $renderScaleLabel = qs("#set-render-scale-label");
+  const $warm = qs("#set-disable-warm-preload");
 
     if ($name) $name.value = this.name || "";
     if ($lat)  $lat.value = this.latencyMs;
@@ -118,6 +124,14 @@ export class Settings {
         if ($volLabel) $volLabel.textContent = `${Math.round(v * 100)}%`;
         // broadcast so editor/solo preview can react immediately
         window.dispatchEvent(new CustomEvent("pf-volume-changed", { detail: { volume: v } }));
+      });
+    }
+
+    // Warm-preload toggle
+    if ($warm) {
+      $warm.checked = !!this.disableWarmPreload;
+      $warm.addEventListener("change", () => {
+        this.disableWarmPreload = !!$warm.checked;
       });
     }
 
@@ -405,6 +419,7 @@ export class Settings {
     const $lat  = qs("#set-latency");
     const $keys = qs("#set-keys");
     const $vol  = qs("#set-volume");
+  const $warm = qs("#set-disable-warm-preload");
 
     this.name = ($name?.value || "").trim();
     this.latencyMs = parseInt($lat?.value || "0", 10);
@@ -416,6 +431,7 @@ export class Settings {
   this.volume = clamp01(((Number($vol?.value) || 100) / 100));
   this.maxFps = Math.max(0, Math.floor(Number(qs("#set-maxfps")?.value || this.maxFps)));
   this.renderScale = Math.max(0.5, Math.min(2, Number(qs("#set-render-scale")?.value || this.renderScale)));
+  this.disableWarmPreload = !!($warm?.checked);
 
     const payload = {
       name: this.name,
@@ -423,7 +439,8 @@ export class Settings {
       keys: this.keys,
       volume: this.volume,
       maxFps: this.maxFps,
-      renderScale: this.renderScale
+      renderScale: this.renderScale,
+      disableWarmPreload: this.disableWarmPreload
     };
     localStorage.setItem("pf-settings", JSON.stringify(payload));
 
@@ -445,6 +462,7 @@ export class Settings {
     const $vol  = qs('#set-volume');
     const $max  = qs('#set-maxfps');
     const $rs   = qs('#set-render-scale');
+  const $warm = qs('#set-disable-warm-preload');
     const name = ($name?.value || '').trim();
     const latencyMs = parseInt($lat?.value || '0', 10) || 0;
     const keys = (($keys?.value || '').trim() || 'D,F,J,K')
@@ -452,7 +470,8 @@ export class Settings {
     const volume = clamp01(((Number($vol?.value) || Math.round(this.volume*100)) / 100));
     const maxFps = Math.max(0, Math.floor(Number($max?.value || this.maxFps)));
     const renderScale = Math.max(0.5, Math.min(2, Number($rs?.value || this.renderScale)));
-    return { name, latencyMs, keys, volume, maxFps, renderScale };
+    const disableWarmPreload = !!($warm?.checked);
+    return { name, latencyMs, keys, volume, maxFps, renderScale, disableWarmPreload };
   }
 
   _hasUnsavedChanges() {
@@ -470,6 +489,7 @@ export class Settings {
       if (Math.abs(Number(cur.volume||0) - Number(p.volume||0)) > 0.005) return true;
       if ((cur.maxFps|0) !== (p.maxFps|0)) return true;
       if (Math.abs(Number(cur.renderScale||0) - Number(p.renderScale||0)) > 0.0001) return true;
+      if (!!cur.disableWarmPreload !== !!p.disableWarmPreload) return true;
       return false;
     } catch {
       return false;

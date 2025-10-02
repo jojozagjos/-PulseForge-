@@ -465,7 +465,7 @@ async function openEditor() {
   // Preload heavy modules after idle on capable devices; backup on first interaction
   try {
     const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 1200));
-    const canWarm = !(navigator.connection && navigator.connection.saveData) && ((navigator.deviceMemory || 4) >= 4);
+    const canWarm = !settings.disableWarmPreload && !(navigator.connection && navigator.connection.saveData) && ((navigator.deviceMemory || 4) >= 4);
     let warmed = false;
     const doWarm = () => { if (warmed) return; warmed = true;
       loadModule("./modules/game.js?v=19").catch(()=>{});
@@ -474,7 +474,7 @@ async function openEditor() {
       loadModule("./modules/leaderboard.js?v=19").catch(()=>{});
     };
     if (canWarm) idle(doWarm);
-    window.addEventListener('pointerdown', doWarm, { once: true });
+    if (!settings.disableWarmPreload) window.addEventListener('pointerdown', doWarm, { once: true });
   } catch {}
 
   // ---------------- Dev: Debug overlay + Safe Mode + error hooks ----------------
