@@ -37,9 +37,8 @@
           "#fe6767",
           "#fefa86"
         ],
-        "glow": 0,
-        "size": 1,
-        "trails": false
+  "glow": 0,
+  "size": 1
       },
       "lanes": {
         "opacity": 100
@@ -200,8 +199,7 @@
             "#ffa94d"
           ],
           "glow": 0,
-          "size": 1,
-          "trails": false
+          "size": 1
         },
         "lanes": {
           "opacity": 100
@@ -239,8 +237,7 @@
             "#fefa86"
           ],
           "glow": 0,
-          "size": 1,
-          "trails": false
+          "size": 1
         },
         "lanes": {
           "opacity": 100
@@ -400,8 +397,7 @@
             "#ffa94d"
           ],
           "glow": 0,
-          "size": 1,
-          "trails": false
+          "size": 1
         },
         "lanes": {
           "opacity": 100

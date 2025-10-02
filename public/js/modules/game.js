@@ -1186,7 +1186,38 @@ export class Game {
           const { n, cont, body, head, gloss } = obj;
           if (!cont.parent && (!body || !body.parent)) continue;
 
-          // Position so head center hits judge line at n.tMs
+          // ----- VFX-driven note sizing (global size factor) -----
+          let noteSize = 1;
+          try {
+            if (this.vfx) {
+              const v = Number(this._vfxValueAt('notes.size', tMs) ?? this.vfx.props?.notes?.size ?? 1);
+              if (Number.isFinite(v)) noteSize = Math.max(0.5, Math.min(2.0, v));
+            }
+          } catch {}
+
+          // Apply size to head and optional gloss, keep stem/body centered under the head
+          if (head) {
+            head.scale.set(noteSize, noteSize);
+          }
+          if (gloss) {
+            gloss.scale.set(noteSize, noteSize);
+          }
+          if (body) {
+            // scale tail width only; keep its length (Y) unscaled
+            body.scale.x = noteSize;
+            // position stem so it's centered under the (possibly scaled) head
+            const curHeadW = (head?.__pfBaseW || this.laneWidth) * noteSize;
+            const bodyW = (body.__pfBaseW || 12) * noteSize;
+            body.x = (curHeadW - bodyW) / 2;
+          }
+
+          // Center the container horizontally in the lane based on scaled head width
+          if (cont.parent && head) {
+            const curHeadW = (head.__pfBaseW || head.width) * noteSize;
+            cont.x = this._laneX(n.lane) + (this.laneWidth - curHeadW) / 2;
+          }
+
+          // Position so head center hits judge line at n.tMs (use scaled head height)
           const yAtCenter = this.judgeY - (n.tMs - tMs) * this.pixelsPerMs;
           let y = yAtCenter - (head.height / 2);
           if (cont.parent) {
@@ -1214,8 +1245,11 @@ export class Game {
               const cutY = localJudge.y;
 
               body.__pfMask.clear();
-              const stemX = body.x - 4;
-              body.__pfMask.rect(stemX, -50000, 24, cutY + 50000);
+              // expand mask width to cover scaled tail width with a small margin
+              const margin = 8;
+              const stemX = body.x - margin/2;
+              const maskW = (body.__pfBaseW || 12) * (body.scale?.x || 1) + margin;
+              body.__pfMask.rect(stemX, -50000, maskW, cutY + 50000);
               body.__pfMask.fill(0xffffff);
               body.__pfMask.isMask = true;
             } else {
@@ -1260,11 +1294,14 @@ export class Game {
             if (!head.__pfFade) this._beginFadeOut(head, head.__pfFadeRate, false);
           }
 
-          // Remove proximity-based horizontal scaling near the judge line.
-          // Keep note visuals at a constant size (no growth as they approach the judge).
-          if (head) { head.scale.x = 1; head.x = 0; }
-          if (gloss) { gloss.scale.x = 1; gloss.x = 0; }
-          if (body) { body.scale.x = 1; body.x = (body.__pfStemX || ((head?.__pfBaseW || head?.width || this.laneWidth) - (body.__pfBaseW || 12)) / 2); }
+          // Keep sprites horizontally aligned; positions already adjusted above
+          if (head) { head.x = 0; }
+          if (gloss) { gloss.x = 0; }
+          if (body && !Number.isFinite(body.x)) {
+            const curHeadW = (head?.__pfBaseW || this.laneWidth) * noteSize;
+            const bodyW = (body.__pfBaseW || 12) * noteSize;
+            body.x = (curHeadW - bodyW) / 2;
+          }
 
           // Per-frame fading
           if (head.parent && head.__pfFade) {
@@ -1291,10 +1328,18 @@ export class Game {
             }
           } catch {}
 
-          // Optional gloss near judge line
+          // Optional gloss near judge line, modulated by VFX notes.glow
           if (gloss) {
             const dy = Math.abs(this.judgeY - (y + head.height / 2));
-            gloss.alpha = Math.min(gloss.alpha, head.alpha);
+            let glowPct = 0;
+            try {
+              if (this.vfx) {
+                const gv = Number(this._vfxValueAt('notes.glow', tMs) ?? this.vfx.props?.notes?.glow ?? 0);
+                if (Number.isFinite(gv)) glowPct = Math.max(0, Math.min(100, gv));
+              }
+            } catch {}
+            const desired = Math.max(0, Math.min(1, 0.08 + (glowPct / 100) * 0.6));
+            gloss.alpha = Math.min(desired, head.alpha);
             gloss.visible = dy < 420 && head.alpha > 0.05;
           }
 

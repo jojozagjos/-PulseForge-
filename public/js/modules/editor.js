@@ -226,7 +226,7 @@ export class Editor {
       },
   camera: { x: 0, y: 0, z: 0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
   // Removed 3D Depth slider; 2.5D comes from Rotate X/Y only
-  notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0, trails: false },
+  notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0 },
   lanes: { opacity: 100 }
     });
     const makeDefaultSet = () => ({ data: makeDefaultData(), keyframes: {} });
@@ -451,7 +451,7 @@ export class Editor {
 
     this._wireVFXProperty("vfx-note-glow", "notes.glow", vfx, "vfx-note-glow-value", "%");
     this._wireVFXProperty("vfx-note-size", "notes.size", vfx, "vfx-note-size-value", "x");
-    this._wireVFXProperty("vfx-note-trails", "notes.trails", vfx);
+    
 
   this._wireVFXProperty("vfx-lane-opacity", "lanes.opacity", vfx, "vfx-lane-opacity-value", "%");
 
@@ -760,8 +760,7 @@ export class Editor {
       'notes.colors.3': '#C8FF4D',
       'notes.colors.4': '#FFA94D',
   'notes.glow': 0,
-      'notes.size': 1,
-      'notes.trails': false,
+  'notes.size': 1,
   'lanes.opacity': 100,
     };
     return defaults[property];
@@ -1099,7 +1098,6 @@ export class Editor {
           { value: "notes.colors.4", label: "Note Color Lane 4" },
           { value: "notes.glow", label: "Note Glow" },
           { value: "notes.size", label: "Note Size" },
-          { value: "notes.trails", label: "Note Trails" },
         ];
       case "lanes":
         return [
@@ -1795,8 +1793,7 @@ export class Editor {
       'notes.colors.3': 'vfx-note-color-3',
       'notes.colors.4': 'vfx-note-color-4',
       'notes.glow': 'vfx-note-glow',
-      'notes.size': 'vfx-note-size',
-      'notes.trails': 'vfx-note-trails',
+  'notes.size': 'vfx-note-size',
       'lanes.opacity': 'vfx-lane-opacity'
     };
     return map[prop] || null;
@@ -2169,7 +2166,7 @@ export class Editor {
     };
     
     vfx.keyframes = {};
-    vfx.timeline.selectedKeyframe = null;
+    vfx.timeline.selectedKeyframe = null; 
     
     this._syncVFXToUI(vfx);
     this._updateVFXTimeline(vfx);
@@ -2341,13 +2338,12 @@ export class Editor {
     const noteGlowValue = document.getElementById("vfx-note-glow-value");
     const noteSize = document.getElementById("vfx-note-size");
     const noteSizeValue = document.getElementById("vfx-note-size-value");
-    const noteTrails = document.getElementById("vfx-note-trails");
+    
     
     if (noteGlow) noteGlow.value = vfx.data.notes.glow;
     if (noteGlowValue) noteGlowValue.textContent = vfx.data.notes.glow + "%";
     if (noteSize) noteSize.value = vfx.data.notes.size;
-    if (noteSizeValue) noteSizeValue.textContent = vfx.data.notes.size.toFixed(1) + "x";
-    if (noteTrails) noteTrails.checked = vfx.data.notes.trails;
+  if (noteSizeValue) noteSizeValue.textContent = vfx.data.notes.size.toFixed(1) + "x";
 
     // Lane effects
   const laneOpacity = document.getElementById("vfx-lane-opacity");
@@ -2486,7 +2482,7 @@ export class Editor {
       outProps.notes.colors = [0,1,2,3].map(i => this._ensureHexColor(colors[i], defaults.notes.colors[i]));
       outProps.notes.glow = this._clamp(n.glow, 0, 100);
       outProps.notes.size = Number.isFinite(n.size) ? this._clamp(n.size, 0.5, 2.0) : defaults.notes.size;
-      outProps.notes.trails = !!n.trails;
+      
 
       // Lanes
       const l = src.lanes || {};
@@ -2507,7 +2503,7 @@ export class Editor {
       "camera.shakeAmp","camera.shakeFreq",
       // Notes
       "notes.colors.1","notes.colors.2","notes.colors.3","notes.colors.4",
-      "notes.glow","notes.size","notes.trails",
+  "notes.glow","notes.size",
       // Lanes
       "lanes.opacity"
     ]);
@@ -2547,7 +2543,7 @@ export class Editor {
           v = this._ensureHexColor(v, defaults.notes.colors[0]);
         } else if (prop === "background.color1" || prop === "background.color2" || prop === "background.flashColor") {
           v = this._ensureHexColor(v, outProps.background.color1);
-        } else if (prop === "background.flashEnable" || prop === "notes.trails") {
+  } else if (prop === "background.flashEnable") {
           v = !!v;
         } else if (prop === "lanes.opacity") {
           v = this._clamp(v, 0, 100);
