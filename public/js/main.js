@@ -403,4 +403,86 @@ async function openEditor() {
 
   // Ensure we start on main menu
   show("main");
+
+  // ---------------- Dev: Debug overlay + Safe Mode + error hooks ----------------
+  (function PF_debugTools(){
+    let dbg = null;
+    let rafId = 0;
+    let last = performance.now();
+    let frames = 0, lastFps = 0;
+    const times = [];
+    const maxSamples = 60;
+    let longTasks = 0; let lastLong = 0;
+
+    function ensureDbg() {
+      if (dbg) return dbg;
+      dbg = document.createElement('div');
+      dbg.id = 'pf-debug-overlay';
+      Object.assign(dbg.style, {
+        position: 'fixed', left: '8px', top: '8px', zIndex: 4000,
+        background: 'rgba(14, 22, 36, 0.85)', color: '#d9e7ff',
+        border: '1px solid #2a3142', borderRadius: '8px',
+        padding: '8px 10px', font: '12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+        boxShadow: '0 8px 24px rgba(0,0,0,.35)', display: 'none'
+      });
+      dbg.innerHTML = '<div><b>PF Debug</b></div>\n<div id="pfdbg-fps">FPS: —</div>\n<div id="pfdbg-ft">Frame: — ms</div>\n<div id="pfdbg-lt">Long tasks: 0 (last 0ms)</div>\n<div id="pfdbg-err" style="max-width:380px; white-space:pre-wrap;"></div>';
+      document.body.appendChild(dbg);
+      return dbg;
+    }
+
+    function loop(){
+      const now = performance.now();
+      frames++;
+      const dt = now - last;
+      times.push(dt);
+      if (times.length > maxSamples) times.shift();
+      if (now - last >= 1000) {
+        last = now;
+        lastFps = frames; frames = 0;
+      }
+      const avg = times.reduce((a,b)=>a+b,0) / (times.length||1);
+      const el = ensureDbg();
+      if (el && el.style.display !== 'none') {
+        el.querySelector('#pfdbg-fps').textContent = `FPS: ${lastFps}`;
+        el.querySelector('#pfdbg-ft').textContent  = `Frame: ${avg.toFixed(2)} ms`;
+        el.querySelector('#pfdbg-lt').textContent  = `Long tasks: ${longTasks} (last ${Math.round(lastLong)}ms)`;
+      }
+      rafId = requestAnimationFrame(loop);
+    }
+
+    function toggleDbg(){
+      const el = ensureDbg();
+      const on = el.style.display === 'none';
+      el.style.display = on ? 'block' : 'none';
+      if (on && !rafId) rafId = requestAnimationFrame(loop);
+      if (!on && rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    }
+
+    // Perf long task observer (Chromium)
+    try {
+      if ('PerformanceObserver' in window) {
+        const po = new PerformanceObserver((list) => {
+          for (const e of list.getEntries()) {
+            if (e.entryType === 'longtask') { longTasks++; lastLong = e.duration || 0; }
+          }
+        });
+        po.observe({ entryTypes: ['longtask'] });
+      }
+    } catch {}
+
+    // Global error hooks
+    function pushErr(msg){
+      const el = ensureDbg();
+      el.style.display = 'block';
+      const err = el.querySelector('#pfdbg-err');
+      err.textContent = String(msg).slice(0, 500);
+    }
+    window.addEventListener('error', (e)=>{ try { pushErr(e.message || e.error || 'Unknown error'); } catch {} });
+    window.addEventListener('unhandledrejection', (e)=>{ try { pushErr(e.reason?.message || e.reason || 'Unhandled rejection'); } catch {} });
+
+    // Hotkey: F8 = toggle debug overlay
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'F8') { e.preventDefault(); toggleDbg(); }
+    });
+  })();
 });

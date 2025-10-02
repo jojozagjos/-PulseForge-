@@ -136,6 +136,14 @@ export class Editor {
     this._redo = [];
     this._historyLimit = 100;
 
+  // Autosave state
+  this._autosaveDebounceMs = 1500;
+  this._autosaveTimer = null;
+  this._lastAutosaveAt = 0;
+  this._lastManualSaveAt = this._loadLastManualSaveTs();
+  this._dirtySinceLastSave = false;
+  this._autosaveStatusEl = null;
+
     // Bind methods
     this._tick = this._tick.bind(this);
     this._onWheel = this._onWheel.bind(this);
@@ -177,6 +185,17 @@ export class Editor {
 
     // ===== VFX Editor System =====
     this.vfx = this._initVFXSystem();
+
+    // Inject autosave UI and check for recoverable draft
+    try { this._injectAutosaveUi(); } catch {}
+    try { this._checkAutosaveOnLoad(); } catch {}
+
+    // Save a final draft on tab/window close if there are unsaved changes
+    window.addEventListener("beforeunload", () => {
+      if (this._dirtySinceLastSave) {
+        try { this._performAutosave("unload"); } catch {}
+      }
+    });
   }
 
   // ===== VFX Editor System =====
@@ -536,7 +555,9 @@ export class Editor {
         } catch {}
       }
       try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
-  this._updateVFXTimeline(vfx);
+      this._updateVFXTimeline(vfx);
+      // Mark dirty and schedule autosave for VFX property changes
+      this._markDirtyAndAutosave("vfx-property-change");
     };
 
   element.addEventListener("input", updateValue);
@@ -588,6 +609,7 @@ export class Editor {
       }
       try { const ap = document.getElementById('vfx-active-prop'); if (ap) ap.textContent = `Active: ${vfx.timeline.currentProperty}`; } catch {}
       this._updateVFXTimeline(vfx);
+      this._markDirtyAndAutosave("vfx-note-color");
     };
 
     element.addEventListener("input", onChange);
@@ -906,7 +928,8 @@ export class Editor {
     if (idx >= 0) vfx.timeline.selectedKeyframe = { property, index: idx };
     // Keep playhead view centered where we added
     this._centerVFXTimelineOnPlayhead(vfx);
-  this._updateVFXTimeline(vfx);
+    this._updateVFXTimeline(vfx);
+    this._markDirtyAndAutosave("vfx-add-keyframe");
   }
 
   _deleteVFXKeyframe(vfx) {
@@ -920,7 +943,8 @@ export class Editor {
       if (!vfx.keyframes[property] || vfx.keyframes[property].length === 0) {
         this._assignVFXDefault(property, vfx);
       }
-  this._updateVFXTimeline(vfx);
+      this._updateVFXTimeline(vfx);
+      this._markDirtyAndAutosave("vfx-delete-keyframe");
     }
   }
 
@@ -934,8 +958,8 @@ export class Editor {
     const newKeyframe = { ...keyframe, time: keyframe.time + 1000 }; // Add 1 second offset
     vfx.keyframes[property].push(newKeyframe);
     vfx.keyframes[property].sort((a, b) => a.time - b.time);
-      
     this._updateVFXTimeline(vfx);
+    this._markDirtyAndAutosave("vfx-duplicate-keyframe");
   }
 
   _clearVFXKeyframes(vfx) {
@@ -946,6 +970,7 @@ export class Editor {
       // Revert this property to its default when no keyframes are set
       this._assignVFXDefault(property, vfx);
       this._updateVFXTimeline(vfx);
+      this._markDirtyAndAutosave("vfx-clear-keyframes");
     }
   }
 
@@ -972,6 +997,7 @@ export class Editor {
     // Keep timeline focused and redraw
     this._centerVFXTimelineOnPlayhead(vfx);
     this._updateVFXTimeline(vfx);
+    this._markDirtyAndAutosave("vfx-move-keyframe");
   }
 
   // Property tabs removed
@@ -2170,6 +2196,7 @@ export class Editor {
     
     this._syncVFXToUI(vfx);
     this._updateVFXTimeline(vfx);
+    this._markDirtyAndAutosave("vfx-reset");
   }
 
   _generateVFXExport(vfx) {
@@ -2258,6 +2285,8 @@ export class Editor {
     } else {
       try { this._help("Imported VFX."); } catch {}
     }
+    // Imported VFX constitutes an edit
+    this._markDirtyAndAutosave("vfx-import");
   }
 
   _syncVFXToUI(vfx) {
@@ -2379,6 +2408,8 @@ export class Editor {
     if (this._undo.length > this._historyLimit) this._undo.shift();
     this._redo = [];
     if (label) this._help(`${label} (undo available)`);
+    // Any operation that pushes undo likely changed the document; autosave it
+    this._markDirtyAndAutosave("undoable-change");
   }
   undo() {
     if (!this._undo.length) return;
@@ -2758,6 +2789,10 @@ export class Editor {
     this._undo = [];
     this._redo = [];
     this._pushUndo(); // baseline
+    // New chart: start a fresh autosave namespace and clear dirty flag
+    this._dirtySinceLastSave = false;
+    try { this._injectAutosaveUi(); } catch {}
+    try { this._checkAutosaveOnLoad(); } catch {}
   }
 
   /** Load a manifest + chart (optional) and wire toolbars. */
@@ -2805,6 +2840,9 @@ export class Editor {
     this._wireZoomIndicator();
     this._wireTestButton();
     this._wireHistoryButtons();
+    // After loading a manifest, check for a newer autosave to restore
+    try { this._injectAutosaveUi(); } catch {}
+    try { this._checkAutosaveOnLoad(); } catch {}
   }
 
   /** Wire toolbar & controls already in HTML. */
@@ -2924,6 +2962,8 @@ export class Editor {
     this._wireTestButton();
 
     // (helper text omitted)
+    // Ensure autosave UI exists when toolbar mounts
+    try { this._injectAutosaveUi(); } catch {}
   }
 
   // ===== File toolbar =====
@@ -3001,6 +3041,8 @@ export class Editor {
     const a = document.createElement("a");
     a.href = url; a.download = filename; a.click();
     URL.revokeObjectURL(url);
+    // Record manual save timestamp and clear dirty
+    this._recordManualSave();
   }
 
   // ===== Audio picker =====
@@ -3497,6 +3539,8 @@ export class Editor {
       this._help(`Deleted ${idxs.length} note(s).`);
     }
     this.drag = null;
+    // After completing a pointer-driven operation, schedule autosave
+    if (this._dirtySinceLastSave) this._scheduleAutosave("pointer-op");
   }
 
   /**
@@ -3576,6 +3620,7 @@ export class Editor {
       this.chart.notes.splice(i, 1);
     }
     this.selection.clear();
+    this._markDirtyAndAutosave("delete-selection");
   }
 
   _pasteAt(tMs, lane) {
@@ -3599,6 +3644,7 @@ export class Editor {
       added++;
     }
     this._help(added ? `Pasted ${added} note(s).` : "Paste blocked by overlaps.");
+    if (added > 0) this._markDirtyAndAutosave("paste");
   }
 
   _clampMs(ms) { return Math.max(0, Math.min(ms, this.chart.durationMs)); }
@@ -3691,6 +3737,332 @@ export class Editor {
     
     this._draw();
     requestAnimationFrame(this._tick);
+  }
+
+  // ===== Autosave & Recovery =====
+  _computeAutosaveKey() {
+    const base = (this.manifestUrl || this.manifest?.title || this.audioUrl || "untitled") + "::" + (this.difficulty || "normal");
+    return "pf:editor:autosave:" + String(base).toLowerCase().replace(/[^a-z0-9:\-_.]/g, "-");
+  }
+  _computeManualKey() {
+    const base = (this.manifestUrl || this.manifest?.title || this.audioUrl || "untitled") + "::" + (this.difficulty || "normal");
+    return "pf:editor:lastsave:" + String(base).toLowerCase().replace(/[^a-z0-9:\-_.]/g, "-");
+  }
+  _loadLastManualSaveTs() {
+    try { const ts = Number(localStorage.getItem(this._computeManualKey())); return Number.isFinite(ts) ? ts : 0; } catch { return 0; }
+  }
+  _recordManualSave() {
+    try {
+      const now = Date.now();
+      localStorage.setItem(this._computeManualKey(), String(now));
+      this._lastManualSaveAt = now;
+      this._dirtySinceLastSave = false;
+      this._updateAutosaveStatus("Saved");
+      // Clear autosave draft after a manual save
+      this._removeAutosave();
+    } catch {}
+  }
+  _injectAutosaveUi() {
+    // Add a small autosave status next to the time in the editor header
+    const header = document.querySelector(".ed-header");
+    if (!header) return;
+    let timeWrap = header.querySelector(".ed-time");
+    if (!timeWrap) return;
+    let status = document.getElementById("ed-autosave-status");
+    if (!status) {
+      status = document.createElement("span");
+      status.id = "ed-autosave-status";
+      status.className = "muted";
+      status.style.marginLeft = "14px";
+      status.textContent = "Autosave: —";
+      timeWrap.appendChild(status);
+    }
+    this._autosaveStatusEl = status;
+  }
+  _updateAutosaveStatus(prefix = "Autosaved") {
+    try {
+      if (!this._autosaveStatusEl) return;
+      const ts = this._lastAutosaveAt;
+      if (!ts) { this._autosaveStatusEl.textContent = "Autosave: —"; return; }
+      const agoSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+      const ago = agoSec < 60 ? `${agoSec}s ago` : `${Math.floor(agoSec/60)}m ago`;
+      this._autosaveStatusEl.textContent = `${prefix}: ${ago}`;
+    } catch {}
+  }
+  _markDirtyAndAutosave(_reason = "") {
+    this._dirtySinceLastSave = true;
+    this._scheduleAutosave(_reason);
+  }
+  _scheduleAutosave(_reason = "") {
+    try { if (this._autosaveTimer) clearTimeout(this._autosaveTimer); } catch {}
+    this._autosaveTimer = setTimeout(() => this._performAutosave(_reason), this._autosaveDebounceMs);
+  }
+  _performAutosave(_reason = "") {
+    try {
+      const key = this._computeAutosaveKey();
+      const payload = {
+        version: 1,
+        when: Date.now(),
+        reason: _reason || undefined,
+        meta: {
+          manifestUrl: this.manifestUrl || null,
+          title: this.manifest?.title || null,
+          difficulty: this.difficulty || "normal",
+          audioUrl: this.audioUrl || null
+        },
+        chart: this.chart ? JSON.parse(JSON.stringify(this.chart)) : null,
+        vfxSets: this.vfx?._sets ? JSON.parse(JSON.stringify(this.vfx._sets)) : null,
+        view: { zoomY: this.zoomY, scrollY: this.scrollY, playStartMs: this.playStartMs }
+      };
+      localStorage.setItem(key, JSON.stringify(payload));
+      this._lastAutosaveAt = payload.when;
+      this._updateAutosaveStatus("Autosaved");
+    } catch (e) {
+      console.warn("Autosave failed:", e);
+    }
+  }
+  _loadAutosave() {
+    try {
+      const raw = localStorage.getItem(this._computeAutosaveKey());
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch { return null; }
+  }
+  _removeAutosave() {
+    try { localStorage.removeItem(this._computeAutosaveKey()); } catch {}
+  }
+  _checkAutosaveOnLoad() {
+    const draft = this._loadAutosave();
+    if (!draft || !draft.when) return;
+    const manualTs = this._loadLastManualSaveTs();
+    if (draft.when <= manualTs) return; // no newer draft
+    // Show recovery banner
+    const shell = document.querySelector(".ed-shell");
+    const body = document.querySelector(".ed-body");
+    if (!shell || !body) return;
+    let banner = document.getElementById("ed-autosave-banner");
+    if (banner) banner.remove();
+    banner = document.createElement("div");
+    banner.id = "ed-autosave-banner";
+    banner.role = "status";
+    banner.style.background = "#1e2433";
+    banner.style.border = "1px solid #2a3142";
+    banner.style.color = "#e7f0ff";
+    banner.style.borderRadius = "8px";
+    banner.style.padding = "10px 12px";
+    banner.style.margin = "10px 0 8px 0";
+    banner.style.display = "flex";
+    banner.style.alignItems = "center";
+    banner.style.gap = "8px";
+    const dt = new Date(draft.when);
+    const msg = document.createElement("div");
+    msg.textContent = `A newer autosave was found from ${dt.toLocaleString()}. Restore it?`;
+    const spacer = document.createElement("div"); spacer.style.flex = "1";
+    const restore = document.createElement("button");
+    restore.textContent = "Restore"; restore.className = "primary";
+    restore.style.marginLeft = "auto";
+    const discard = document.createElement("button");
+    discard.textContent = "Discard"; discard.className = "ghost";
+    banner.appendChild(msg); banner.appendChild(spacer); banner.appendChild(discard); banner.appendChild(restore);
+    shell.insertBefore(banner, body);
+    discard.addEventListener("click", () => { banner.remove(); this._removeAutosave(); this._updateAutosaveStatus(); });
+    // Add a Preview button to inspect the draft before restoring
+    const previewBtn = document.createElement("button");
+    previewBtn.textContent = "Preview"; previewBtn.className = "secondary";
+    banner.insertBefore(previewBtn, restore);
+    previewBtn.addEventListener("click", () => this._openAutosavePreview(draft));
+    restore.addEventListener("click", async () => { try { await this._applyAutosave(draft); } finally { banner.remove(); } });
+  }
+  async _applyAutosave(draft) {
+    if (!draft) return;
+    try {
+      if (draft.chart) {
+        this.chart = JSON.parse(JSON.stringify(draft.chart));
+        this._syncInputs();
+        this._updateScrubMax();
+      }
+      // If autosave recorded an audio URL, try to load it (skip blob: which won't survive reloads)
+      try {
+        const aurl = draft.meta?.audioUrl;
+        if (aurl && typeof aurl === "string" && !aurl.startsWith("blob:")) {
+          await this._ensureAudioCtx();
+          await this._loadAudio(aurl);
+          this.audioUrl = aurl;
+          const urlBox = document.getElementById(this.ids.audioUrl);
+          if (urlBox) urlBox.value = aurl;
+          this._updateScrubMax();
+        }
+      } catch (e) {
+        console.warn("Autosave restore: audio not loaded:", e);
+        try { this._help("Autosave restored (audio URL unavailable or blocked). Load audio manually if needed."); } catch {}
+      }
+      if (draft.view) {
+        if (typeof draft.view.zoomY === "number") this.zoomY = draft.view.zoomY;
+        if (typeof draft.view.scrollY === "number") this.scrollY = draft.view.scrollY;
+        if (typeof draft.view.playStartMs === "number") this.playStartMs = draft.view.playStartMs;
+      }
+      if (draft.meta && draft.meta.difficulty && this.difficulty !== draft.meta.difficulty) {
+        this.difficulty = draft.meta.difficulty;
+        try { const diffSel = document.getElementById(this.ids.fileDifficulty); if (diffSel) diffSel.value = this.difficulty; } catch {}
+      }
+      if (draft.vfxSets && this.vfx && this.vfx._sets) {
+        // Replace VFX sets wholesale
+        this.vfx._sets = JSON.parse(JSON.stringify(draft.vfxSets));
+        // Ensure active difficulty in vfx matches
+        this.vfx.activeDiff = this.difficulty || this.vfx.activeDiff || "normal";
+        this._syncVFXToUI(this.vfx);
+        this._updateVFXTimeline(this.vfx);
+      }
+      this._lastAutosaveAt = draft.when || Date.now();
+      this._dirtySinceLastSave = true;
+      this._updateAutosaveStatus("Restored");
+      this._help("Autosave restored.");
+    } catch (e) {
+      console.error("Failed to apply autosave:", e);
+      alert("Failed to restore autosave.");
+    }
+  }
+
+  // Build a VFX export object from saved vfxSets (autosave payload)
+  _buildVfxExportFromSets(vfxSets, activeDiff) {
+    if (!vfxSets || typeof vfxSets !== 'object') return { vfx: { properties: this._getDefaultVFXData(), keyframes: {} }, byDifficulty: { normal: { properties: this._getDefaultVFXData(), keyframes: {} } } };
+    const clone = (x) => JSON.parse(JSON.stringify(x));
+    const diffs = ['easy','normal','hard'];
+    const byDifficulty = {};
+    for (const d of diffs) {
+      const set = vfxSets[d] || { data: this._getDefaultVFXData(), keyframes: {} };
+      // Normalize like export would do to ensure defaults and keyframes are clean
+      const { properties, keyframes } = this._normalizeVFXSet({ properties: clone(set.data), keyframes: clone(set.keyframes) });
+      byDifficulty[d] = { properties, keyframes };
+    }
+    const pick = byDifficulty[activeDiff] || byDifficulty.normal || byDifficulty.easy || Object.values(byDifficulty)[0];
+    return { vfx: pick, byDifficulty };
+  }
+
+  _summarizeDraft(draft) {
+    const cur = this.chart || {};
+    const dchart = draft?.chart || {};
+    const curNotes = Array.isArray(cur.notes) ? cur.notes : [];
+    const dNotes = Array.isArray(dchart.notes) ? dchart.notes : [];
+    const curHolds = curNotes.filter(n=>Number(n.dMs)>0).length;
+    const dHolds = dNotes.filter(n=>Number(n.dMs)>0).length;
+    const curKfCount = this._countVfxKeyframes(this.vfx?._sets);
+    const draftKfCount = this._countVfxKeyframes(draft?.vfxSets);
+    return {
+      current: {
+        bpm: cur.bpm || 0, lanes: cur.lanes || 0, durationMs: cur.durationMs || 0,
+        notes: curNotes.length, holds: curHolds, kf: curKfCount, audioUrl: this.audioUrl || null
+      },
+      draft: {
+        bpm: dchart.bpm || 0, lanes: dchart.lanes || 0, durationMs: dchart.durationMs || 0,
+        notes: dNotes.length, holds: dHolds, kf: draftKfCount, audioUrl: draft?.meta?.audioUrl || null,
+        when: draft?.when || 0
+      }
+    };
+  }
+  _countVfxKeyframes(vfxSets) {
+    if (!vfxSets) return 0;
+    let c = 0;
+    for (const d of ['easy','normal','hard']) {
+      const kf = vfxSets[d]?.keyframes || {};
+      for (const arr of Object.values(kf)) c += Array.isArray(arr) ? arr.length : 0;
+    }
+    return c;
+  }
+  _openAutosavePreview(draft) {
+    const summary = this._summarizeDraft(draft);
+    const overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.inset = '0';
+    overlay.style.background = 'rgba(0,0,0,0.55)';
+    overlay.style.zIndex = '9999';
+    overlay.addEventListener('click', (e)=>{ if (e.target === overlay) overlay.remove(); });
+    const card = document.createElement('div');
+    card.role = 'dialog';
+    card.ariaLabel = 'Autosave Preview';
+    card.style.background = '#0d111a';
+    card.style.border = '1px solid #2a3142';
+    card.style.borderRadius = '10px';
+    card.style.color = '#e7f0ff';
+    card.style.width = 'min(680px, 92vw)';
+    card.style.margin = '10vh auto';
+    card.style.padding = '16px';
+    card.style.boxShadow = '0 10px 30px rgba(0,0,0,0.5)';
+    const h = document.createElement('h3');
+    h.textContent = 'Autosave Preview';
+    h.style.margin = '0 0 8px 0';
+    const small = (v)=>{ const s=document.createElement('div'); s.className='muted'; s.style.opacity='.9'; s.style.margin='2px 0'; s.textContent=v; return s; };
+    const fmtDur = (ms)=>`${Math.floor((ms||0)/1000)}s`;
+    const whenStr = summary.draft.when ? new Date(summary.draft.when).toLocaleString() : 'n/a';
+    const grid = document.createElement('div');
+    grid.style.display='grid'; grid.style.gridTemplateColumns='1fr 1fr'; grid.style.gap='8px 16px'; grid.style.margin='8px 0 12px';
+    const addRow=(label, curVal, dVal)=>{
+      const l=document.createElement('div'); l.textContent=label; l.className='muted';
+      const r=document.createElement('div'); r.innerHTML = `<span>Current: <b>${curVal}</b></span><br/><span>Draft: <b>${dVal}</b></span>`;
+      grid.appendChild(l); grid.appendChild(r);
+    };
+    addRow('BPM', summary.current.bpm, summary.draft.bpm);
+    addRow('Lanes', summary.current.lanes, summary.draft.lanes);
+    addRow('Duration', fmtDur(summary.current.durationMs), fmtDur(summary.draft.durationMs));
+    addRow('Notes', summary.current.notes, summary.draft.notes);
+    addRow('Holds', summary.current.holds, summary.draft.holds);
+    addRow('VFX Keyframes (total)', summary.current.kf, summary.draft.kf);
+    addRow('Audio URL', summary.current.audioUrl || '—', summary.draft.audioUrl || '—');
+    const info = small(`Draft timestamp: ${whenStr}`);
+
+    const actions = document.createElement('div');
+    actions.style.display='flex'; actions.style.gap='8px'; actions.style.justifyContent='flex-end';
+    const playBtn = document.createElement('button'); playBtn.className='secondary'; playBtn.textContent='Play Draft in Game';
+    const restoreBtn = document.createElement('button'); restoreBtn.className='primary'; restoreBtn.textContent='Restore Draft';
+    const closeBtn = document.createElement('button'); closeBtn.className='ghost'; closeBtn.textContent='Close';
+    actions.appendChild(closeBtn); actions.appendChild(playBtn); actions.appendChild(restoreBtn);
+
+    playBtn.addEventListener('click', ()=>{ this._playDraftInGame(draft); });
+  restoreBtn.addEventListener('click', async ()=>{ await this._applyAutosave(draft); overlay.remove(); });
+    closeBtn.addEventListener('click', ()=> overlay.remove());
+
+    card.appendChild(h);
+    card.appendChild(info);
+    card.appendChild(grid);
+    card.appendChild(actions);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  }
+  _playDraftInGame(draft) {
+    try {
+      const audioUrl = draft?.meta?.audioUrl || this.audioUrl;
+      if (!audioUrl) { alert('Draft has no audio URL to play.'); return; }
+      if (audioUrl.startsWith('blob:')) { alert('Cannot play draft with a blob: audio URL from autosave. Please load the audio file again.'); return; }
+      const chart = draft?.chart;
+      if (!chart || !Array.isArray(chart.notes)) { alert('Draft chart is invalid.'); return; }
+      const trackTitle = (this.manifest?.title || 'Editor Preview');
+      const out = {
+        bpm: chart.bpm || this.chart?.bpm || 120,
+        lanes: chart.lanes || this.chart?.lanes || 4,
+        durationMs: chart.durationMs || this.chart?.durationMs || 180000,
+        notes: [...chart.notes].sort((a,b)=>a.tMs-b.tMs),
+        title: `${trackTitle} (Draft)` ,
+        difficulty: this.difficulty || 'normal',
+        trackId: 'editor-preview',
+        audioUrl
+      };
+      const vfxExport = this._buildVfxExportFromSets(draft.vfxSets, this.difficulty || 'normal');
+      window.PF_startGame?.({
+        mode: 'solo',
+        manifest: out,
+        difficulty: this.difficulty || out.difficulty || 'normal',
+        startAtMs: 0,
+        allowExit: true,
+        autoSubmit: false,
+        isEditorPreview: true,
+        returnTo: 'editor',
+        vfx: vfxExport.vfx,
+        byDifficulty: vfxExport.byDifficulty
+      });
+    } catch (e) {
+      console.error('Failed to play draft:', e);
+      alert('Failed to start game preview with draft.');
+    }
   }
 
   _resize() {
