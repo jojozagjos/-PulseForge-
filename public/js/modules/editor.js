@@ -3725,24 +3725,33 @@ export class Editor {
 
   // ===== Draw loop =====
   _tick() {
-    // Update seconds readout in the editor previewer
     try {
-      const label = document.getElementById(this.ids.time);
-      if (label) {
-        const cur = Math.floor(this.currentTimeMs() / 1000);
-        const durTotalMs = this.chart?.durationMs || Math.floor(this.audioBuffer?.duration * 1000) || 0;
-        const dur = Math.floor(durTotalMs / 1000);
-        label.textContent = `${cur}s / ${dur}s`;
+      // Update seconds readout in the editor previewer
+      try {
+        const label = document.getElementById(this.ids.time);
+        if (label) {
+          const cur = Math.floor(this.currentTimeMs() / 1000);
+          const durTotalMs = this.chart?.durationMs || Math.floor(this.audioBuffer?.duration * 1000) || 0;
+          const dur = Math.floor(durTotalMs / 1000);
+          label.textContent = `${cur}s / ${dur}s`;
+        }
+      } catch {}
+
+      // Update VFX timeline if the VFX tab is active (cached flag avoids per-frame DOM queries)
+      if (this.vfx && this.vfx.timelineCanvas && this.vfx._tabActive) {
+        try { this._updateVFXTimeline(this.vfx); } catch (e) { console.warn("VFX timeline update failed:", e); }
       }
-    } catch {}
-    
-    // Update VFX timeline if the VFX tab is active (cached flag avoids per-frame DOM queries)
-    if (this.vfx && this.vfx.timelineCanvas && this.vfx._tabActive) {
-      this._updateVFXTimeline(this.vfx);
+
+      // Main editor draw
+      try { this._draw(); } catch (e) {
+        console.error("Editor draw failed:", e);
+        // show a small hint in the help area to inform the user without locking the app
+        try { this._help("A render error occurred; drawing will continue. See console for details."); } catch {}
+      }
+    } finally {
+      // Keep RAF alive even if something throws this frame
+      requestAnimationFrame(this._tick);
     }
-    
-    this._draw();
-    requestAnimationFrame(this._tick);
   }
 
   // ===== Autosave & Recovery =====
