@@ -190,12 +190,18 @@ export class Editor {
     try { this._injectAutosaveUi(); } catch {}
     try { this._checkAutosaveOnLoad(); } catch {}
 
+  // View-state autosave (playhead/zoom/scroll) so you come back where you left off
+  try { this._wireViewAutosave(); } catch {}
+
     // Save a final draft on tab/window close if there are unsaved changes
     window.addEventListener("beforeunload", () => {
       if (this._dirtySinceLastSave) {
         try { this._performAutosave("unload"); } catch {}
       }
     });
+
+    // Wire lightweight Audio tab behavior for manifest audio updates
+    try { this._wireAudioManifestApply(); } catch {}
   }
 
   // ===== VFX Editor System =====
@@ -3789,6 +3795,39 @@ export class Editor {
       this._autosaveStatusEl.textContent = `${prefix}: ${ago}`;
     } catch {}
   }
+
+  // ---------- Autosave helpers (key + manual save timestamp) ----------
+  _computeAutosaveKey() {
+    try {
+      const base = (this.manifest?.title || this.manifestUrl || this.audioUrl || "untitled");
+      const slug = String(base).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "untitled";
+      const diff = (this.difficulty || "normal").toLowerCase();
+      return `pf-editor-autosave:${slug}:${diff}`;
+    } catch {
+      return "pf-editor-autosave:untitled:normal";
+    }
+  }
+  _loadLastManualSaveTs() {
+    try {
+      const key = `${this._computeAutosaveKey()}:lastManual`;
+      const v = Number(localStorage.getItem(key));
+      return Number.isFinite(v) ? v : 0;
+    } catch { return 0; }
+  }
+  _saveLastManualSaveTs() {
+    try { localStorage.setItem(`${this._computeAutosaveKey()}:lastManual`, String(Date.now())); } catch {}
+    this._lastManualSaveAt = Date.now();
+  }
+
+  // Keep scrub max aligned to current chart/audio duration (best-effort)
+  _updateScrubMax() {
+    try {
+      const s = document.getElementById(this.ids.scrub);
+      if (!s) return;
+      const dur = (this.chart?.durationMs) || (this.audioBuffer ? Math.floor(this.audioBuffer.duration * 1000) : 180000);
+      s.max = String(Math.max(0, dur|0));
+    } catch {}
+  }
   _markDirtyAndAutosave(_reason = "") {
     this._dirtySinceLastSave = true;
     this._scheduleAutosave(_reason);
@@ -3920,6 +3959,54 @@ export class Editor {
     } catch (e) {
       console.error("Failed to apply autosave:", e);
       alert("Failed to restore autosave.");
+    }
+  }
+
+  // ---------- Audio tab: Update manifest audio fields wiring ----------
+  _wireAudioManifestApply() {
+    // When the URL field changes, optionally mirror to manifest.audio if the box is checked.
+    const urlBox = document.getElementById(this.ids.audioUrl);
+    const applyBox = document.getElementById(this.ids.audioApplyManifest);
+    const loadBtn = document.getElementById(this.ids.audioLoadUrl);
+
+    const applyToManifest = (val) => {
+      if (!val || !applyBox || !applyBox.checked) return;
+      if (!this.manifest) this.manifest = { title: this.manifest?.title || "Editor Preview", audio: {} };
+      this.manifest.audio = this.manifest.audio || {};
+      try {
+        const lower = String(val).toLowerCase();
+        if (lower.endsWith(".wav")) this.manifest.audio.wav = val;
+        else if (lower.endsWith(".mp3")) this.manifest.audio.mp3 = val;
+        else {
+          // Fallback: store under mp3 if unknown
+          this.manifest.audio.mp3 = val;
+        }
+        this._help("Updated manifest audio fields.");
+      } catch {}
+    };
+
+    if (urlBox) {
+      urlBox.addEventListener("change", () => {
+        const val = (urlBox.value || "").trim();
+        if (!val) return;
+        this.audioUrl = val;
+        applyToManifest(val);
+        // Duration may change after audio decode; best-effort scrub update
+        this._updateScrubMax();
+        // Mark dirty so autosave captures updated audioUrl/manifest
+        this._markDirtyAndAutosave("audio-url-change");
+      });
+    }
+    if (loadBtn) {
+      loadBtn.addEventListener("click", () => {
+        if (!urlBox) return;
+        const val = (urlBox.value || "").trim();
+        if (!val) return;
+        this.audioUrl = val;
+        applyToManifest(val);
+        this._updateScrubMax();
+        this._markDirtyAndAutosave("audio-load-url");
+      });
     }
   }
 
@@ -4553,6 +4640,25 @@ export class Editor {
     } else {
       // Vertical scroll (pixels)
       this.scrollY = Math.max(0, this.scrollY + e.deltaY);
+    }
+    // Persist view changes via autosave (debounced)
+    this._markDirtyAndAutosave("view-wheel");
+  }
+
+  _wireViewAutosave() {
+    // Playhead scrubber
+    const scrub = document.getElementById(this.ids.scrub);
+    if (scrub) {
+      const mark = () => this._markDirtyAndAutosave("view-scrub");
+      scrub.addEventListener("input", mark);
+      scrub.addEventListener("change", mark);
+    }
+    // Zoom slider in Tools panel
+    const zoom = document.getElementById(this.ids.zoom);
+    if (zoom) {
+      const mark = () => this._markDirtyAndAutosave("view-zoom");
+      zoom.addEventListener("input", mark);
+      zoom.addEventListener("change", mark);
     }
   }
 

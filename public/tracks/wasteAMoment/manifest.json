@@ -6,6 +6,7 @@
     "wav": "/assets/music/Kings Of Leon - Waste A Moment(Audio).mp3"
   },
   "charts": {
+    "normal": "/tracks/wasteAMoment/wasteAMoment-normal.json"
   },
   "cover": "/assets/images/wasteAMoment.jpg"
 }
