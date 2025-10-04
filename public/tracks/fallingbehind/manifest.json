@@ -6,8 +6,6 @@
     "wav": "/assets/music/Laufey - Falling Behind (Official Audio).mp3"
   },
   "charts": {
-    "easy": "/tracks/fallingbehind/fallingbehind.easy.json",
-    "normal": "/tracks/fallingbehind/fallingbehind.normal.json"
   },
   "cover": "/assets/images/fallingbehind-cover.jpg"
 }

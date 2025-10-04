@@ -5,8 +5,8 @@
     "title": "Untitled",
     "artist": "Unknown",
     "activeDifficulty": "normal",
-    "duration": 180000,
-    "exportedAt": "2025-10-02T07:40:49.193Z"
+    "duration": 183925,
+    "exportedAt": "2025-10-03T03:30:15.227Z"
   },
   "vfx": {
     "properties": {
@@ -32,10 +32,10 @@
       },
       "notes": {
         "colors": [
-          "#fe6767",
-          "#fefa86",
-          "#fe6767",
-          "#fefa86"
+          "#f0a400",
+          "#ffd780",
+          "#f0a400",
+          "#ffd780"
         ],
         "glow": 0,
         "size": 1,
@@ -49,28 +49,28 @@
       "notes.colors.1": [
         {
           "time": 0,
-          "value": "#fe6767",
+          "value": "#f0a400",
           "easing": "linear"
         }
       ],
       "notes.colors.2": [
         {
           "time": 0,
-          "value": "#fefa86",
+          "value": "#ffd780",
           "easing": "linear"
         }
       ],
       "notes.colors.3": [
         {
           "time": 0,
-          "value": "#fe6767",
+          "value": "#f0a400",
           "easing": "linear"
         }
       ],
       "notes.colors.4": [
         {
           "time": 0,
-          "value": "#fefa86",
+          "value": "#ffd780",
           "easing": "linear"
         }
       ],
@@ -80,65 +80,16 @@
           "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#0d111a" }, { "pos": 1, "color": "#1a1f2e" } ] },
           "easing": "instant"
         },
-        { "time": 144547, "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#0d111a" }, { "pos": 1, "color": "#1a1f2e" } ] }, "easing": "linear" },
-        { "time": 152249, "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#fefa76" }, { "pos": 1, "color": "#ffffff" } ] }, "easing": "linear" },
-        { "time": 170453, "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#fefa76" }, { "pos": 1, "color": "#ffffff" } ] }, "easing": "linear" },
-        { "time": 173402, "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#ff0000" }, { "pos": 1, "color": "#240000" } ] }, "easing": "linear" },
-        { "time": 184883, "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#0d111a" }, { "pos": 1, "color": "#1a1f2e" } ] }, "easing": "linear" }
+        {
+          "time": 1130,
+          "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#f3da95" }, { "pos": 1, "color": "#f3da95" } ] },
+          "easing": "linear"
+        }
       ],
       "background.angle": [
         {
-          "time": 144547,
-          "value": 304,
-          "easing": "linear"
-        },
-        {
-          "time": 146211,
-          "value": 360,
-          "easing": "linear"
-        },
-        {
-          "time": 173402,
-          "value": 0,
-          "easing": "back:inOut"
-        },
-        {
-          "time": 178213,
-          "value": 0,
-          "easing": "linear"
-        }
-      ],
-      "camera.z": [
-        {
-          "time": 0,
-          "value": -100,
-          "easing": "instant"
-        },
-        {
-          "time": 644,
-          "value": -50,
-          "easing": "instant"
-        },
-        {
-          "time": 1517,
-          "value": 0,
-          "easing": "instant"
-        }
-      ],
-      "camera.shakeAmp": [
-        {
-          "time": 171249,
-          "value": 0,
-          "easing": "linear"
-        },
-        {
-          "time": 176794,
-          "value": 1,
-          "easing": "linear"
-        },
-        {
-          "time": 184687,
-          "value": 0,
+          "time": 1130,
+          "value": 71,
           "easing": "linear"
         }
       ]
@@ -208,10 +159,10 @@
         },
         "notes": {
           "colors": [
-            "#fe6767",
-            "#fefa86",
-            "#fe6767",
-            "#fefa86"
+            "#f0a400",
+            "#ffd780",
+            "#f0a400",
+            "#ffd780"
           ],
           "glow": 0,
           "size": 1,
@@ -225,138 +176,47 @@
         "notes.colors.1": [
           {
             "time": 0,
-            "value": "#fe6767",
+            "value": "#f0a400",
             "easing": "linear"
           }
         ],
         "notes.colors.2": [
           {
             "time": 0,
-            "value": "#fefa86",
+            "value": "#ffd780",
             "easing": "linear"
           }
         ],
         "notes.colors.3": [
           {
             "time": 0,
-            "value": "#fe6767",
+            "value": "#f0a400",
             "easing": "linear"
           }
         ],
         "notes.colors.4": [
           {
             "time": 0,
-            "value": "#fefa86",
+            "value": "#ffd780",
             "easing": "linear"
           }
         ],
-        "background.color1": [
+        "background.gradient": [
           {
-            "time": 144547,
-            "value": "#0d111a",
-            "easing": "linear"
+            "time": 0,
+            "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#0d111a" }, { "pos": 1, "color": "#1a1f2e" } ] },
+            "easing": "instant"
           },
           {
-            "time": 152249,
-            "value": "#fefa76",
-            "easing": "linear"
-          },
-          {
-            "time": 170453,
-            "value": "#fefa76",
-            "easing": "linear"
-          },
-          {
-            "time": 173402,
-            "value": "#ff0000",
-            "easing": "linear"
-          },
-          {
-            "time": 184883,
-            "value": "#0d111a",
-            "easing": "linear"
-          }
-        ],
-        "background.color2": [
-          {
-            "time": 144547,
-            "value": "#1a1f2e",
-            "easing": "linear"
-          },
-          {
-            "time": 146211,
-            "value": "#ffffff",
-            "easing": "linear"
-          },
-          {
-            "time": 172191,
-            "value": "#ffffff",
-            "easing": "linear"
-          },
-          {
-            "time": 173403,
-            "value": "#240000",
-            "easing": "linear"
-          },
-          {
-            "time": 184883,
-            "value": "#1a1f2e",
+            "time": 1130,
+            "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#f3da95" }, { "pos": 1, "color": "#f3da95" } ] },
             "easing": "linear"
           }
         ],
         "background.angle": [
           {
-            "time": 144547,
-            "value": 304,
-            "easing": "linear"
-          },
-          {
-            "time": 146211,
-            "value": 360,
-            "easing": "linear"
-          },
-          {
-            "time": 173402,
-            "value": 0,
-            "easing": "back:inOut"
-          },
-          {
-            "time": 178213,
-            "value": 0,
-            "easing": "linear"
-          }
-        ],
-        "camera.z": [
-          {
-            "time": 0,
-            "value": -100,
-            "easing": "instant"
-          },
-          {
-            "time": 644,
-            "value": -50,
-            "easing": "instant"
-          },
-          {
-            "time": 1517,
-            "value": 0,
-            "easing": "instant"
-          }
-        ],
-        "camera.shakeAmp": [
-          {
-            "time": 171249,
-            "value": 0,
-            "easing": "linear"
-          },
-          {
-            "time": 176794,
-            "value": 1,
-            "easing": "linear"
-          },
-          {
-            "time": 184687,
-            "value": 0,
+            "time": 1130,
+            "value": 71,
             "easing": "linear"
           }
         ]

@@ -192,6 +192,28 @@ export class Game {
     const toHex = (n)=>n.toString(16).padStart(2,'0');
     return `#${toHex(r)}${toHex(g)}${toHex(b3)}`;
   }
+  _vfxIsGradient(v) { return v && typeof v === 'object' && (v.type === 'linear' || v.type === 'radial') && Array.isArray(v.stops); }
+  _vfxInterpolateGradient(a, b, t) {
+    // Coerce any legacy unknown types to linear
+    const at = (a.type === 'radial') ? 'radial' : 'linear';
+    const bt = (b.type === 'radial') ? 'radial' : 'linear';
+    const type = (at === bt) ? at : 'linear';
+    const A = (a.stops||[]).slice().sort((x,y)=>x.pos-y.pos);
+    const B = (b.stops||[]).slice().sort((x,y)=>x.pos-y.pos);
+    const n = Math.max(A.length, B.length);
+    if (n === 0) return { type, stops: [] };
+    const get = (arr, i) => arr[Math.min(i, arr.length - 1)] || { pos: i/(Math.max(1, n-1)), color: '#000000' };
+    const out = [];
+    for (let i=0;i<n;i++) {
+      const sa = get(A, i), sb = get(B, i);
+      const pos = (typeof sa.pos === 'number' && typeof sb.pos === 'number') ? (sa.pos + (sb.pos - sa.pos) * t) : (i/(Math.max(1,n-1)));
+      const col = this._vfxInterpolateColor(sa.color || '#000000', sb.color || '#000000', t);
+      out.push({ pos: Math.max(0, Math.min(1, pos)), color: col });
+    }
+    const seen = new Set();
+    const stops = out.sort((x,y)=>x.pos-y.pos).filter(s=>{ const k = `${s.pos.toFixed(3)}_${s.color}`; if (seen.has(k)) return false; seen.add(k); return true; });
+    return { type, stops };
+  }
   _vfxValueAt(property, timeMs) {
     if (!this.vfx) return null;
     const kfs = this.vfx.keyframes?.[property];
@@ -217,10 +239,13 @@ export class Game {
       const dur = Math.max(1, first.time);
       const t = Math.max(0, Math.min(1, timeMs / dur));
       const ez = this._vfxUnpack(first.easing || "linear");
-      const fn = this._vfxEaseFn(ez.curve, ez.style);
+      // Force linear morph for gradients if easing is instant
+      const gradPair = this._vfxIsGradient(startVal) && this._vfxIsGradient(first.value);
+      const fn = (gradPair && ez.curve === 'instant') ? this._vfxEaseFn('linear') : this._vfxEaseFn(ez.curve, ez.style);
       const f = fn(t);
       if (typeof startVal === 'number' && typeof first.value === 'number') return startVal + (first.value - startVal) * f;
       if (typeof startVal === 'string' && /^#/.test(startVal) && typeof first.value === 'string') return this._vfxInterpolateColor(startVal, first.value, f);
+      if (this._vfxIsGradient(startVal) && this._vfxIsGradient(first.value)) return this._vfxInterpolateGradient(startVal, first.value, f);
       if (typeof startVal === 'boolean') return f < 0.5 ? startVal : first.value;
       return f < 0.5 ? startVal : first.value;
     }
@@ -229,16 +254,20 @@ export class Game {
     for (let i=0;i<arr.length-1;i++){ if (timeMs >= arr[i].time && timeMs <= arr[i+1].time) { a = arr[i]; b = arr[i+1]; break; } }
     const dur = Math.max(1, b.time - a.time);
     const t = Math.max(0, Math.min(1, (timeMs - a.time)/dur));
-    const ez = this._vfxUnpack(a.easing || "linear");
-    const fn = this._vfxEaseFn(ez.curve, ez.style);
+  const ez = this._vfxUnpack(a.easing || "linear");
+  // If gradient and easing is 'instant', treat as linear to allow visible morph
+  const gradPair = this._vfxIsGradient(a.value) && this._vfxIsGradient(b.value);
+  const fn = (gradPair && ez.curve === 'instant') ? this._vfxEaseFn('linear') : this._vfxEaseFn(ez.curve, ez.style);
     const f = fn(t);
     if (typeof a.value === 'number' && typeof b.value === 'number') return a.value + (b.value - a.value)*f;
     if (typeof a.value === 'string' && /^#/.test(a.value) && typeof b.value === 'string') return this._vfxInterpolateColor(a.value, b.value, f);
+    if (this._vfxIsGradient(a.value) && this._vfxIsGradient(b.value)) return this._vfxInterpolateGradient(a.value, b.value, f);
     if (typeof a.value === 'boolean') return f < 0.5 ? a.value : b.value;
     return f < 0.5 ? a.value : b.value;
   }
 
   async run() {
+    try { document.body.style.background = '#0a0c10'; } catch {}
     // fresh canvas + state each run
     this.canvas.style.display = "block";
 
@@ -425,6 +454,8 @@ export class Game {
       if ("cacheAsBitmap" in g) g.cacheAsBitmap = true;
     }
 
+    // Ensure background gradient layer exists under everything
+    this._ensureGradientLayer();
     // Judge line + halo (treat as hit window visual; hide when showHitWindows is false)
     if (VIS.showHitWindows) {
       this.judgeStatic = new PIXI.Container();
@@ -609,6 +640,188 @@ export class Game {
       .forEach(c => { try { if (c) c.sortableChildren = true; } catch {} });
   }
 
+  _ensureGradientLayer() {
+    if (this._bgSprite && this._bgSprite.parent) return;
+    const tex = PIXI.Texture.WHITE;
+    this._bgSprite = new PIXI.Sprite(tex);
+    this._bgSprite.zIndex = -10;
+    this._bgSprite.width = this.width;
+    this._bgSprite.height = this.height;
+    this._bgSprite.anchor.set(0,0);
+    this.app.stage.addChildAt(this._bgSprite, 0);
+    // Lazy secondary sprite created only for cross-fade when needed
+  }
+
+  _serializeGradient(g, angle) {
+    if (!g) return null;
+  let typeCode;
+  if (g.type === 'radial') typeCode = 'r'; else typeCode = 'l';
+    const ang = Math.round(Number(angle)||0);
+    const arr = Array.isArray(g.stops) ? g.stops : [];
+    // If not already marked sorted, make a sorted shallow copy once, then tag
+    let stops;
+    if (g.__pfSorted) {
+      stops = arr; // already sorted
+    } else {
+      stops = arr.slice().sort((a,b)=>a.pos-b.pos);
+      Object.defineProperty(g, '__pfSorted', { value: true, enumerable: false, configurable: true });
+      g.stops = stops; // normalized order
+    }
+    // Build compact key manually (avoid JSON stringify overhead)
+  let key = typeCode + ':' + ang;
+    for (let i=0;i<stops.length;i++) {
+      const s = stops[i];
+      const p = Math.max(0, Math.min(1, Number(s.pos)||0));
+      let c = String(s.color||'#ffffff');
+      if (c.length === 4 && c.startsWith('#')) { // expand short #abc
+        c = '#' + c[1]+c[1]+c[2]+c[2]+c[3]+c[3];
+      }
+      key += '|' + p.toFixed(3) + ',' + c.toLowerCase();
+    }
+    return key;
+  }
+
+  _makeGradientTexture(key, g, angle) {
+    const w = Math.max(2, this.width);
+    const h = Math.max(2, this.height);
+    const cvs = document.createElement('canvas');
+    cvs.width = w; cvs.height = h;
+    const ctx = cvs.getContext('2d');
+    ctx.clearRect(0,0,w,h);
+  // Coerce legacy/unsupported types to linear or radial
+  if (g && g.type !== 'linear' && g.type !== 'radial') g.type = 'linear';
+  if (g?.type === 'radial') {
+      const r = Math.hypot(w,h) * 0.6;
+      const grd = ctx.createRadialGradient(w/2,h/2,0,w/2,h/2,r);
+      const stops = g.__pfSorted ? (g.stops||[]) : (g.stops||[]).slice().sort((a,b)=>a.pos-b.pos);
+      for (const s of stops) grd.addColorStop(Math.max(0,Math.min(1,Number(s.pos)||0)), s.color||'#ffffff');
+      ctx.fillStyle = grd;
+    } else {
+      const rad = ((Number(angle)||0) - 90) * Math.PI / 180;
+      const cx = w/2, cy = h/2;
+      const len = Math.max(w,h);
+      const x = Math.cos(rad)*len, y = Math.sin(rad)*len;
+      const grd = ctx.createLinearGradient(cx-x, cy-y, cx+x, cy+y);
+      const stops = g.__pfSorted ? (g.stops||[]) : (g.stops||[]).slice().sort((a,b)=>a.pos-b.pos);
+      for (const s of stops) grd.addColorStop(Math.max(0,Math.min(1,Number(s.pos)||0)), s.color||'#ffffff');
+      ctx.fillStyle = grd;
+    }
+    ctx.fillRect(0,0,w,h);
+    const tex = PIXI.Texture.from(cvs);
+    tex.__pfKey = key;
+    return tex;
+  }
+
+  _getGradientTextureCached(key, g, angle) {
+    if (!this._gradTexCache) {
+      this._gradTexCache = new Map(); // key -> { tex, at }
+      this._gradTexMax = 12; // small LRU cap
+    }
+    const cache = this._gradTexCache;
+    const now = performance.now?.() || Date.now();
+    if (cache.has(key)) {
+      const entry = cache.get(key); entry.at = now; return entry.tex;
+    }
+    const tex = this._makeGradientTexture(key, g, angle);
+    cache.set(key, { tex, at: now });
+    // LRU eviction
+    if (cache.size > this._gradTexMax) {
+      let oldestK = null, oldestT = Infinity;
+      for (const [k,v] of cache.entries()) { if (v.at < oldestT) { oldestT = v.at; oldestK = k; } }
+      if (oldestK && oldestK !== key) {
+        try { cache.get(oldestK).tex.destroy(true); } catch {}
+        cache.delete(oldestK);
+      }
+    }
+    return tex;
+  }
+
+  _updateGradientSprite(timeMs) {
+    // gradient may be keyframed; _vfxValueAt interpolates when possible
+  let g = this._vfxValueAt('background.gradient', timeMs);
+    if (!g) g = this.vfx?.props?.background?.gradient;
+    // Legacy support: synthesize from color1/color2 if present
+    if (!g) {
+      const c1 = this.vfx?.props?.background?.color1;
+      const c2 = this.vfx?.props?.background?.color2 || c1;
+      if (typeof c1 === 'string' && c1.startsWith('#')) {
+        g = { type: 'linear', stops: [ { pos: 0, color: c1 }, { pos: 1, color: c2 || c1 } ] };
+      }
+    }
+    if (!g) {
+      if (this.app?.renderer?.background) this.app.renderer.background.color = 0x0a0c10;
+      if (this._bgSprite) this._bgSprite.visible = false;
+      return;
+    }
+    const angle = Number(this._vfxValueAt('background.angle', timeMs) ?? this.vfx?.props?.background?.angle ?? 0);
+    // Handle cross-fade object
+    const doCross = g && g.__pfBlend;
+    const snap = doCross ? g.from : g;
+    const snapB = doCross ? g.to : null;
+    const blendFactor = doCross ? Math.max(0, Math.min(1, g.factor||0)) : 1;
+    // Ensure primary sprite
+    if (!this._bgSprite) this._ensureGradientLayer();
+    // Possibly ensure secondary sprite for crossfade
+    if (doCross && !this._bgSpriteB) {
+      this._bgSpriteB = new PIXI.Sprite(PIXI.Texture.WHITE);
+      this._bgSpriteB.zIndex = -9;
+      this._bgSpriteB.width = this.width;
+      this._bgSpriteB.height = this.height;
+      this._bgSpriteB.anchor.set(0,0);
+      this.app.stage.addChildAt(this._bgSpriteB, 1);
+    }
+    if (!doCross && this._bgSpriteB) {
+      try { this._bgSpriteB.visible = false; } catch {}
+    }
+    // Throttle texture regen: only when serialized key changes
+    const applySnapshot = (sprite, snapVal, which) => {
+      if (!snapVal || !sprite) return;
+      const k = this._serializeGradient(snapVal, angle);
+      if (!k) return;
+      const cacheField = which === 'A' ? '_bgGradKey' : '_bgGradKeyB';
+      if (this[cacheField] !== k) {
+        const tex = this._getGradientTextureCached(k, snapVal, angle);
+        this[cacheField] = k;
+        sprite.texture = tex;
+        sprite.width = this.width;
+        sprite.height = this.height;
+        sprite.visible = true;
+      }
+    };
+    applySnapshot(this._bgSprite, snap, 'A');
+    if (doCross && this._bgSpriteB) applySnapshot(this._bgSpriteB, snapB, 'B');
+    // Alpha blend
+    this._bgSprite.alpha = doCross ? (1 - blendFactor) : 1;
+    if (this._bgSpriteB) this._bgSpriteB.alpha = doCross ? blendFactor : 0;
+  }
+
+  async _prewarmVFX() {
+    try {
+      // Collect unique gradient snapshots we may need soon (props + first few keyframes)
+      const grads = new Map();
+      const base = this.vfx?.props?.background?.gradient;
+      if (this._vfxIsGradient(base)) grads.set(JSON.stringify(base), base);
+      const kfs = this.vfx?.keyframes?.['background.gradient'] || [];
+      for (let i=0;i<Math.min(6,kfs.length);i++) {
+        const v = kfs[i]?.value; if (this._vfxIsGradient(v)) grads.set(JSON.stringify(v), v);
+      }
+      const angleBase = Number(this.vfx?.props?.background?.angle||0);
+      const angles = new Set([angleBase]);
+      const akfs = this.vfx?.keyframes?.['background.angle'] || [];
+      for (let i=0;i<Math.min(4, akfs.length);i++) angles.add(Number(akfs[i].value||0));
+      // Build textures (touch the cache) so first frame has them
+      for (const g of grads.values()) {
+        for (const ang of angles) {
+          const key = this._serializeGradient(g, ang);
+          if (!key) continue;
+          this._getGradientTextureCached(key, g, ang);
+        }
+      }
+      // Small delay to allow GPU upload
+      await new Promise(r=>setTimeout(r, 16));
+    } catch {}
+  }
+
   _buildProgressBar(totalW) {
     // Build a simple UI-space progress bar (does not follow camera)
     const barW = totalW + 80;
@@ -642,13 +855,13 @@ export class Game {
     const player = new AudioPlayer();
     // Master volume only
     this._applyVolume(player);
-    // Show Loading… while we fetch the audio
-    this._setLoading(true, "Loading…");
-    try {
-      await player.load(manifest.audioUrl);
-    } finally {
-      this._setLoading(false);
-    }
+    // Phase 1: audio
+    this._setLoading(true, "Loading audio…");
+    try { await player.load(manifest.audioUrl); }
+    catch (e) { this._setLoading(true, "Failed to load audio"); throw e; }
+
+    // Phase 2: cloning / chart build
+    this._setLoading(true, "Building chart data…");
 
     // Clone so we never mutate the editor’s objects
     this.chart = {
@@ -660,18 +873,27 @@ export class Game {
     const offsetMs = Math.max(0, Number(this.runtime?.startAtMs) || 0);
     if (offsetMs > 0) this._applyStartOffset(offsetMs);
 
-    // build & inputs
-    this._resetNoteRuntimeFlags();
-    this._prepareNotes();
-    this._prepareInputs();
-    await this._snapshotLeaderboardBefore();
+  // Phase 3: prepare notes/inputs
+  this._setLoading(true, "Preparing notes & inputs…");
+  this._resetNoteRuntimeFlags();
+  this._prepareNotes();
+  this._prepareInputs();
+  await this._snapshotLeaderboardBefore();
+
+  // Phase 4: prewarm VFX (gradient textures etc.)
+  this._setLoading(true, "Preparing visual effects…");
+  try { await this._prewarmVFX(); }
+  catch(e){ this._setLoading(true, "VFX prewarm failed – continuing…"); }
 
     // Visual & audio start
     const visualStartPerfMs = performance.now() + this.leadInMs;
     const audioStartAtSec = player.ctx.currentTime + (this.leadInMs / 1000);
 
     // NOTE: if your AudioPlayer.playAt doesn't support offset, update it accordingly.
-    const source = player.playAt(audioStartAtSec, { offsetSec: offsetMs / 1000 });
+  const source = player.playAt(audioStartAtSec, { offsetSec: offsetMs / 1000 });
+
+  // Hide overlay shortly before gameplay (after a rAF so first frame can upload textures)
+  requestAnimationFrame(()=>{ requestAnimationFrame(()=> this._setLoading(false)); });
 
     // loop
     await this._gameLoop(visualStartPerfMs, () => {});
@@ -685,10 +907,80 @@ export class Game {
 
   _setLoading(isVisible, message = "Loading…") {
     try {
-      if (!this.loadingText) return;
-      this.loadingText.text = isVisible ? message : "";
-      this.loadingText.alpha = isVisible ? 1 : 0;
-      this.loadingText.visible = !!isVisible;
+      // Create overlay lazily once
+      if (!this._loadingOverlayEl) {
+        const el = document.createElement('div');
+        el.id = 'pf-loading-overlay';
+        el.style.position = 'fixed';
+        el.style.left = '0';
+        el.style.top = '0';
+        el.style.width = '100vw';
+        el.style.height = '100vh';
+        el.style.background = '#05070b';
+        el.style.display = 'flex';
+        el.style.flexDirection = 'column';
+        el.style.alignItems = 'center';
+        el.style.justifyContent = 'center';
+        el.style.gap = '28px';
+        el.style.zIndex = '9999';
+        el.style.font = '600 16px system-ui, sans-serif';
+        el.style.color = '#e7f0ff';
+        el.style.letterSpacing = '0.5px';
+        el.style.transition = 'opacity 320ms ease';
+        // Spinner
+        const spinner = document.createElement('div');
+        spinner.className = 'pf-spinner';
+        spinner.style.width = '72px';
+        spinner.style.height = '72px';
+        spinner.style.border = '8px solid rgba(255,255,255,0.12)';
+        spinner.style.borderTop = '8px solid #4da3ff';
+        spinner.style.borderRadius = '50%';
+        spinner.style.animation = 'pf-spin 0.9s linear infinite';
+        // Label
+        const label = document.createElement('div');
+        label.className = 'pf-loading-label';
+        label.style.textAlign = 'center';
+        label.style.fontSize = '15px';
+        label.style.maxWidth = '320px';
+        label.style.opacity = '0.9';
+        el.appendChild(spinner);
+        el.appendChild(label);
+        document.body.appendChild(el);
+
+        // Inject keyframes once
+        if (!document.getElementById('pf-loading-style')) {
+          const st = document.createElement('style');
+            st.id = 'pf-loading-style';
+            st.textContent = `@keyframes pf-spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`;
+            document.head.appendChild(st);
+        }
+        this._loadingOverlayEl = el;
+        this._loadingOverlayLabel = label;
+      }
+      const el = this._loadingOverlayEl;
+      const label = this._loadingOverlayLabel;
+      if (label) label.textContent = message || 'Loading…';
+      if (isVisible) {
+        el.style.pointerEvents = 'auto';
+        el.style.opacity = '1';
+        el.style.display = 'flex';
+        this._loadingVisibleAt = performance.now();
+      } else {
+        // Ensure it stayed visible at least a short minimum to avoid flash
+        const minMs = 400;
+        const elapsed = (performance.now() - (this._loadingVisibleAt||0));
+        const hide = () => {
+          el.style.opacity = '0';
+          el.style.pointerEvents = 'none';
+          // Remove after transition
+          clearTimeout(this._loadingRemoveTO);
+          this._loadingRemoveTO = setTimeout(()=>{ try { el.style.display='none'; } catch {} }, 500);
+        };
+        if (elapsed < minMs) {
+          clearTimeout(this._loadingDelayTO);
+          this._loadingDelayTO = setTimeout(hide, minMs - elapsed);
+        } else hide();
+      }
     } catch {}
   }
 
@@ -1111,24 +1403,9 @@ export class Game {
           if (this.vfx) {
             const t = this.state.timeMs;
 
-            // Background color/gradient (simple blend)
-            const bg1 = this._vfxValueAt('background.color1', t) || this.vfx.props?.background?.color1 || '#0a0c10';
-            const bg2 = this._vfxValueAt('background.color2', t) || this.vfx.props?.background?.color2 || bg1;
-            // PIXI background is a single color; approximate gradient by mid-blending the two colors
-            const mid = (a,b)=>{
-              const ha = String(a||'#000000'); const hb = String(b||ha);
-              const ar = parseInt(ha.slice(1,3),16)||0, ag=parseInt(ha.slice(3,5),16)||0, ab=parseInt(ha.slice(5,7),16)||0;
-              const br = parseInt(hb.slice(1,3),16)||0, bg=parseInt(hb.slice(3,5),16)||0, bb=parseInt(hb.slice(5,7),16)||0;
-              const r=((ar+br)>>1).toString(16).padStart(2,'0');
-              const g=((ag+bg)>>1).toString(16).padStart(2,'0');
-              const bch=((ab+bb)>>1).toString(16).padStart(2,'0');
-              return `#${r}${g}${bch}`;
-            };
-            const bgCol = parseInt(String(mid(bg1, bg2)).replace('#','0x'), 16);
-            // PIXI v8: background is an object; set its color property
-            if (this.app?.renderer?.background) {
-              this.app.renderer.background.color = bgCol;
-            }
+            // Background gradient rendering via cached sprite
+            this._ensureGradientLayer();
+            this._updateGradientSprite(t);
 
             // Lane opacity
             const laneOpacityPct = Number(this._vfxValueAt('lanes.opacity', t));

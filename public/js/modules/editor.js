@@ -213,7 +213,7 @@ export class Editor {
 
       // Current timeline state
       timeline: {
-        currentProperty: "background.color1",
+  currentProperty: "background.gradient",
         easingCurve: "linear",   // linear|quad|cubic|quart|quint|sine|expo|circ|back|elastic|bounce|bezier|instant
         easingStyle: "inOut",    // in|out|inOut (ignored for instant/linear/bezier)
   zoom: 1.0,
@@ -240,9 +240,7 @@ export class Editor {
     // Build default VFX set factory
     const makeDefaultData = () => ({
       background: {
-        color1: "#0d111a",
-        color2: "#1a1f2e",
-        gradient: false,
+        gradient: { type: "linear", stops: [ { pos: 0, color: "#0d111a" }, { pos: 1, color: "#1a1f2e" } ] },
         angle: 0,
         flashEnable: false,
         flashColor: "#ffffff",
@@ -275,6 +273,8 @@ export class Editor {
     
     // Wire VFX controls
     this._wireVFXControls(vfx);
+  // Wire gradient editor
+  try { this._wireGradientEditor(vfx); } catch {}
 
     // Listen for tab activation to resize and refresh VFX UI
     window.addEventListener("pf-editor-tab-activated", (e) => {
@@ -413,7 +413,7 @@ export class Editor {
       vfx.timeline.currentCategory = cat;
       // Seed sensible defaults so jumping categories is stable
       if (!vfx.timeline.lastPropByCategory) vfx.timeline.lastPropByCategory = {};
-      vfx.timeline.lastPropByCategory.background = vfx.timeline.lastPropByCategory.background || 'background.color1';
+  vfx.timeline.lastPropByCategory.background = vfx.timeline.lastPropByCategory.background || 'background.gradient';
       vfx.timeline.lastPropByCategory.camera = vfx.timeline.lastPropByCategory.camera || 'camera.rotateZ';
       vfx.timeline.lastPropByCategory.notes = vfx.timeline.lastPropByCategory.notes || 'notes.colors.1';
       vfx.timeline.lastPropByCategory.lanes = vfx.timeline.lastPropByCategory.lanes || 'lanes.opacity';
@@ -436,10 +436,8 @@ export class Editor {
   try { this._ensureVfxPropChooser(vfx); } catch {}
   // Property tabs removed
 
-    // Wire property controls with live updates
-    this._wireVFXProperty("vfx-bg-color1", "background.color1", vfx);
-    this._wireVFXProperty("vfx-bg-color2", "background.color2", vfx);
-    this._wireVFXProperty("vfx-bg-angle", "background.angle", vfx, "vfx-bg-angle-value", "°");
+  // Wire property controls with live updates
+  this._wireVFXProperty("vfx-bg-angle", "background.angle", vfx, "vfx-bg-angle-value", "°");
     
     this._wireVFXProperty("vfx-bg-flash-enable", "background.flashEnable", vfx);
     this._wireVFXProperty("vfx-bg-flash-color", "background.flashColor", vfx);
@@ -765,8 +763,7 @@ export class Editor {
 
   _defaultVFXFor(property) {
     const defaults = {
-      'background.color1': '#0d111a',
-      'background.color2': '#1a1f2e',
+      'background.gradient': { type: 'linear', stops: [ { pos: 0, color: '#0d111a' }, { pos: 1, color: '#1a1f2e' } ] },
       'background.angle': 0,
       'background.flashEnable': false,
       'background.flashColor': '#ffffff',
@@ -791,7 +788,10 @@ export class Editor {
   'notes.size': 1,
   'lanes.opacity': 100,
     };
-    return defaults[property];
+    // Return a fresh copy for objects to avoid accidental mutation of shared defaults
+    const v = defaults[property];
+    if (v && typeof v === 'object') return JSON.parse(JSON.stringify(v));
+    return v;
   }
 
   _resetVFXProperty(property, vfx) {
@@ -1024,6 +1024,19 @@ export class Editor {
         value = value[key];
       }
     }
+    // Special-case: background.gradient is a structured object; ensure sanitized clone for keyframes
+    if (property === 'background.gradient' && value && typeof value === 'object') {
+      const type = (value.type === 'radial') ? 'radial' : 'linear';
+      let stops = Array.isArray(value.stops) ? value.stops : [];
+      // sanitize
+      const seen = new Set();
+      stops = stops.map(s => ({ pos: Math.max(0, Math.min(1, Number(s?.pos))), color: this._ensureHexColor(s?.color, '#ffffff') }))
+                   .filter(s => Number.isFinite(s.pos) && typeof s.color === 'string')
+                   .sort((a,b)=>a.pos-b.pos)
+                   .filter(s => { const k = `${s.pos.toFixed(3)}_${s.color}`; if (seen.has(k)) return false; seen.add(k); return true; });
+      if (!stops.length) stops = [ { pos: 0, color: '#0d111a' }, { pos: 1, color: '#1a1f2e' } ];
+      return { type, stops };
+    }
     return value;
   }
 
@@ -1101,8 +1114,7 @@ export class Editor {
     switch (category) {
       case "background":
         return [
-          { value: "background.color1", label: "Background Color 1" },
-          { value: "background.color2", label: "Background Color 2" },
+          { value: "background.gradient", label: "Background Gradient" },
           { value: "background.angle", label: "Background Angle" },
           { value: "background.flashEnable", label: "Beat Flash Enable" },
           { value: "background.flashColor", label: "Beat Flash Color" },
@@ -1249,7 +1261,7 @@ export class Editor {
 
     // Pre-first easing: draw from t=0 default to the first keyframe using first keyframe's easing
     if (keyframes.length > 0) {
-      const first = keyframes[0];
+  const first = keyframes[0];
       if (first && first.time > 0) {
         const xStart = 20 + ((0 - leftTime) * pixelsPerMs);
         const xEnd = 20 + ((first.time - leftTime) * pixelsPerMs);
@@ -1794,7 +1806,11 @@ export class Editor {
     const el = document.getElementById(id);
     if (!el) return;
     const val = kf.value;
-    if (el.type === "checkbox") {
+    // Canvas-based gradient editor has no single value to set; instead push the snapshot into data
+    if (property === 'background.gradient') {
+      if (!this.vfx?.data?.background) this.vfx.data.background = {};
+      this.vfx.data.background.gradient = JSON.parse(JSON.stringify(val));
+    } else if (el.type === "checkbox") {
       el.checked = !!val;
     } else {
       el.value = val;
@@ -1805,8 +1821,7 @@ export class Editor {
 
   _vfxElementIdForProperty(prop) {
     const map = {
-      'background.color1': 'vfx-bg-color1',
-      'background.color2': 'vfx-bg-color2',
+      'background.gradient': 'vfx-bg-grad-canvas',
       'background.angle': 'vfx-bg-angle',
       'background.flashEnable': 'vfx-bg-flash-enable',
       'background.flashColor': 'vfx-bg-flash-color',
@@ -1825,10 +1840,351 @@ export class Editor {
       'notes.colors.3': 'vfx-note-color-3',
       'notes.colors.4': 'vfx-note-color-4',
       'notes.glow': 'vfx-note-glow',
-  'notes.size': 'vfx-note-size',
+      'notes.size': 'vfx-note-size',
       'lanes.opacity': 'vfx-lane-opacity'
     };
     return map[prop] || null;
+  }
+
+  // ===== Gradient Editor (Background) =====
+  _wireGradientEditor(vfx) {
+    const typeSel = document.getElementById("vfx-bg-grad-type");
+    const canvas = document.getElementById("vfx-bg-grad-canvas");
+    const colorInp = document.getElementById("vfx-bg-grad-color");
+    const btnAdd = document.getElementById("vfx-bg-grad-add");
+    const btnDel = document.getElementById("vfx-bg-grad-del");
+    const posInp = document.getElementById("vfx-bg-grad-pos");
+
+    if (!vfx.data.background.gradient) {
+      vfx.data.background.gradient = { type: "linear", stops: [ { pos: 0, color: "#0d111a" }, { pos: 1, color: "#1a1f2e" } ] };
+    }
+
+    const state = { selIndex: 0, hoverIndex: -1 };
+
+    const updatePosInput = () => {
+      if (!posInp) return;
+      try {
+        const stops = vfx.data.background.gradient.stops || [];
+        const s = stops[state.selIndex];
+        if (s) posInp.value = (s.pos * 100).toFixed(2);
+      } catch {}
+    };
+
+    const redraw = () => {
+      this._drawGradientStrip(canvas, vfx);
+      // draw handles + labels
+      try {
+        const ctx = canvas.getContext('2d');
+        const rect = canvas.getBoundingClientRect();
+        const dpr = (window.devicePixelRatio || 1);
+        const w = Math.max(1, Math.floor(rect.width * dpr));
+        const h = Math.max(1, Math.floor(rect.height * dpr));
+        const stops = vfx.data.background.gradient.stops || [];
+        ctx.save();
+        // redraw strip first
+        this._drawGradientStrip(canvas, vfx);
+        const knobR = Math.round(6 * dpr);
+        const ringR = Math.round(9 * dpr);
+        ctx.font = `${Math.max(10, Math.round(11*dpr))}px system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        for (let i=0;i<stops.length;i++){
+          const s = stops[i];
+          const x = Math.round(s.pos * w);
+          const y = h - Math.round(10 * dpr);
+          const isSel = i === state.selIndex;
+          const isHover = i === state.hoverIndex;
+          // hover ring
+          if (isHover && !isSel) {
+            ctx.beginPath();
+            ctx.arc(x, y, ringR, 0, Math.PI*2);
+            ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+            ctx.lineWidth = Math.max(1, Math.floor(2 * dpr));
+            ctx.stroke();
+          }
+          // outer circle
+          ctx.beginPath();
+          ctx.arc(x, y, knobR, 0, Math.PI*2);
+          ctx.fillStyle = isSel ? '#ffffff' : '#e5e9f2';
+          ctx.fill();
+          ctx.lineWidth = Math.max(1, Math.floor(2 * dpr));
+          ctx.strokeStyle = '#0b111d';
+          ctx.stroke();
+          // inner color preview
+          ctx.beginPath();
+          ctx.arc(x, y, Math.max(1, knobR - Math.round(3*dpr)), 0, Math.PI*2);
+          ctx.fillStyle = s.color || '#ffffff';
+          ctx.fill();
+          // percent label
+          const pct = Math.round((s.pos||0) * 100);
+          ctx.fillStyle = isSel ? '#ffffff' : 'rgba(255,255,255,0.75)';
+          ctx.fillText(pct + '%', x, y - knobR - Math.round(2*dpr));
+        }
+        ctx.restore();
+      } catch {}
+      updatePosInput();
+    };
+
+    const clamp01 = (x)=> Math.max(0, Math.min(1, x));
+
+    const pickAt = (px) => {
+      const w = canvas.getBoundingClientRect().width;
+      const xPos = clamp01(px / Math.max(1,w));
+      const stops = vfx.data.background.gradient.stops || [];
+      let best = -1; let bestDist = 1e9;
+      for (let i=0;i<stops.length;i++){
+        const d = Math.abs(stops[i].pos - xPos);
+        if (d < bestDist) { best=i; bestDist=d; }
+      }
+      return best;
+    };
+
+    let dragging = false;
+    const onDown = (e)=>{
+      const rect = canvas.getBoundingClientRect();
+      const dpr = (window.devicePixelRatio || 1);
+      const xCss = (e.clientX ?? (e.touches?.[0]?.clientX || 0)) - rect.left;
+      const wPx = Math.max(1, Math.floor(rect.width * dpr));
+      const pos = clamp01((xCss * dpr) / wPx);
+      const stops = vfx.data.background.gradient.stops;
+      // if click near existing stop, select and start dragging
+      let idx = pickAt(xCss);
+      if (idx >= 0) {
+        state.selIndex = idx;
+        colorInp.value = stops[idx].color;
+        dragging = true;
+      }
+      redraw();
+    };
+    const onMove = (e)=>{
+      const rect = canvas.getBoundingClientRect();
+      const dpr = (window.devicePixelRatio || 1);
+      const xCss = (e.clientX ?? (e.touches?.[0]?.clientX || 0)) - rect.left;
+      const wPx = Math.max(1, Math.floor(rect.width * dpr));
+      const pos = clamp01((xCss * dpr) / wPx);
+      const stops = vfx.data.background.gradient.stops;
+      // update hover index for feedback
+      state.hoverIndex = pickAt(xCss);
+      if (!dragging) { redraw(); return; }
+      const i = state.selIndex;
+      if (i != null && stops[i]) {
+        stops[i].pos = pos;
+        // Do NOT sort here; allow handles to cross freely. We'll render sorted copy only.
+        this._markDirtyAndAutosave('vfx-bg-grad-move');
+        // Auto-keyframe background.gradient on interaction if enabled
+        if (vfx.timeline.autoKeyframe) {
+          try {
+            const property = 'background.gradient';
+            let time = this.playStartMs;
+            const scrub = document.getElementById(this.ids.scrub);
+            if (scrub) { const v = Number(scrub.value); if (Number.isFinite(v)) time = v; }
+            const easing = this._packEasing(vfx.timeline.easingCurve, vfx.timeline.easingStyle);
+            const value = this._getCurrentVFXPropertyValue(property, vfx);
+            if (!vfx.keyframes[property]) vfx.keyframes[property] = [];
+            const idx = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
+            if (idx >= 0) vfx.keyframes[property][idx] = { time, value, easing }; else {
+              vfx.keyframes[property].push({ time, value, easing });
+              vfx.keyframes[property].sort((a,b)=>a.time-b.time);
+            }
+          } catch {}
+        }
+        // live preview via redraw and canvas repaint of editor preview
+        redraw();
+      }
+    };
+    const onUp = ()=>{ 
+      if (dragging) {
+        // After drag ends, normalize order so exported data remains ordered
+        const stops = vfx.data.background.gradient.stops;
+        const activeColor = stops[state.selIndex]?.color;
+        const activePos = stops[state.selIndex]?.pos;
+        stops.sort((a,b)=>a.pos-b.pos);
+        // Re-find selected stop (approx match by color+closest pos)
+        let best = 0, bestDist = Infinity;
+        for (let i=0;i<stops.length;i++) {
+          if (stops[i].color === activeColor) {
+            const d = Math.abs(stops[i].pos - activePos);
+            if (d < bestDist) { bestDist = d; best = i; }
+          }
+        }
+        state.selIndex = best;
+        redraw();
+      }
+      dragging = false; 
+    };
+    const onDbl = (e)=>{
+      const rect = canvas.getBoundingClientRect();
+      const dpr = (window.devicePixelRatio || 1);
+      const xCss = (e.clientX ?? (e.touches?.[0]?.clientX || 0)) - rect.left;
+      const wPx = Math.max(1, Math.floor(rect.width * dpr));
+      const pos = clamp01((xCss * dpr) / wPx);
+      const color = colorInp?.value || '#ffffff';
+      const stops = vfx.data.background.gradient.stops;
+      stops.push({ pos, color });
+      // Sort only after insertion (not during drag path)
+      stops.sort((a,b)=>a.pos-b.pos);
+      state.selIndex = stops.findIndex(s=>s.color===color && Math.abs(s.pos-pos) < 1e-6);
+      this._markDirtyAndAutosave('vfx-bg-grad-add');
+      redraw();
+    };
+
+    if (canvas) {
+      canvas.addEventListener('mousedown', onDown);
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      canvas.addEventListener('dblclick', onDbl);
+      // keyboard delete
+      window.addEventListener('keydown', (e)=>{
+        if (document.activeElement && ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) return;
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          const stops = vfx.data.background.gradient.stops;
+          if (stops.length > 2 && stops[state.selIndex]) {
+            stops.splice(state.selIndex, 1);
+            state.selIndex = Math.max(0, Math.min(state.selIndex, stops.length-1));
+            this._markDirtyAndAutosave('vfx-bg-grad-del');
+            redraw();
+          }
+        }
+      });
+    }
+
+    if (btnAdd) btnAdd.addEventListener('click', ()=>{
+      const stops = vfx.data.background.gradient.stops;
+      const pos = 0.5;
+      const color = colorInp?.value || '#ffffff';
+      stops.push({ pos, color });
+      stops.sort((a,b)=>a.pos-b.pos);
+      state.selIndex = stops.findIndex(s=>s.color===color && Math.abs(s.pos-pos) < 1e-6);
+      this._markDirtyAndAutosave('vfx-bg-grad-add');
+      redraw();
+    });
+    if (posInp) posInp.addEventListener('change', ()=>{
+      const stops = vfx.data.background.gradient.stops || [];
+      const s = stops[state.selIndex];
+      if (!s) return;
+      const raw = Number(posInp.value);
+      if (!Number.isFinite(raw)) return;
+      s.pos = Math.max(0, Math.min(1, raw / 100));
+      const colorRef = s.color; const posRef = s.pos;
+      stops.sort((a,b)=>a.pos-b.pos);
+      state.selIndex = stops.findIndex(st => st.color===colorRef && Math.abs(st.pos-posRef) < 1e-6) || 0;
+      this._markDirtyAndAutosave('vfx-bg-grad-pos');
+      if (vfx.timeline.autoKeyframe) {
+        try {
+          const property = 'background.gradient';
+          let time = this.playStartMs; const scrub = document.getElementById(this.ids.scrub);
+          if (scrub) { const v = Number(scrub.value); if (Number.isFinite(v)) time = v; }
+          const easing = this._packEasing(vfx.timeline.easingCurve, vfx.timeline.easingStyle);
+          const value = this._getCurrentVFXPropertyValue(property, vfx);
+          if (!vfx.keyframes[property]) vfx.keyframes[property] = [];
+          const idx = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
+          if (idx >= 0) vfx.keyframes[property][idx] = { time, value, easing }; else {
+            vfx.keyframes[property].push({ time, value, easing });
+            vfx.keyframes[property].sort((a,b)=>a.time-b.time);
+          }
+        } catch {}
+      }
+      redraw();
+    });
+    if (btnDel) btnDel.addEventListener('click', ()=>{
+      const stops = vfx.data.background.gradient.stops;
+      if (stops.length > 2 && stops[state.selIndex]) {
+        stops.splice(state.selIndex, 1);
+        state.selIndex = Math.max(0, Math.min(state.selIndex, stops.length-1));
+        this._markDirtyAndAutosave('vfx-bg-grad-del');
+        redraw();
+      }
+    });
+
+    if (colorInp) colorInp.addEventListener('input', ()=>{
+      const stops = vfx.data.background.gradient.stops;
+      if (stops[state.selIndex]) {
+        stops[state.selIndex].color = this._ensureHexColor(colorInp.value, stops[state.selIndex].color);
+        this._markDirtyAndAutosave('vfx-bg-grad-color');
+        if (vfx.timeline.autoKeyframe) {
+          try {
+            const property = 'background.gradient';
+            let time = this.playStartMs; const scrub = document.getElementById(this.ids.scrub);
+            if (scrub) { const v = Number(scrub.value); if (Number.isFinite(v)) time = v; }
+            const easing = this._packEasing(vfx.timeline.easingCurve, vfx.timeline.easingStyle);
+            const value = this._getCurrentVFXPropertyValue(property, vfx);
+            if (!vfx.keyframes[property]) vfx.keyframes[property] = [];
+            const idx = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
+            if (idx >= 0) vfx.keyframes[property][idx] = { time, value, easing }; else {
+              vfx.keyframes[property].push({ time, value, easing });
+              vfx.keyframes[property].sort((a,b)=>a.time-b.time);
+            }
+          } catch {}
+        }
+        redraw();
+      }
+    });
+
+    if (typeSel) typeSel.addEventListener('change', ()=>{
+  // Only allow linear or radial now
+  const tv = typeSel.value === 'radial' ? 'radial' : 'linear';
+  vfx.data.background.gradient.type = tv;
+      this._markDirtyAndAutosave('vfx-bg-grad-type');
+      if (vfx.timeline.autoKeyframe) {
+        try {
+          const property = 'background.gradient';
+          let time = this.playStartMs; const scrub = document.getElementById(this.ids.scrub);
+          if (scrub) { const v = Number(scrub.value); if (Number.isFinite(v)) time = v; }
+          const easing = this._packEasing(vfx.timeline.easingCurve, vfx.timeline.easingStyle);
+          const value = this._getCurrentVFXPropertyValue(property, vfx);
+          if (!vfx.keyframes[property]) vfx.keyframes[property] = [];
+          const idx = vfx.keyframes[property].findIndex(kf => Math.abs(kf.time - time) < 10);
+          if (idx >= 0) vfx.keyframes[property][idx] = { time, value, easing }; else {
+            vfx.keyframes[property].push({ time, value, easing });
+            vfx.keyframes[property].sort((a,b)=>a.time-b.time);
+          }
+        } catch {}
+      }
+      redraw();
+    });
+
+    // initial UI
+    if (typeSel) typeSel.value = vfx.data.background.gradient.type || 'linear';
+    if (colorInp) {
+      const stops = vfx.data.background.gradient.stops;
+      colorInp.value = stops[state.selIndex]?.color || '#ffffff';
+    }
+    this._drawGradientStrip(canvas, vfx);
+    updatePosInput();
+    redraw();
+  }
+
+  _drawGradientStrip(canvas, vfx) {
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const rect = canvas.getBoundingClientRect();
+    const dpr = (window.devicePixelRatio || 1);
+    const w = Math.max(1, Math.floor(rect.width * dpr));
+    const h = Math.max(1, Math.floor(rect.height * dpr));
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    ctx.clearRect(0,0,w,h);
+    const g = vfx?.data?.background?.gradient;
+    if (!g || !Array.isArray(g.stops) || g.stops.length === 0) return;
+    const grad = ctx.createLinearGradient(0,0,w,0);
+    const stops = g.stops.slice().sort((a,b)=>a.pos-b.pos);
+    for (const s of stops) grad.addColorStop(Math.max(0,Math.min(1,Number(s.pos)||0)), s.color || '#ffffff');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0,0,w,h);
+  }
+
+  _syncGradientUi(vfx) {
+    try {
+      const typeSel = document.getElementById('vfx-bg-grad-type');
+      const canvas = document.getElementById('vfx-bg-grad-canvas');
+      const colorInp = document.getElementById('vfx-bg-grad-color');
+      const g = vfx?.data?.background?.gradient;
+      if (typeSel && g?.type) typeSel.value = g.type;
+      if (canvas) this._drawGradientStrip(canvas, vfx);
+      if (colorInp && Array.isArray(g?.stops) && g.stops.length) {
+        colorInp.value = g.stops[0].color;
+      }
+    } catch {}
   }
 
   // Center the visible window on the playhead time
@@ -1980,8 +2336,25 @@ export class Editor {
       if (!keyframes || keyframes.length === 0) return null;
       const arr = keyframes; // assume sorted by time
 
-      // Before first or after last
-      if (time <= arr[0].time) return arr[0].value;
+      // Before first keyframe: blend strictly from schema default (or exact t=0 keyframe) up to the first keyframe's value
+      if (time <= arr[0].time) {
+        const first = arr[0];
+        if (Math.abs(first.time) < 1) return first.value; // exact t=0 kf wins
+        const def = this._defaultVFXFor(property);
+        const startVal = (def !== undefined) ? def : this._getCurrentVFXPropertyValue(property, this.vfx);
+        if (time <= 0) return startVal;
+        const dur = Math.max(1, first.time);
+        const t = Math.max(0, Math.min(1, time / dur));
+  const ez = this._unpackEasing(first.easing || 'linear');
+  const isGrad = this._isGradientSnapshot(startVal) && this._isGradientSnapshot(first.value);
+  const fn = (ez.curve === 'linear' || (isGrad && ez.curve === 'instant')) ? this._easingFunctions.linear() : (ez.curve === 'instant' ? (()=>0) : (ez.curve === 'bezier' ? this._easingFunctions.bezier() : (this._easingFunctions[ez.curve]?.[ez.style || 'inOut'] || this._easingFunctions.cubic.inOut)));
+        const f = fn(t);
+        if (typeof startVal === 'number' && typeof first.value === 'number') return startVal + (first.value - startVal) * f;
+        if (typeof startVal === 'string' && /^#/.test(startVal) && typeof first.value === 'string') return this._interpolateColor(startVal, first.value, f);
+        if (this._isGradientSnapshot(startVal) && this._isGradientSnapshot(first.value)) return this._interpolateGradient(startVal, first.value, f);
+        if (typeof startVal === 'boolean') return f < 0.5 ? startVal : first.value;
+        return f < 0.5 ? startVal : first.value;
+      }
       const lastIdx = arr.length - 1;
       if (time >= arr[lastIdx].time) return arr[lastIdx].value;
 
@@ -2002,12 +2375,13 @@ export class Editor {
       const t = Math.max(0, Math.min(1, (time - startKf.time) / duration));
 
       // Easing
-      const ez = this._unpackEasing(startKf.easing || easing);
-      let fn;
-      if (ez.curve === "linear") fn = this._easingFunctions.linear();
-      else if (ez.curve === "instant") fn = () => 0;
-      else if (ez.curve === "bezier") fn = this._easingFunctions.bezier();
-      else fn = this._easingFunctions[ez.curve]?.[ez.style || "inOut"] || this._easingFunctions.cubic.inOut;
+  const ez = this._unpackEasing(startKf.easing || easing);
+  let fn;
+  const isGrad = this._isGradientSnapshot(startKf.value) && this._isGradientSnapshot(endKf.value);
+  if (ez.curve === "linear" || (isGrad && ez.curve === "instant")) fn = this._easingFunctions.linear();
+  else if (ez.curve === "instant") fn = () => 0;
+  else if (ez.curve === "bezier") fn = this._easingFunctions.bezier();
+  else fn = this._easingFunctions[ez.curve]?.[ez.style || "inOut"] || this._easingFunctions.cubic.inOut;
       const factor = fn(t);
 
       // Interpolate
@@ -2017,6 +2391,8 @@ export class Editor {
         return this._interpolateColor(startKf.value, endKf.value, factor);
       } else if (typeof startKf.value === "boolean") {
         return factor < 0.5 ? startKf.value : endKf.value;
+      } else if (this._isGradientSnapshot(startKf.value) && this._isGradientSnapshot(endKf.value)) {
+        return this._interpolateGradient(startKf.value, endKf.value, factor);
       } else {
         return factor < 0.5 ? startKf.value : endKf.value;
       }
@@ -2047,6 +2423,42 @@ export class Editor {
       } : null;
     }
 
+    _isGradientSnapshot(v) {
+  return v && typeof v === 'object' && (v.type === 'linear' || v.type === 'radial') && Array.isArray(v.stops);
+    }
+
+    _interpolateGradient(a, b, t) {
+      // If types differ, return a meta blend object so caller can cross-fade instead of snap
+      if ((a.type||'linear') !== (b.type||'linear')) {
+        return { __pfBlend: true, from: a, to: b, factor: t };
+      }
+      const type = (a.type || 'linear');
+      const prep = (g)=>{
+        if (!g) return [];
+        if (g.__pfSorted) return g.stops||[];
+        const sorted = (g.stops||[]).slice().sort((x,y)=>x.pos-y.pos);
+        Object.defineProperty(g,'__pfSorted',{value:true,enumerable:false,configurable:true});
+        g.stops = sorted; return sorted;
+      };
+      const stopsA = prep(a);
+      const stopsB = prep(b);
+      const n = Math.max(stopsA.length, stopsB.length);
+      if (n === 0) return { type, stops: [] };
+      const get = (arr, i) => arr[Math.min(i, arr.length - 1)] || { pos: i/(Math.max(1, n-1)), color: '#000000' };
+      const out = [];
+      for (let i=0;i<n;i++) {
+        const sa = get(stopsA, i);
+        const sb = get(stopsB, i);
+        const pos = (typeof sa.pos === 'number' && typeof sb.pos === 'number') ? (sa.pos + (sb.pos - sa.pos) * t) : (i/(Math.max(1,n-1)));
+        const col = this._interpolateColor(sa.color || '#000000', sb.color || '#000000', t);
+        out.push({ pos: Math.max(0, Math.min(1, pos)), color: col });
+      }
+      // Ensure sorted and dedup small jitter
+      const seen = new Set();
+      const stops = out.sort((x,y)=>x.pos-y.pos).filter(s=>{ const k = `${s.pos.toFixed(3)}_${s.color}`; if (seen.has(k)) return false; seen.add(k); return true; });
+      return { type, stops };
+    }
+
     // Get current VFX property value at specified time
     _getVFXPropertyAtTime(property, time, vfx) {
       const keyframes = vfx.keyframes[property];
@@ -2059,14 +2471,13 @@ export class Editor {
       }
       // Ensure sorted by time
       keyframes.sort((a,b)=>a.time-b.time);
-      const first = keyframes[0];
+    const first = keyframes[0];
       // If we're before the first keyframe, ease from the default-at-0 to the first keyframe value
       if (time <= first.time) {
         // Baseline comes from the hard-coded defaults unless a keyframe exists at t=0
         let startVal;
-        if (first && Math.abs(first.time) < 1) {
-          startVal = first.value; // exact t=0 keyframe is the start
-        } else {
+        // Baseline always comes from the hard defaults unless there is an explicit exact t=0 keyframe
+        if (first && Math.abs(first.time) < 1) startVal = first.value; else {
           const def = this._defaultVFXFor(property);
           startVal = (def !== undefined) ? def : this._getCurrentVFXPropertyValue(property, vfx);
         }
@@ -2081,7 +2492,7 @@ export class Editor {
         const ez = this._unpackEasing(first.easing || "linear");
         let fn;
         if (ez.curve === "linear") fn = this._easingFunctions.linear();
-        else if (ez.curve === "instant") fn = () => 0;
+        else if (ez.curve === "instant") fn = this._easingFunctions.linear(); // force visible morph for gradients
         else if (ez.curve === "bezier") fn = this._easingFunctions.bezier();
         else fn = this._easingFunctions[ez.curve]?.[ez.style || "inOut"] || this._easingFunctions.cubic.inOut;
         const factor = fn(t);
@@ -2093,7 +2504,10 @@ export class Editor {
         } else if (typeof startVal === "boolean") {
           return factor < 0.5 ? startVal : first.value;
         }
-        // Fallback for other types
+        // Gradient or other object snapshots: attempt gradient blend, else step
+        if (this._isGradientSnapshot(startVal) && this._isGradientSnapshot(first.value)) {
+          return this._interpolateGradient(startVal, first.value, factor);
+        }
         return factor < 0.5 ? startVal : first.value;
       }
       // Otherwise, standard interpolation between surrounding keyframes
@@ -2182,19 +2596,16 @@ export class Editor {
     // Reset to default values
     vfx.data = {
       background: {
-        color1: "#0d111a",
-        color2: "#1a1f2e", 
-        gradient: false,
+        gradient: { type: 'linear', stops: [ { pos: 0, color: '#0d111a' }, { pos: 1, color: '#1a1f2e' } ] },
         angle: 0,
         flashEnable: false,
         flashColor: "#ffffff",
         flashIntensity: 30,
         flashDuration: 200
       },
-    camera: { x: 0, y: 0, z: 0, zoom: 1.0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
-  view: { mode: "2D", amount: 0 },
-  notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0, trails: false },
-      lanes: { opacity: 100, pulsing: false, glow: 0 }
+      camera: { x: 0, y: 0, z: 0, rotateX: 0, rotateY: 0, rotateZ: 0, shakeAmp: 0, shakeFreq: 5 },
+      notes: { colors: ["#19cdd0", "#8A5CFF", "#C8FF4D", "#FFA94D"], glow: 0, size: 1.0 },
+      lanes: { opacity: 100 }
     };
     
     vfx.keyframes = {};
@@ -2299,15 +2710,14 @@ export class Editor {
     // Update all UI elements to match current VFX data
     
     // Background properties
-    const bgColor1 = document.getElementById("vfx-bg-color1");
-    const bgColor2 = document.getElementById("vfx-bg-color2");
-    const bgAngle = document.getElementById("vfx-bg-angle");
-    const bgAngleValue = document.getElementById("vfx-bg-angle-value");
-    
-    if (bgColor1) bgColor1.value = vfx.data.background.color1;
-    if (bgColor2) bgColor2.value = vfx.data.background.color2;
+  const bgAngle = document.getElementById("vfx-bg-angle");
+  const bgAngleValue = document.getElementById("vfx-bg-angle-value");
+
     if (bgAngle) bgAngle.value = vfx.data.background.angle;
     if (bgAngleValue) bgAngleValue.textContent = vfx.data.background.angle + "°";
+
+    // Gradient editor UI
+    try { this._syncGradientUi(vfx); } catch {}
 
     // Background flash properties
     const flashEnable = document.getElementById("vfx-bg-flash-enable");
@@ -2438,9 +2848,7 @@ export class Editor {
   _getDefaultVFXData() {
     return {
       background: {
-        color1: "#0d111a",
-        color2: "#1a1f2e",
-        gradient: false,
+        gradient: { type: "linear", stops: [ { pos: 0, color: "#0d111a" }, { pos: 1, color: "#1a1f2e" } ] },
         angle: 0,
         flashEnable: false,
         flashColor: "#ffffff",
@@ -2489,15 +2897,38 @@ export class Editor {
     // Properties normalization (merge + coerce)
     const src = setObj?.properties || {};
     try {
-      // Background
+      // Background (migrate legacy color1/color2 into gradient stops)
       if (src.background && typeof src.background === "object") {
-        outProps.background.color1 = this._ensureHexColor(src.background.color1, outProps.background.color1);
-        outProps.background.color2 = this._ensureHexColor(src.background.color2, outProps.background.color2);
-        outProps.background.angle = this._clamp(src.background.angle, 0, 360);
-        outProps.background.flashEnable = !!src.background.flashEnable;
-        outProps.background.flashColor = this._ensureHexColor(src.background.flashColor, outProps.background.flashColor);
-        outProps.background.flashIntensity = this._clamp(src.background.flashIntensity, 0, 100);
-        outProps.background.flashDuration = this._clamp(src.background.flashDuration, 0, 2000);
+        const bg = src.background;
+        // Determine gradient object
+        let g = bg.gradient;
+        if (!g || typeof g !== "object") {
+          // Legacy: build from color1/color2 or defaults
+          const c1 = this._ensureHexColor(bg.color1, "#0d111a") || "#0d111a";
+          const c2 = this._ensureHexColor(bg.color2, c1) || c1;
+          g = { type: "linear", stops: [ { pos: 0, color: c1 }, { pos: 1, color: c2 } ] };
+        }
+        // Coerce gradient object
+        const type = (g.type === "radial") ? "radial" : "linear";
+        let stops = Array.isArray(g.stops) ? g.stops : [];
+        // sanitize stops
+        const seen = new Set();
+        stops = stops.map(s => ({
+          pos: Math.max(0, Math.min(1, Number(s?.pos))),
+          color: this._ensureHexColor(s?.color, "#ffffff")
+        }))
+        .filter(s => Number.isFinite(s.pos) && typeof s.color === "string")
+        .sort((a,b)=>a.pos-b.pos)
+        .filter(s => { const k = `${s.pos.toFixed(3)}_${s.color}`; if (seen.has(k)) return false; seen.add(k); return true; });
+        if (stops.length === 0) {
+          stops = [ { pos: 0, color: "#0d111a" }, { pos: 1, color: "#1a1f2e" } ];
+        }
+        outProps.background.gradient = { type, stops };
+        outProps.background.angle = this._clamp(bg.angle, 0, 360);
+        outProps.background.flashEnable = !!bg.flashEnable;
+        outProps.background.flashColor = this._ensureHexColor(bg.flashColor, outProps.background.flashColor);
+        outProps.background.flashIntensity = this._clamp(bg.flashIntensity, 0, 100);
+        outProps.background.flashDuration = this._clamp(bg.flashDuration, 0, 2000);
       }
 
       // Camera (migrate legacy angle)
@@ -2532,7 +2963,8 @@ export class Editor {
     // Allow keyframes for all properties exposed in the UI so import/export preserves timelines
     const allowedKFProps = new Set([
       // Background
-      "background.color1","background.color2","background.angle",
+      "background.gradient",
+      "background.angle",
       "background.flashEnable","background.flashColor","background.flashIntensity","background.flashDuration",
       // Camera
       "camera.x","camera.y","camera.z",
@@ -2574,18 +3006,30 @@ export class Editor {
         if (seenTimes.has(tms)) { warnings.push(`Deduped duplicate time ${tms}ms in '${prop}'.`); continue; }
         seenTimes.add(tms);
 
-        let v = kf.value;
+    let v = kf.value;
         // Per-property coercion/clamping
         if (prop.startsWith("notes.colors.")) {
           v = this._ensureHexColor(v, defaults.notes.colors[0]);
-        } else if (prop === "background.color1" || prop === "background.color2" || prop === "background.flashColor") {
-          v = this._ensureHexColor(v, outProps.background.color1);
+        } else if (prop === "background.flashColor") {
+          v = this._ensureHexColor(v, outProps.background.flashColor);
   } else if (prop === "background.flashEnable") {
           v = !!v;
         } else if (prop === "lanes.opacity") {
           v = this._clamp(v, 0, 100);
         } else if (prop === "background.angle") {
           v = this._clamp(v, 0, 360);
+        } else if (prop === "background.gradient") {
+          // Normalize structured gradient snapshots; easing will be treated as instant at runtime
+          const g = (v && typeof v === 'object') ? v : {};
+          const type = (g.type === 'radial') ? 'radial' : 'linear';
+          let stops = Array.isArray(g.stops) ? g.stops : [];
+          const seenStop = new Set();
+          stops = stops.map(s => ({ pos: Math.max(0, Math.min(1, Number(s?.pos))), color: this._ensureHexColor(s?.color, '#ffffff') }))
+                       .filter(s => Number.isFinite(s.pos) && typeof s.color === 'string')
+                       .sort((a,b)=>a.pos-b.pos)
+                       .filter(s => { const k = `${s.pos.toFixed(3)}_${s.color}`; if (seenStop.has(k)) return false; seenStop.add(k); return true; });
+          if (!stops.length) stops = [ { pos: 0, color: '#0d111a' }, { pos: 1, color: '#1a1f2e' } ];
+          v = { type, stops };
         } else if (prop.startsWith("camera.rotate")) {
           v = this._clamp(v, -180, 180);
         } else if (prop === "camera.x" || prop === "camera.y") {
@@ -2598,105 +3042,31 @@ export class Editor {
         } else if (prop === "camera.shakeAmp") {
           v = this._clamp(v, 0, 50);
         } else if (prop === "camera.shakeFreq") {
-          v = this._clamp(v, 0, 20);
-        } else if (prop === "notes.glow") {
-          v = this._clamp(v, 0, 100);
-        } else if (prop === "notes.size") {
-          v = Number.isFinite(Number(v)) ? Number(v) : defaults.notes.size;
-          v = this._clamp(v, 0.5, 2.0);
-        }
-
-        const e = this._normalizeEasing(kf.easing);
-        normArr.push({ time: tms, value: v, easing: e });
-      }
-      normArr.sort((a,b)=>a.time-b.time);
-      if (normArr.length) outKfs[prop] = normArr;
-    }
-
-    // Export guard: for any property with its first keyframe after t=0,
-    // set the base (properties) value to the schema default so runtime starts at default
-    try {
-      const getDefaultForProp = (path) => {
-        const parts = String(path).split('.');
-        let cur = defaults;
-        for (let i = 0; i < parts.length; i++) {
-          const p = parts[i];
-          if (/^\d+$/.test(p)) {
-            const idx = Math.max(0, parseInt(p, 10) - 1);
-            if (!Array.isArray(cur)) return undefined;
-            cur = cur[idx];
-          } else {
-            cur = cur?.[p];
+            v = this._clamp(v, 0, 20);
           }
-          if (cur === undefined) break;
+          normArr.push({ time: tms, value: v, easing: kf.easing });
         }
-        return cur;
-      };
-      const setBaseToDefault = (path) => {
-        const defVal = getDefaultForProp(path);
-        if (defVal === undefined) return;
-        const parts = String(path).split('.');
-        let tgt = outProps;
-        for (let i = 0; i < parts.length - 1; i++) {
-          const p = parts[i];
-          if (/^\d+$/.test(p)) {
-            const idx = Math.max(0, parseInt(p, 10) - 1);
-            if (!Array.isArray(tgt)) return;
-            tgt = tgt[idx];
-          } else {
-            if (!(p in tgt)) tgt[p] = {};
-            tgt = tgt[p];
-          }
-          if (tgt === undefined) return;
-        }
-        const last = parts[parts.length - 1];
-        if (/^\d+$/.test(last)) {
-          const idx = Math.max(0, parseInt(last, 10) - 1);
-          // handle arrays like notes.colors
-          // find parent array
-          const parentPath = parts.slice(0, -1).join('.');
-          let parent = outProps;
-          for (const pp of parts.slice(0, -1)) parent = parent?.[pp];
-          if (Array.isArray(parent)) parent[idx] = defVal;
-        } else {
-          tgt[last] = defVal;
-        }
-      };
-
-      for (const [prop, arr] of Object.entries(outKfs)) {
-        if (Array.isArray(arr) && arr.length > 0) {
-          const first = arr[0];
-          if (first && Number.isFinite(first.time) && first.time > 0) {
-            setBaseToDefault(prop);
-          }
+        if (normArr.length) {
+          // ensure sorted by time (already deduped)
+          normArr.sort((a,b)=>a.time-b.time);
+          outKfs[prop] = normArr;
         }
       }
-    } catch {}
-
+    
     return { properties: outProps, keyframes: outKfs, warnings };
   }
 
-  // ===== Small helpers =====
-  _pxPerMsNow() { return this.pxPerMs * this.zoomY; } // CSS px per ms
-  _headHNow() { return Math.max(14, Math.min(120, this.baseHeadH * this.zoomY)); }
-  _stemWNow() { return Math.max(6, Math.min(24, 12 * this.zoomY)); }
-  _timeToY(ms) { return ms * this._pxPerMsNow() - this.scrollY; }
-  _yToTime(y) { return (y + this.scrollY) / this._pxPerMsNow(); }
-  // Time under the vertical center of the viewport (in ms)
+  // ===== Timeline geometry helpers (restored) =====
+  _pxPerMsNow() { return this.pxPerMs * (this.zoomY || 1); }
+  _headHNow() { return Math.max(14, Math.min(120, (this.baseHeadH || 32) * (this.zoomY || 1))); }
+  _stemWNow() { return Math.max(6, Math.min(24, 12 * (this.zoomY || 1))); }
+  _timeToY(ms) { return ms * this._pxPerMsNow() - (this.scrollY || 0); }
+  _yToTime(y) { return (y + (this.scrollY || 0)) / this._pxPerMsNow(); }
   _updateZoomIndicator() {
-    const label = document.getElementById(this.ids.zoomIndicator);
-    if (label) label.textContent = `${Math.round(this.zoomY * 100)}%`;
-  }
-  _edgeAutoScroll(mouseY) {
-    const h = this.canvas.height / (window.devicePixelRatio || 1);
-    const pxPerMs = this._pxPerMsNow();
-    const maxScroll = Math.max(0, (this.chart?.durationMs || 0) * pxPerMs - h);
-    const margin = 32;
-    const maxSpeed = 14;
-    let dy = 0;
-    if (mouseY < margin) dy = -((margin - mouseY) / margin) * maxSpeed;
-    else if (mouseY > h - margin) dy = ((mouseY - (h - margin)) / margin) * maxSpeed;
-    if (dy !== 0) this.scrollY = Math.max(0, Math.min(maxScroll, this.scrollY + dy));
+    try {
+      const label = document.getElementById(this.ids?.zoomIndicator);
+      if (label) label.textContent = `${Math.round((this.zoomY||1) * 100)}%`;
+    } catch {}
   }
 
   // ===== Wire HTML controls =====
@@ -4592,24 +4962,47 @@ export class Editor {
   _drawEditorVfxBackground(ctx, w, h) {
     try {
       const t = this.currentTimeMs();
-      const bg1 = this._getVFXPropertyAtTime('background.color1', t, this.vfx) || this.vfx?.data?.background?.color1 || '#0a0c10';
-      const bg2 = this._getVFXPropertyAtTime('background.color2', t, this.vfx) || this.vfx?.data?.background?.color2 || bg1;
       const angle = Number(this._getVFXPropertyAtTime('background.angle', t, this.vfx) ?? this.vfx?.data?.background?.angle ?? 0);
-      if (typeof ctx.createLinearGradient === 'function') {
-        // Convert angle to start/end points
-        const rad = (angle - 90) * Math.PI / 180;
-        const cx = w / 2, cy = h / 2;
-        const len = Math.max(w, h);
-        const x = Math.cos(rad) * len, y = Math.sin(rad) * len;
-
-        const grad = ctx.createLinearGradient(cx - x, cy - y, cx + x, cy + y);
-        grad.addColorStop(0, bg1);
-        grad.addColorStop(1, bg2);
-        ctx.fillStyle = grad;
+      // gradient may be keyframed: treat as instant snapshot property when sampled at time t
+      const gAny = this._getVFXPropertyAtTime('background.gradient', t, this.vfx) || this.vfx?.data?.background?.gradient;
+      const drawSnapshot = (snap, alpha=1)=>{
+        if (!snap || !Array.isArray(snap.stops) || snap.stops.length === 0) return false;
+        ctx.save();
+        if (alpha < 1) ctx.globalAlpha *= alpha;
+        // ensure sorted only once
+        if (!snap.__pfSorted) {
+          const sorted = snap.stops.slice().sort((a,b)=>a.pos-b.pos);
+          Object.defineProperty(snap,'__pfSorted',{value:true,enumerable:false,configurable:true});
+          snap.stops = sorted;
+        }
+        const stops = snap.stops;
+        if (snap.type === 'radial') {
+          const r = Math.hypot(w, h) * 0.6;
+          const grad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, r);
+          for (const s of stops) grad.addColorStop(Math.max(0,Math.min(1,Number(s.pos)||0)), s.color || '#ffffff');
+          ctx.fillStyle = grad;
+        } else {
+          const rad = (angle - 90) * Math.PI / 180;
+          const cx = w / 2, cy = h / 2;
+          const len = Math.max(w, h);
+          const x = Math.cos(rad) * len, y = Math.sin(rad) * len;
+          const grad = ctx.createLinearGradient(cx - x, cy - y, cx + x, cy + y);
+          for (const s of stops) grad.addColorStop(Math.max(0,Math.min(1,Number(s.pos)||0)), s.color || '#ffffff');
+          ctx.fillStyle = grad;
+        }
+        ctx.fillRect(0,0,w,h);
+        ctx.restore();
+        return true;
+      };
+      ctx.fillStyle = '#0a0c10';
+      ctx.fillRect(0,0,w,h);
+      if (gAny && gAny.__pfBlend) {
+        const f = Math.max(0, Math.min(1, gAny.factor||0));
+        drawSnapshot(gAny.from, 1 - f);
+        drawSnapshot(gAny.to, f);
       } else {
-        ctx.fillStyle = bg1;
+        drawSnapshot(gAny, 1);
       }
-      ctx.fillRect(0, 0, w, h);
     } catch {
       ctx.fillStyle = this.colors.bg;
       ctx.fillRect(0, 0, w, h);
