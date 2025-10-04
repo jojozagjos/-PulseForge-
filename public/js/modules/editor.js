@@ -2586,6 +2586,31 @@ export class Editor {
       }
 
       const vfxExport = this._generateVFXExport(vfx);
+      // When starting mid-song, synthesize a baseline snapshot for each animated property at the playhead
+      if (offset > 0 && vfxExport?.byDifficulty) {
+        const diff = this.difficulty || vfxExport.metadata?.activeDifficulty || 'normal';
+        const set = vfxExport.byDifficulty[diff];
+        if (set && set.keyframes && set.properties) {
+          const newKeyframes = JSON.parse(JSON.stringify(set.keyframes));
+          // For each property that has keyframes, compute value at offset and insert a synthetic keyframe at time 0 of preview
+          for (const prop of Object.keys(newKeyframes)) {
+            const list = Array.isArray(newKeyframes[prop]) ? newKeyframes[prop].slice().sort((a,b)=>a.time-b.time) : [];
+            if (!list.length) continue;
+            // Compute value at playhead using existing interpolation helpers from editor side
+            try {
+              const val = this._getVFXPropertyAtTime(prop, offset, vfx);
+              // Shift all existing keyframes earlier by offset so preview timeline starts at playhead
+              const shifted = list.filter(k=>k.time >= offset).map(k=>({ time: k.time - offset, value: k.value, easing: k.easing }));
+              // If no future keyframes remain (we started after last), just keep last value as baseline
+              newKeyframes[prop] = [{ time: 0, value: val, easing: 'instant' }, ...shifted];
+            } catch {}
+          }
+          // Replace export set for active diff only (others untouched)
+          vfxExport.byDifficulty[diff].keyframes = newKeyframes;
+          // Also sync legacy single-set copy if used by runtime
+          vfxExport.vfx = vfxExport.byDifficulty[diff];
+        }
+      }
       window.PF_startGame?.({
         mode: "solo",
         manifest: out,

@@ -737,8 +737,35 @@ export class Game {
   }
 
   _updateGradientSprite(timeMs) {
-    // gradient may be keyframed; _vfxValueAt interpolates when possible
-  let g = this._vfxValueAt('background.gradient', timeMs);
+    // New strategy: never build an interpolated blended gradient texture.
+    // Instead we cross-fade between discrete keyframe snapshots so textures are reused.
+    let g = null;
+    const kfs = this.vfx?.keyframes?.['background.gradient'];
+    if (Array.isArray(kfs) && kfs.length) {
+      const arr = kfs.slice().sort((a,b)=>a.time-b.time);
+      if (timeMs <= arr[0].time) {
+        g = arr[0].value; // before or at first keyframe
+      } else if (timeMs >= arr[arr.length-1].time) {
+        g = arr[arr.length-1].value; // after last keyframe
+      } else {
+        // Find segment (linear scan acceptable given typical small count)
+        let a = arr[0], b = arr[1];
+        for (let i=0;i<arr.length-1;i++) {
+          if (timeMs >= arr[i].time && timeMs <= arr[i+1].time) { a = arr[i]; b = arr[i+1]; break; }
+        }
+        if (a && b) {
+          const span = Math.max(1, b.time - a.time);
+          const tRaw = (timeMs - a.time) / span;
+          const ez = this._vfxUnpack(a.easing || 'linear');
+          // For gradients: treat 'instant' as linear; no custom curves needed—avoid math overhead.
+          let fn;
+          if (ez.curve === 'linear' || ez.curve === 'instant') fn = (x)=>x; else fn = this._vfxEaseFn(ez.curve, ez.style);
+          const f = Math.max(0, Math.min(1, fn(tRaw)));
+          // Produce a cross-fade object that reuses the two snapshot textures
+          g = { __pfBlend: true, from: a.value, to: b.value, factor: f };
+        }
+      }
+    }
     if (!g) g = this.vfx?.props?.background?.gradient;
     // Legacy support: synthesize from color1/color2 if present
     if (!g) {
@@ -755,7 +782,7 @@ export class Game {
     }
     const angle = Number(this._vfxValueAt('background.angle', timeMs) ?? this.vfx?.props?.background?.angle ?? 0);
     // Handle cross-fade object
-    const doCross = g && g.__pfBlend;
+  const doCross = g && g.__pfBlend;
     const snap = doCross ? g.from : g;
     const snapB = doCross ? g.to : null;
     const blendFactor = doCross ? Math.max(0, Math.min(1, g.factor||0)) : 1;
