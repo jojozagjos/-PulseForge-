@@ -361,6 +361,22 @@ async function openEditor() {
     hideAllScreens();
     if (canvas) canvas.style.display = "block";
     hud?.classList.remove("hidden");
+
+    // Defensive: enforce HUD layering above canvas at runtime
+    try {
+      if (canvas && hud) {
+        const cZ = window.getComputedStyle(canvas).zIndex || '0';
+        const hZ = window.getComputedStyle(hud).zIndex || '0';
+        if ((+hZ||0) <= (+cZ||0)) {
+          hud.style.zIndex = (+cZ||0) + 1;
+          console.warn('[PF] Adjusted HUD z-index dynamically (was', hZ, 'canvas', cZ, ')');
+        }
+        // Also ensure positioning context
+        if (getComputedStyle(hud).position === 'static') hud.style.position = 'absolute';
+        if (getComputedStyle(canvas).position === 'static') canvas.style.position = 'absolute';
+      }
+    } catch {}
+
     // Ensure HUD is reset and visible each run (fixes missing combo/acc after quitting via Editor)
     try {
       const comboEl = document.getElementById("hud-combo");
@@ -419,43 +435,27 @@ async function openEditor() {
         if (runtime && runtime.autoSubmit === false) {
           return; // editor playtests won't post
         }
-
-        const m = runtime?.manifest || {};
-        const trackId =
-          m.trackId ||
-          runtime?.track?.trackId ||
-          (m.title ? m.title.toLowerCase().replace(/[^a-z0-9]+/g, "-") : "unknown");
-
-        const difficulty =
-          m.difficulty ||
-          runtime?.difficulty ||
-          (typeof runtime?.diff === "string" ? runtime.diff : null) ||
-          "normal";
-
-        const score = num(results.find(r => r.label === "Score")?.value);
-        const acc = parseAccPct(results.find(r => r.label === "Accuracy")?.value);
-        const combo = num(results.find(r => r.label === "Max Combo")?.value);
-
-        const playerName =
-          settings?.getName?.() ||
-          settings?.name ||
-          localStorage.getItem("pf_name") ||
-          "Player";
-
-        const res = await fetch("/api/leaderboard/submit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ trackId, difficulty, name: playerName, score, acc, combo })
-        });
-        const j = await res.json().catch(() => ({}));
-        console.log("[PF] LB submit:", j);
-
-        if (typeof window.PF_lb_refreshIfVisible === "function") {
-          window.PF_lb_refreshIfVisible(trackId);
+        const totalScore = results.find(r => r.key === 'score')?.value || '0';
+        const accLine = results.find(r => r.key === 'accuracy')?.value || '0%';
+        const comboLine = results.find(r => r.key === 'combo')?.value || '0x';
+        const score = num(totalScore);
+        const accPct = parseAccPct(accLine);
+        const maxCombo = num(comboLine);
+        if (runtime?.manifest?.trackId && runtime?.difficulty) {
+          fetch('/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: nm,
+              trackId: runtime.manifest.trackId,
+              difficulty: runtime.difficulty,
+              score,
+              accuracy: accPct,
+              maxCombo,
+            })
+          }).catch(()=>{});
         }
-      } catch (e) {
-        console.warn("[PF] leaderboard submit failed:", e);
-      }
+      } catch (e) { console.warn('[PF] submit failed', e); }
     });
   };
 
