@@ -185,6 +185,10 @@ export class Editor {
 
     // ===== VFX Editor System =====
     this.vfx = this._initVFXSystem();
+  // VFX history stacks (separate from chart undo)
+  this._vfxUndo = [];
+  this._vfxRedo = [];
+  this._vfxHistoryLimit = 50;
 
     // Inject autosave UI and check for recoverable draft
     try { this._injectAutosaveUi(); } catch {}
@@ -683,7 +687,14 @@ export class Editor {
     }
 
     if (clearKeyframesBtn) {
-      clearKeyframesBtn.addEventListener("click", () => this._clearVFXKeyframes(vfx));
+      clearKeyframesBtn.addEventListener("click", () => {
+        const prop = vfx.timeline.currentProperty;
+        if (!prop) return;
+        const count = Array.isArray(vfx.keyframes[prop]) ? vfx.keyframes[prop].length : 0;
+        const ok = confirm(count ? `Delete ALL ${count} keyframe(s) for "${prop}"? This cannot be undone.` : `No keyframes exist for "${prop}". Reset to default value?`);
+        if (!ok) return;
+        this._clearVFXKeyframes(vfx);
+      });
     }
 
     if (moveSelectedBtn) {
@@ -896,6 +907,7 @@ export class Editor {
 
   // VFX Keyframe Management
   _addVFXKeyframe(vfx) {
+    this._pushVfxUndo('Add VFX Keyframe');
     const property = vfx.timeline.currentProperty;
     // Prefer scrubber position for explicit timeline control
     let time = this.playStartMs;
@@ -940,11 +952,15 @@ export class Editor {
 
   _deleteVFXKeyframe(vfx) {
     if (!vfx.timeline.selectedKeyframe) return;
+    this._pushVfxUndo('Delete VFX Keyframe');
     
     const { property, index } = vfx.timeline.selectedKeyframe;
     if (vfx.keyframes[property] && vfx.keyframes[property][index]) {
       vfx.keyframes[property].splice(index, 1);
       vfx.timeline.selectedKeyframe = null;
+      if (vfx._gradSnapshotLocked && vfx._gradSnapshotLocked.property === property && vfx._gradSnapshotLocked.index === index) {
+        vfx._gradSnapshotLocked = null;
+      }
       // If no keyframes remain for this property, revert to default value
       if (!vfx.keyframes[property] || vfx.keyframes[property].length === 0) {
         this._assignVFXDefault(property, vfx);
@@ -956,6 +972,7 @@ export class Editor {
 
   _duplicateVFXKeyframe(vfx) {
     if (!vfx.timeline.selectedKeyframe) return;
+    this._pushVfxUndo('Duplicate VFX Keyframe');
     
     const { property, index } = vfx.timeline.selectedKeyframe;
     const keyframe = vfx.keyframes[property]?.[index];
@@ -971,8 +988,12 @@ export class Editor {
   _clearVFXKeyframes(vfx) {
     const property = vfx.timeline.currentProperty;
     if (vfx.keyframes[property]) {
+      this._pushVfxUndo('Clear VFX Keyframes');
       vfx.keyframes[property] = [];
       vfx.timeline.selectedKeyframe = null;
+      if (vfx._gradSnapshotLocked && vfx._gradSnapshotLocked.property === property) {
+        vfx._gradSnapshotLocked = null;
+      }
       // Revert this property to its default when no keyframes are set
       this._assignVFXDefault(property, vfx);
       this._updateVFXTimeline(vfx);
@@ -984,6 +1005,7 @@ export class Editor {
   _moveSelectedKeyframeToPlayhead(vfx) {
     const sel = vfx.timeline.selectedKeyframe;
     if (!sel) return;
+    this._pushVfxUndo('Move VFX Keyframe');
     const { property, index } = sel;
     const list = vfx.keyframes[property];
     if (!Array.isArray(list) || !list[index]) return;
@@ -1679,6 +1701,11 @@ export class Editor {
       // Sync scrubber UI
       try { const s = document.getElementById(this.ids.scrub); if (s) s.value = String(Math.floor(this.playStartMs)); } catch {}
       vfx.timeline.selectedKeyframe = null;
+      if (vfx._gradSnapshotLocked) {
+        // Re-sync gradient editor to current live data when deselecting
+        vfx._gradSnapshotLocked = null;
+        try { this._syncGradientUi(vfx); } catch {}
+      }
       // Center the view on the new playhead
       this._centerVFXTimelineOnPlayhead(vfx);
     }
@@ -1809,7 +1836,10 @@ export class Editor {
     // Canvas-based gradient editor has no single value to set; instead push the snapshot into data
     if (property === 'background.gradient') {
       if (!this.vfx?.data?.background) this.vfx.data.background = {};
+      // Lock editor to snapshot from selected keyframe (no mutation while locked)
       this.vfx.data.background.gradient = JSON.parse(JSON.stringify(val));
+      // Flag that gradient editor is showing a keyframe snapshot
+      vfx._gradSnapshotLocked = { property, index };
     } else if (el.type === "checkbox") {
       el.checked = !!val;
     } else {
@@ -1947,6 +1977,11 @@ export class Editor {
       const wPx = Math.max(1, Math.floor(rect.width * dpr));
       const pos = clamp01((xCss * dpr) / wPx);
       const stops = vfx.data.background.gradient.stops;
+      // If locked to a selected keyframe snapshot, first unlock and allow editing current snapshot clone
+      if (vfx._gradSnapshotLocked) {
+        vfx._gradSnapshotLocked = null; // user intent to modify
+      }
+      this._pushVfxUndo('Gradient Handle Select/Drag');
       // if click near existing stop, select and start dragging
       let idx = pickAt(xCss);
       if (idx >= 0) {
@@ -2020,6 +2055,7 @@ export class Editor {
       const pos = clamp01((xCss * dpr) / wPx);
       const color = colorInp?.value || '#ffffff';
       const stops = vfx.data.background.gradient.stops;
+      this._pushVfxUndo('Add Gradient Stop');
       stops.push({ pos, color });
       // Sort only after insertion (not during drag path)
       stops.sort((a,b)=>a.pos-b.pos);
@@ -2052,6 +2088,7 @@ export class Editor {
       const stops = vfx.data.background.gradient.stops;
       const pos = 0.5;
       const color = colorInp?.value || '#ffffff';
+      this._pushVfxUndo('Add Gradient Stop');
       stops.push({ pos, color });
       stops.sort((a,b)=>a.pos-b.pos);
       state.selIndex = stops.findIndex(s=>s.color===color && Math.abs(s.pos-pos) < 1e-6);
@@ -2062,6 +2099,7 @@ export class Editor {
       const stops = vfx.data.background.gradient.stops || [];
       const s = stops[state.selIndex];
       if (!s) return;
+      this._pushVfxUndo('Move Gradient Stop');
       const raw = Number(posInp.value);
       if (!Number.isFinite(raw)) return;
       s.pos = Math.max(0, Math.min(1, raw / 100));
@@ -2089,6 +2127,8 @@ export class Editor {
     if (btnDel) btnDel.addEventListener('click', ()=>{
       const stops = vfx.data.background.gradient.stops;
       if (stops.length > 2 && stops[state.selIndex]) {
+        if (vfx._gradSnapshotLocked) vfx._gradSnapshotLocked = null;
+        this._pushVfxUndo('Delete Gradient Stop');
         stops.splice(state.selIndex, 1);
         state.selIndex = Math.max(0, Math.min(state.selIndex, stops.length-1));
         this._markDirtyAndAutosave('vfx-bg-grad-del');
@@ -2099,6 +2139,8 @@ export class Editor {
     if (colorInp) colorInp.addEventListener('input', ()=>{
       const stops = vfx.data.background.gradient.stops;
       if (stops[state.selIndex]) {
+        if (vfx._gradSnapshotLocked) vfx._gradSnapshotLocked = null;
+        this._pushVfxUndo('Change Gradient Color');
         stops[state.selIndex].color = this._ensureHexColor(colorInp.value, stops[state.selIndex].color);
         this._markDirtyAndAutosave('vfx-bg-grad-color');
         if (vfx.timeline.autoKeyframe) {
@@ -2123,6 +2165,7 @@ export class Editor {
     if (typeSel) typeSel.addEventListener('change', ()=>{
   // Only allow linear or radial now
   const tv = typeSel.value === 'radial' ? 'radial' : 'linear';
+  this._pushVfxUndo('Change Gradient Type');
   vfx.data.background.gradient.type = tv;
       this._markDirtyAndAutosave('vfx-bg-grad-type');
       if (vfx.timeline.autoKeyframe) {
@@ -2842,6 +2885,64 @@ export class Editor {
     this._undo.push(cur);
     this._restore(next);
     this._help("Redid");
+  }
+
+  // ===== VFX Undo/Redo =====
+  _vfxSnapshot() {
+    // Capture all difficulty sets so undo works after switching difficulty
+    const pack = {};
+    for (const diff of ["easy","normal","hard"]) {
+      const set = this.vfx._sets[diff];
+      pack[diff] = {
+        data: JSON.parse(JSON.stringify(set.data)),
+        keyframes: JSON.parse(JSON.stringify(set.keyframes))
+      };
+    }
+    return {
+      activeDiff: this.vfx.activeDiff,
+      sets: pack,
+      selected: this.vfx.timeline.selectedKeyframe ? { ...this.vfx.timeline.selectedKeyframe } : null,
+      currentProperty: this.vfx.timeline.currentProperty,
+      lastChangedProperty: this.vfx.timeline.lastChangedProperty
+    };
+  }
+  _vfxRestore(snap) {
+    if (!snap) return;
+    for (const diff of Object.keys(snap.sets||{})) {
+      if (!this.vfx._sets[diff]) this.vfx._sets[diff] = { data: {}, keyframes: {} };
+      this.vfx._sets[diff].data = JSON.parse(JSON.stringify(snap.sets[diff].data));
+      this.vfx._sets[diff].keyframes = JSON.parse(JSON.stringify(snap.sets[diff].keyframes));
+    }
+    this.vfx.activeDiff = snap.activeDiff;
+    this.vfx.timeline.selectedKeyframe = snap.selected;
+    this.vfx.timeline.currentProperty = snap.currentProperty;
+    this.vfx.timeline.lastChangedProperty = snap.lastChangedProperty;
+    this._syncVFXToUI(this.vfx);
+    this._updateVFXTimeline(this.vfx);
+  }
+  _pushVfxUndo(label) {
+    try {
+      this._vfxUndo.push(this._vfxSnapshot());
+      if (this._vfxUndo.length > this._vfxHistoryLimit) this._vfxUndo.shift();
+      this._vfxRedo = [];
+      if (label) this._help(`${label} (VFX undo available)`);
+    } catch {}
+  }
+  undoVFX() {
+    if (!this._vfxUndo.length) return;
+    const cur = this._vfxSnapshot();
+    const prev = this._vfxUndo.pop();
+    this._vfxRedo.push(cur);
+    this._vfxRestore(prev);
+    this._help("VFX Undid");
+  }
+  redoVFX() {
+    if (!this._vfxRedo.length) return;
+    const cur = this._vfxSnapshot();
+    const next = this._vfxRedo.pop();
+    this._vfxUndo.push(cur);
+    this._vfxRestore(next);
+    this._help("VFX Redid");
   }
 
   // ===== VFX Schema Guard & Normalization =====
@@ -3779,9 +3880,9 @@ export class Editor {
     }
 
     // Edge auto-scroll when dragging across long ranges
-    if (this.drag && ["boxSelect", "boxDelete", "move", "createHold", "stretch"].includes(this.drag.type)) {
-      this._edgeAutoScroll(this.mouse.y);
-    }
+    // if (this.drag && ["boxSelect", "boxDelete", "move", "createHold", "stretch"].includes(this.drag.type)) {
+    //   this._edgeAutoScroll(this.mouse.y);
+    // }
   }
 
   _pointerDown(e) {
@@ -5070,30 +5171,28 @@ export class Editor {
     const active = scr && scr.classList.contains("active");
     if (!active) return;
 
-    // Ignore if typing
-    const tag = (e.target?.tagName || "").toUpperCase();
-    if (e.target?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(tag)) return;
+  // Allow hotkeys even when focus is inside inputs for play/pause & undo layers.
+  const tag = (e.target?.tagName || "").toUpperCase();
+  const inEditable = e.target?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
 
     // Undo/Redo
     const mod = e.ctrlKey || e.metaKey;
+    const vfxTabActive = !!document.querySelector('.vfx-category.active');
     if (mod && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
       e.preventDefault();
-      this.undo();
+      if (vfxTabActive) this.undoVFX(); else this.undo();
       return;
     }
     if ((mod && e.shiftKey && (e.key === "z" || e.key === "Z")) || (mod && (e.key === "y" || e.key === "Y"))) {
       e.preventDefault();
-      this.redo();
+      if (vfxTabActive) this.redoVFX(); else this.redo();
       return;
     }
 
     // Delete keys: delete ALL selected notes
-    if (e.key === "Delete" || e.key === "Backspace") {
-      if (this.selection.size) {
-        this._deleteSelection();
-      }
-      e.preventDefault();
-      return;
+    if (!inEditable && (e.key === "Delete" || e.key === "Backspace")) {
+      if (this.selection.size) this._deleteSelection();
+      e.preventDefault(); return;
     }
 
     // Space: toggle

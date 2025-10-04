@@ -5,15 +5,25 @@
     "title": "Untitled",
     "artist": "Unknown",
     "activeDifficulty": "normal",
-    "duration": 180000,
-    "exportedAt": "2025-10-02T07:40:49.193Z"
+    "duration": 255651,
+    "exportedAt": "2025-10-04T01:24:30.624Z"
   },
   "vfx": {
     "properties": {
       "background": {
-        "color1": "#0d111a",
-        "color2": "#1a1f2e",
-        "gradient": false,
+        "gradient": {
+          "type": "linear",
+          "stops": [
+            {
+              "pos": 0,
+              "color": "#750000"
+            },
+            {
+              "pos": 0.9829931972789115,
+              "color": "#ff0000"
+            }
+          ]
+        },
         "angle": 0,
         "flashEnable": false,
         "flashColor": "#ffffff",
@@ -33,9 +43,9 @@
       "notes": {
         "colors": [
           "#fe6767",
-          "#fefa86",
+          "#efff9e",
           "#fe6767",
-          "#fefa86"
+          "#efff9e"
         ],
         "glow": 0,
         "size": 1,
@@ -46,6 +56,127 @@
       }
     },
     "keyframes": {
+      "background.gradient": [
+        {
+          "time": 145642,
+          "value": {
+            "type": "linear",
+            "stops": [
+              {
+                "pos": 0,
+                "color": "#0d111a"
+              },
+              {
+                "pos": 1,
+                "color": "#1a1f2e"
+              }
+            ]
+          },
+          "easing": "quad:inOut"
+        },
+        {
+          "time": 148063,
+          "value": {
+            "type": "linear",
+            "stops": [
+              {
+                "pos": 0,
+                "color": "#fffa75"
+              },
+              {
+                "pos": 0.9829931972789115,
+                "color": "#ffffff"
+              }
+            ]
+          },
+          "easing": "linear"
+        },
+        {
+          "time": 172235,
+          "value": {
+            "type": "linear",
+            "stops": [
+              {
+                "pos": 0,
+                "color": "#fffa75"
+              },
+              {
+                "pos": 0.9829931972789115,
+                "color": "#ffffff"
+              }
+            ]
+          },
+          "easing": "linear"
+        },
+        {
+          "time": 175087,
+          "value": {
+            "type": "linear",
+            "stops": [
+              {
+                "pos": 0,
+                "color": "#750000"
+              },
+              {
+                "pos": 0.9829931972789115,
+                "color": "#ff0000"
+              }
+            ]
+          },
+          "easing": "quad:inOut"
+        },
+        {
+          "time": 180725,
+          "value": {
+            "type": "linear",
+            "stops": [
+              {
+                "pos": 0,
+                "color": "#750000"
+              },
+              {
+                "pos": 0.9829931972789115,
+                "color": "#ff0000"
+              }
+            ]
+          },
+          "easing": "quad:inOut"
+        },
+        {
+          "time": 185917,
+          "value": {
+            "type": "linear",
+            "stops": [
+              {
+                "pos": 0,
+                "color": "#0d111a"
+              },
+              {
+                "pos": 1,
+                "color": "#1a1f2e"
+              }
+            ]
+          },
+          "easing": "quad:inOut"
+        }
+      ],
+      "camera.shakeAmp": [
+        {
+          "time": 170362,
+          "value": 0,
+          "easing": "linear"
+        },
+        {
+          "time": 182793,
+          "value": 2,
+          "easing": "linear"
+        },
+        {
+          "time": 184974,
+          "value": 0,
+          "easing": "linear"
+        }
+      ],
       "notes.colors.1": [
         {
           "time": 0,
@@ -56,7 +187,7 @@
       "notes.colors.2": [
         {
           "time": 0,
-          "value": "#fefa86",
+          "value": "#efff9e",
           "easing": "linear"
         }
       ],
@@ -70,40 +201,23 @@
       "notes.colors.4": [
         {
           "time": 0,
-          "value": "#fefa86",
+          "value": "#efff9e",
           "easing": "linear"
         }
       ],
-      "background.gradient": [
-        {
-          "time": 0,
-          "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#0d111a" }, { "pos": 1, "color": "#1a1f2e" } ] },
-          "easing": "instant"
-        },
-        { "time": 144547, "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#0d111a" }, { "pos": 1, "color": "#1a1f2e" } ] }, "easing": "linear" },
-        { "time": 152249, "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#fefa76" }, { "pos": 1, "color": "#ffffff" } ] }, "easing": "linear" },
-        { "time": 170453, "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#fefa76" }, { "pos": 1, "color": "#ffffff" } ] }, "easing": "linear" },
-        { "time": 173402, "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#ff0000" }, { "pos": 1, "color": "#240000" } ] }, "easing": "linear" },
-        { "time": 184883, "value": { "type": "linear", "stops": [ { "pos": 0, "color": "#0d111a" }, { "pos": 1, "color": "#1a1f2e" } ] }, "easing": "linear" }
-      ],
       "background.angle": [
         {
-          "time": 144547,
-          "value": 304,
+          "time": 145642,
+          "value": 0,
           "easing": "linear"
         },
         {
-          "time": 146211,
+          "time": 172235,
           "value": 360,
           "easing": "linear"
         },
         {
-          "time": 173402,
-          "value": 0,
-          "easing": "back:inOut"
-        },
-        {
-          "time": 178213,
+          "time": 185917,
           "value": 0,
           "easing": "linear"
         }
@@ -120,26 +234,9 @@
           "easing": "instant"
         },
         {
-          "time": 1517,
+          "time": 1563,
           "value": 0,
           "easing": "instant"
-        }
-      ],
-      "camera.shakeAmp": [
-        {
-          "time": 171249,
-          "value": 0,
-          "easing": "linear"
-        },
-        {
-          "time": 176794,
-          "value": 1,
-          "easing": "linear"
-        },
-        {
-          "time": 184687,
-          "value": 0,
-          "easing": "linear"
         }
       ]
     }
@@ -148,9 +245,19 @@
     "easy": {
       "properties": {
         "background": {
-          "color1": "#0d111a",
-          "color2": "#1a1f2e",
-          "gradient": false,
+          "gradient": {
+            "type": "linear",
+            "stops": [
+              {
+                "pos": 0,
+                "color": "#0d111a"
+              },
+              {
+                "pos": 1,
+                "color": "#1a1f2e"
+              }
+            ]
+          },
           "angle": 0,
           "flashEnable": false,
           "flashColor": "#ffffff",
@@ -187,9 +294,19 @@
     "normal": {
       "properties": {
         "background": {
-          "color1": "#0d111a",
-          "color2": "#1a1f2e",
-          "gradient": false,
+          "gradient": {
+            "type": "linear",
+            "stops": [
+              {
+                "pos": 0,
+                "color": "#750000"
+              },
+              {
+                "pos": 0.9829931972789115,
+                "color": "#ff0000"
+              }
+            ]
+          },
           "angle": 0,
           "flashEnable": false,
           "flashColor": "#ffffff",
@@ -209,9 +326,9 @@
         "notes": {
           "colors": [
             "#fe6767",
-            "#fefa86",
+            "#efff9e",
             "#fe6767",
-            "#fefa86"
+            "#efff9e"
           ],
           "glow": 0,
           "size": 1,
@@ -222,6 +339,127 @@
         }
       },
       "keyframes": {
+        "background.gradient": [
+          {
+            "time": 145642,
+            "value": {
+              "type": "linear",
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#0d111a"
+                },
+                {
+                  "pos": 1,
+                  "color": "#1a1f2e"
+                }
+              ]
+            },
+            "easing": "quad:inOut"
+          },
+          {
+            "time": 148063,
+            "value": {
+              "type": "linear",
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#fffa75"
+                },
+                {
+                  "pos": 0.9829931972789115,
+                  "color": "#ffffff"
+                }
+              ]
+            },
+            "easing": "linear"
+          },
+          {
+            "time": 172235,
+            "value": {
+              "type": "linear",
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#fffa75"
+                },
+                {
+                  "pos": 0.9829931972789115,
+                  "color": "#ffffff"
+                }
+              ]
+            },
+            "easing": "linear"
+          },
+          {
+            "time": 175087,
+            "value": {
+              "type": "linear",
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#750000"
+                },
+                {
+                  "pos": 0.9829931972789115,
+                  "color": "#ff0000"
+                }
+              ]
+            },
+            "easing": "quad:inOut"
+          },
+          {
+            "time": 180725,
+            "value": {
+              "type": "linear",
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#750000"
+                },
+                {
+                  "pos": 0.9829931972789115,
+                  "color": "#ff0000"
+                }
+              ]
+            },
+            "easing": "quad:inOut"
+          },
+          {
+            "time": 185917,
+            "value": {
+              "type": "linear",
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#0d111a"
+                },
+                {
+                  "pos": 1,
+                  "color": "#1a1f2e"
+                }
+              ]
+            },
+            "easing": "quad:inOut"
+          }
+        ],
+        "camera.shakeAmp": [
+          {
+            "time": 170362,
+            "value": 0,
+            "easing": "linear"
+          },
+          {
+            "time": 182793,
+            "value": 2,
+            "easing": "linear"
+          },
+          {
+            "time": 184974,
+            "value": 0,
+            "easing": "linear"
+          }
+        ],
         "notes.colors.1": [
           {
             "time": 0,
@@ -232,7 +470,7 @@
         "notes.colors.2": [
           {
             "time": 0,
-            "value": "#fefa86",
+            "value": "#efff9e",
             "easing": "linear"
           }
         ],
@@ -246,82 +484,23 @@
         "notes.colors.4": [
           {
             "time": 0,
-            "value": "#fefa86",
-            "easing": "linear"
-          }
-        ],
-        "background.color1": [
-          {
-            "time": 144547,
-            "value": "#0d111a",
-            "easing": "linear"
-          },
-          {
-            "time": 152249,
-            "value": "#fefa76",
-            "easing": "linear"
-          },
-          {
-            "time": 170453,
-            "value": "#fefa76",
-            "easing": "linear"
-          },
-          {
-            "time": 173402,
-            "value": "#ff0000",
-            "easing": "linear"
-          },
-          {
-            "time": 184883,
-            "value": "#0d111a",
-            "easing": "linear"
-          }
-        ],
-        "background.color2": [
-          {
-            "time": 144547,
-            "value": "#1a1f2e",
-            "easing": "linear"
-          },
-          {
-            "time": 146211,
-            "value": "#ffffff",
-            "easing": "linear"
-          },
-          {
-            "time": 172191,
-            "value": "#ffffff",
-            "easing": "linear"
-          },
-          {
-            "time": 173403,
-            "value": "#240000",
-            "easing": "linear"
-          },
-          {
-            "time": 184883,
-            "value": "#1a1f2e",
+            "value": "#efff9e",
             "easing": "linear"
           }
         ],
         "background.angle": [
           {
-            "time": 144547,
-            "value": 304,
+            "time": 145642,
+            "value": 0,
             "easing": "linear"
           },
           {
-            "time": 146211,
+            "time": 172235,
             "value": 360,
             "easing": "linear"
           },
           {
-            "time": 173402,
-            "value": 0,
-            "easing": "back:inOut"
-          },
-          {
-            "time": 178213,
+            "time": 185917,
             "value": 0,
             "easing": "linear"
           }
@@ -338,26 +517,9 @@
             "easing": "instant"
           },
           {
-            "time": 1517,
+            "time": 1563,
             "value": 0,
             "easing": "instant"
-          }
-        ],
-        "camera.shakeAmp": [
-          {
-            "time": 171249,
-            "value": 0,
-            "easing": "linear"
-          },
-          {
-            "time": 176794,
-            "value": 1,
-            "easing": "linear"
-          },
-          {
-            "time": 184687,
-            "value": 0,
-            "easing": "linear"
           }
         ]
       }
@@ -365,9 +527,19 @@
     "hard": {
       "properties": {
         "background": {
-          "color1": "#0d111a",
-          "color2": "#1a1f2e",
-          "gradient": false,
+          "gradient": {
+            "type": "linear",
+            "stops": [
+              {
+                "pos": 0,
+                "color": "#0d111a"
+              },
+              {
+                "pos": 1,
+                "color": "#1a1f2e"
+              }
+            ]
+          },
           "angle": 0,
           "flashEnable": false,
           "flashColor": "#ffffff",
