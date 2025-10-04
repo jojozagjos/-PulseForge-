@@ -6,7 +6,7 @@
     "artist": "Unknown",
     "activeDifficulty": "normal",
     "duration": 183925,
-    "exportedAt": "2025-10-04T02:35:09.203Z"
+    "exportedAt": "2025-10-04T02:45:55.959Z"
   },
   "vfx": {
     "properties": {
@@ -16,23 +16,11 @@
           "stops": [
             {
               "pos": 0,
-              "color": "#ffffff"
-            },
-            {
-              "pos": 0.4,
-              "color": "#ffffff"
-            },
-            {
-              "pos": 0.5,
-              "color": "#ffca38"
-            },
-            {
-              "pos": 0.6,
-              "color": "#ffffff"
+              "color": "#0d111a"
             },
             {
               "pos": 1,
-              "color": "#ffffff"
+              "color": "#1a1f2e"
             }
           ]
         },
@@ -91,7 +79,24 @@
       ],
       "background.gradient": [
         {
-          "time": 1151,
+          "time": 926,
+          "value": {
+            "type": "linear",
+            "stops": [
+              {
+                "pos": 0,
+                "color": "#0d111a"
+              },
+              {
+                "pos": 1,
+                "color": "#1a1f2e"
+              }
+            ]
+          },
+          "easing": "cubic:out"
+        },
+        {
+          "time": 9053,
           "value": {
             "type": "linear",
             "stops": [
@@ -117,7 +122,14 @@
               }
             ]
           },
-          "easing": "back:out"
+          "easing": "cubic:out"
+        }
+      ],
+      "notes.colors.4": [
+        {
+          "time": 0,
+          "value": "#ffa94d",
+          "easing": "linear"
         }
       ]
     }
@@ -180,23 +192,11 @@
             "stops": [
               {
                 "pos": 0,
-                "color": "#ffffff"
-              },
-              {
-                "pos": 0.4,
-                "color": "#ffffff"
-              },
-              {
-                "pos": 0.5,
-                "color": "#ffca38"
-              },
-              {
-                "pos": 0.6,
-                "color": "#ffffff"
+                "color": "#0d111a"
               },
               {
                 "pos": 1,
-                "color": "#ffffff"
+                "color": "#1a1f2e"
               }
             ]
           },
@@ -255,7 +255,24 @@
         ],
         "background.gradient": [
           {
-            "time": 1151,
+            "time": 926,
+            "value": {
+              "type": "linear",
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#0d111a"
+                },
+                {
+                  "pos": 1,
+                  "color": "#1a1f2e"
+                }
+              ]
+            },
+            "easing": "cubic:out"
+          },
+          {
+            "time": 9053,
             "value": {
               "type": "linear",
               "stops": [
@@ -281,7 +298,14 @@
                 }
               ]
             },
-            "easing": "back:out"
+            "easing": "cubic:out"
+          }
+        ],
+        "notes.colors.4": [
+          {
+            "time": 0,
+            "value": "#ffa94d",
+            "easing": "linear"
           }
         ]
       }
