@@ -71,69 +71,77 @@
     root.appendChild(closeBtn);
     root.appendChild(h('div', { style:{ fontWeight:600, marginBottom:'8px', fontSize:'13px' } }, 'PulseForge Dev Console'));
 
-    // Section: Game & Control
-    const gameSec = section('Game / Control');
-    // Seek input
-    const seekInp = smallInput('number', '', (v)=>{}); seekInp.placeholder = 'ms';
-    const speedInp = smallInput('number', '1.0', ()=>{}); speedInp.step = '0.05'; speedInp.min = '0.05'; speedInp.style.width='60px';
-    gameSec.body.append(
-      button('Restart Last', () => { const rt=getLastRuntime(); if(!rt) return alert('No last runtime'); window.PF_startGame?.(rt); }),
-      button('Force Silence', () => window.PF_forceSilenceAll?.()),
-      button('Export State', () => { const g=getGame(); if(!g) return alert('No active game'); const out={ timeMs:g.state?.timeMs, score:g.state?.score, combo:g.state?.combo, acc:g.state?.acc, judges:g.state?.judges }; log('Game State', out); try{console.table(out.judges);}catch{} }),
-      h('div',{style:{display:'flex',alignItems:'center',gap:'4px',flexWrap:'wrap'}},
-        h('span',{style:{fontSize:'10px',opacity:.7}},'Seek:'), seekInp,
-        button('Go',()=>{ const g=getGame(); if(!g) return; const ms=Number(seekInp.value)||0; if(g.seek) try{g.seek(ms);}catch(e){log('seek fail',e);} })
-      ),
-      h('div',{style:{display:'flex',alignItems:'center',gap:'4px',flexWrap:'wrap'}},
-        h('span',{style:{fontSize:'10px',opacity:.7}},'Speed:'), speedInp,
-        button('Apply',()=>{ const g=getGame(); if(!g) return; const sp=Number(speedInp.value)||1; try{ g.setPlaybackRate?g.setPlaybackRate(sp):(g._playbackRate=sp); log('PlaybackRate',sp); }catch(e){} })
-      ),
-      button('Toggle SlowMo 0.5x',()=>{ const g=getGame(); if(!g) return; let cur=g.getPlaybackRate?g.getPlaybackRate():g._playbackRate||1; const nxt = Math.abs(cur-1)<1e-3?0.5:1; try{ g.setPlaybackRate?g.setPlaybackRate(nxt):(g._playbackRate=nxt);}catch{} log('PlaybackRate',nxt); }),
-      button('Copy Perf Snapshot',()=>{ const g=getGame(); if(!g) return; const snap={ t:g.state?.timeMs, grad:g._gradThrottleStats, q:g._gradQuality, notes:g._activeNoteCount, lanes:g._laneHeadIndex }; const txt=JSON.stringify(snap,null,2); navigator.clipboard?.writeText(txt); log('PerfSnapshot', snap); }),
-      button('Active Notes',()=>{ const g=getGame(); if(!g) return; log('ActiveNotes', g._activeNoteCount); }),
-      button('Log Window Indexes',()=>{ const g=getGame(); if(!g) return; log('laneHeadIndex', g._laneHeadIndex); }),
-      button('Results Overlay?',()=>{ const el=document.getElementById('pf-results-overlay'); log('ResultsOverlay', !!el); })
+    // Section: Live Metrics (read-only)
+    const liveSec = section('Live Metrics');
+    const metricsBox = h('pre', { style:{ width:'100%', background:'#141f30', padding:'6px', borderRadius:'6px', lineHeight:'1.25em', fontSize:'11px', overflow:'auto' } }, 'No game');
+    liveSec.body.append(metricsBox,
+      button('Log Snapshot', () => { const snap = collectSnapshot(); log('Snapshot', snap); })
     );
 
-    // Section: VFX / Render
-    const vfxSec = section('VFX / Render');
-    vfxSec.body.append(
-      button('Keyframe Verify Once', () => { window.PF_KEYFRAME_VERIFY = true; alert('Will log on next start'); }),
-      button('Cycle Gradient Quality', () => { const g=getGame(); if(!g) return; const seq=[1,0.75,0.5,0.35,0.25]; const cur=g._gradQuality||1; const idx=seq.indexOf(seq.find(v=>Math.abs(v-cur)<1e-3)); const nxt=seq[(idx+1)%seq.length]; g._gradQuality=nxt; log('GradQuality->',nxt); }),
-      button('Toggle Diagnostics', () => { window.PF_DIAG = !window.PF_DIAG; log('PF_DIAG', window.PF_DIAG); try{ window.dispatchEvent(new CustomEvent('pf-diag-toggle',{detail:{on:window.PF_DIAG}})); }catch{} }),
-      button('Log Lane Colors', () => { const g=getGame(); if(!g) return; const arr=[0,1,2,3].map(i=>g._vfxColorForLaneAt?.(g.state.timeMs,i)); log('LaneColors', arr); }),
-      button('Spawn Test Notes', () => { const g=getGame(); if(!g) return; if(!Array.isArray(g.chart?.notes)) return; const base=g.state?.timeMs||0; for(let i=0;i<16;i++){ g.chart.notes.push({ lane:i%4, time: base + 500 + i*120, type:'tap'}); } log('Spawned test notes',16); })
+    function collectSnapshot(){
+      const g = getGame();
+      if (!g || !g.state) return { noGame:true };
+      const stats = g._gradThrottleStats || {};
+      const lanes = (g._laneHeadIndex||[]).length;
+      let activeNotes = 0;
+      try {
+        for (let i=0;i<lanes;i++) {
+          const arr = g._noteSpritesByLane?.[i];
+          if (arr && g._laneHeadIndex) activeNotes += Math.max(0, arr.length - g._laneHeadIndex[i]);
+        }
+      } catch {}
+      return {
+        timeMs: Math.round(g.state.timeMs||0),
+        score: g.state.score,
+        combo: g.state.combo,
+        acc: +(g.state.acc||0).toFixed(4),
+        gradQuality: +(g._gradQuality||0).toFixed?.(3),
+        gradAvgGenMs: +(stats.avgGenMs||0).toFixed?.(3),
+        gradLastMs: +(stats.lastGenMs||0).toFixed?.(3),
+        activeNotes
+      };
+    }
+
+    function updateLive(){
+      const snap = collectSnapshot();
+      if (snap.noGame) { metricsBox.textContent = 'No active game'; return; }
+      metricsBox.textContent = 'timeMs      '+snap.timeMs+"\n"+
+        'score       '+snap.score+"\n"+
+        'combo       '+snap.combo+"\n"+
+        'acc         '+snap.acc+"\n"+
+        'gradQuality '+snap.gradQuality+"\n"+
+        'gradAvgGenMs '+snap.gradAvgGenMs+"\n"+
+        'gradLastMs  '+snap.gradLastMs+"\n"+
+        'activeNotes '+snap.activeNotes;
+    }
+
+    if (window.__pfDevLiveInt) clearInterval(window.__pfDevLiveInt);
+    window.__pfDevLiveInt = setInterval(updateLive, 500);
+    setTimeout(updateLive, 50);
+
+    // Section: Diagnostics Toggle
+    const diagSec = section('Diagnostics');
+    const diagBtn = button('Toggle PF_DIAG', () => {
+      window.PF_DIAG = !window.PF_DIAG;
+      updateDiagOverlay();
+      diagBtn.textContent = window.PF_DIAG ? 'Disable PF_DIAG' : 'Enable PF_DIAG';
+    });
+    diagBtn.textContent = window.PF_DIAG ? 'Disable PF_DIAG' : 'Enable PF_DIAG';
+    const diagInfo = h('div', { style:{ fontSize:'10px', opacity:0.8, width:'100%' } }, 'Shows small HUD: fps, frame ms, logic ms, grad gen ms.');
+    diagSec.body.append(diagBtn, diagInfo);
+
+    // Section: Logging Utilities
+    const logSec = section('Logging');
+    logSec.body.append(
+      button('Export State', () => { const g=getGame(); if(!g) return alert('No active game'); const out=collectSnapshot(); log('Game State', out); }),
+      button('Log Perf Stats', () => { const g=getGame(); if(!g) return alert('No game'); log('Gradient Stats', g._gradThrottleStats); }),
+      button('Log Note Window', () => { const g=getGame(); if(!g) return alert('No game'); log('laneHeadIndex', g._laneHeadIndex); }),
+      button('Log Lane Colors Now', () => { const g=getGame(); if(!g) return alert('No game'); const arr=[0,1,2,3].map(i=>g._vfxColorForLaneAt?.(g.state.timeMs,i)); log('Lane Colors', arr); }),
+      button('Log Gradient Quality', () => { const g=getGame(); if(!g) return alert('No game'); log('GradQuality', g._gradQuality); }),
+      button('List AudioCtx States', () => { try { [...(window.__PF_audioCtxs||[])].forEach(c=>log('Ctx', c.state)); } catch {} })
     );
 
-    // Section: Audio / Timing
-    const audSec = section('Audio / Timing');
-    audSec.body.append(
-      button('Resume All Ctx', () => { try { [...(window.__PF_audioCtxs||[])].forEach(c=>c.resume?.()); } catch {} }),
-      button('List Ctx States', () => { try { [...(window.__PF_audioCtxs||[])].forEach(c=>log('Ctx', c.state)); } catch {} }),
-      button('Audio Offset +5ms', () => { const g=getGame(); if(!g) return; g.settings.audioOffset = (g.settings.audioOffset||0)+5; log('audioOffset', g.settings.audioOffset); }),
-      button('Audio Offset -5ms', () => { const g=getGame(); if(!g) return; g.settings.audioOffset = (g.settings.audioOffset||0)-5; log('audioOffset', g.settings.audioOffset); })
-    );
-
-    // Section: Start Options / Flags
-    const startSec = section('Start Options / Flags');
-    const startAtInp = smallInput('number', state.startAtMs || '', (v)=>{ state.startAtMs = Number(v)||0; saveState(state); });
-    const fpsCapInp = smallInput('number', state.fpsCap || '', (v)=>{ state.fpsCap = Number(v)||0; saveState(state); window.dispatchEvent(new CustomEvent('pf-fps-cap',{detail:{cap:state.fpsCap}})); }); fpsCapInp.placeholder='FPS cap'; fpsCapInp.style.width='70px';
-    startSec.body.append(h('div',{}, 'Mid Start (ms): ', startAtInp));
-    startSec.body.append(h('div',{}, 'FPS Cap: ', fpsCapInp));
-    startSec.body.append(
-      checkbox('Auto Keyframe Verify', 'autoKF', false, (v)=>{}),
-      checkbox('Auto Diagnostics', 'autoDiag', false, (v)=>{}),
-      button('Start (Opts)', () => {
-        const rt = getLastRuntime(); if(!rt) return alert('No last runtime');
-        const clone = JSON.parse(JSON.stringify(rt));
-        if (state.startAtMs) clone.startAtMs = state.startAtMs;
-        if (state.autoKF) window.PF_KEYFRAME_VERIFY = true;
-        if (state.autoDiag) window.PF_DIAG = true;
-        window.PF_startGame?.(clone);
-      })
-    );
-
-  root.append(gameSec.wrap, vfxSec.wrap, audSec.wrap, startSec.wrap);
+  root.append(liveSec.wrap, diagSec.wrap, logSec.wrap);
 
     // Basic styles via injected <style>
     const style = h('style', {}, `#pf-devconsole button.pf-btn{margin:2px 4px 4px 0;padding:4px 8px;background:#1e2b40;border:1px solid #334761;color:#d9e7ff;border-radius:6px;font:600 11px system-ui;cursor:pointer;}
@@ -147,6 +155,51 @@
 `);
     root.appendChild(style);
     document.body.appendChild(root);
+  }
+
+  // Lightweight diagnostics overlay (no side-effects).
+  function ensureDiagEl(){
+    let el = document.getElementById('pf-diagnostics');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'pf-diagnostics';
+      Object.assign(el.style, {
+        position:'fixed', left:'8px', top:'8px', background:'#0d1624cc', color:'#cfe3ff', font:'11px monospace', padding:'6px 8px', border:'1px solid #223248', borderRadius:'6px', zIndex:4999, whiteSpace:'pre', pointerEvents:'none'
+      });
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+
+  let __pfDiagInt;
+  function updateDiagOverlay(){
+    if (!window.PF_DIAG){
+      const el = document.getElementById('pf-diagnostics');
+      if (el) el.remove();
+      if (__pfDiagInt) { cancelAnimationFrame(__pfDiagInt); __pfDiagInt = 0; }
+      return;
+    }
+    const el = ensureDiagEl();
+    let lastT = performance.now();
+    let frames = 0; let accMs = 0; let fps = 0; let lastFpsT = lastT;
+    function tick(){
+      const now = performance.now();
+      const dt = now - lastT; lastT = now; frames++; accMs += dt;
+      if (now - lastFpsT >= 1000){ fps = frames; frames = 0; lastFpsT = now; }
+      const g = gameResolver?.();
+      let gradMs = g? (g._gradThrottleStats?.lastGenMs||0).toFixed(2):'-';
+      let logicMs = g? (g._lastLogicStepMs||0).toFixed?.(2):'-';
+      // Rough memory (Chrome only)
+      let mem = '-';
+      try { if (performance.memory) mem = (performance.memory.usedJSHeapSize/1048576).toFixed(1)+'MB'; } catch {}
+      el.textContent = `fps ${fps}\nframe ${dt.toFixed(2)} ms\nlogic ${logicMs} ms\ngradGen ${gradMs} ms\nmem ${mem}`;
+      __pfDiagInt = requestAnimationFrame(tick);
+    }
+    if (!__pfDiagInt) __pfDiagInt = requestAnimationFrame(tick);
+  }
+
+  if (window.PF_DIAG) {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', updateDiagOverlay); else updateDiagOverlay();
   }
 
   // Public init API
