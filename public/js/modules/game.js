@@ -141,6 +141,9 @@ export class Game {
     // Live settings listeners (attached in run, removed in quit/destroy)
     this._onMaxFpsChange = null;
     this._onRenderScaleChange = null;
+    // Debug: keyframe verification (one-shot logging) toggled via global flag
+    this._enableKeyframeVerify = !!(typeof window !== 'undefined' && window.PF_KEYFRAME_VERIFY);
+    this._keyframeVerifyRan = false;
   }
 
   // ===== VFX Runtime support (subset for background/lanes/notes) =====
@@ -956,6 +959,55 @@ export class Game {
       }
       // Small delay to allow GPU upload
       await new Promise(r=>setTimeout(r, 16));
+
+      // ===== Note / receptor pre-allocation & texture warmup =====
+      if (this.chart && Array.isArray(this.chart.notes)) {
+        // Determine a rough peak simultaneous visible notes window (e.g., notes within next 2 seconds)
+        const lookAheadMs = 2000;
+        const now0 = 0;
+        let visibleEstimate = 0;
+        const notesSorted = this.chart.notes.slice().sort((a,b)=>a.tMs-b.tMs);
+        let window = [];
+        for (const n of notesSorted) {
+          if (n.tMs < now0 - 200) continue; // ignore negative start after offset
+          if (n.tMs > now0 + lookAheadMs) break;
+          window.push(n);
+        }
+        visibleEstimate = window.length;
+        // Cap + buffer
+        const poolTarget = Math.min(512, Math.max(64, visibleEstimate * 2));
+        this._notePool = this._notePool || [];
+        // Build head/tail textures for common sizes once (assuming lane width base)
+        try { this._ensureHeadTextures(this.laneWidth, this.noteHeight); } catch {}
+        while (this._notePool.length < poolTarget) {
+          const cont = new PIXI.Container();
+          cont.visible = false;
+          cont.__pfPooled = true;
+          // Minimal head sprite
+          const head = new PIXI.Sprite(this._texCache.headNormal || PIXI.Texture.WHITE);
+          head.__pfBaseW = this.laneWidth;
+          head.__pfBaseH = this.noteHeight;
+          cont.addChild(head);
+          // Optional body (tail) placeholder (not textured until claimed) for holds
+          const body = new PIXI.Graphics();
+          body.__pfBaseW = 12; // reference width
+          body.visible = false;
+          cont.addChild(body);
+          this._notePool.push({ cont, head, body, inUse:false });
+          this.app.stage.addChild(cont); // attach so textures upload to GPU
+        }
+      }
+
+      // Pre-evaluate receptor lane colors at t=0 to populate caches and avoid first-frame cost spikes
+      if (Array.isArray(this.receptors) && this.receptors.length) {
+        const tSample = 0;
+        for (let i=0;i<this.receptors.length;i++) {
+          try { this._vfxColorForLaneAt(tSample, i); } catch {}
+        }
+      }
+
+      // Brief yield for GPU processing of pooled sprites
+      await new Promise(r=>setTimeout(r, 8));
     } catch {}
   }
 
@@ -1450,7 +1502,11 @@ export class Game {
       const rec = { cont, head, body, n, gloss };
       this.spriteByNote.set(n, rec);
       return rec;
-    });
+  });
+  // Reset active window iteration structures
+  this._laneSpriteListsBuilt = false;
+  this._noteSpritesByLane = null;
+  this._laneHeadIndex = null;
 
     // Canvas countdown helpers
     const showCountdown = (msLeft) => {
@@ -1563,42 +1619,51 @@ export class Game {
           }
         }
 
-        // Receptor glow decay
+        // Receptor glow decay + conditional redraw (gated)
         for (let i = 0; i < this.receptors.length; i++) {
           const rec = this.receptors[i];
           if (!rec) continue;
-          // Keep receptor color in sync with lane note color (VFX can change per time)
+          // Compute desired color once; only redraw geometry if color changed or lane width changed since last build
           try {
-            const t = this.state.timeMs;
+            const tNow = this.state.timeMs;
             const lane = rec.__lane | 0;
-            const vfxColor = this._vfxColorForLaneAt(t, lane);
+            const vfxColor = this._vfxColorForLaneAt(tNow, lane);
             const fallback = this.vis.laneColors[lane % this.vis.laneColors.length];
             const want = vfxColor ?? fallback;
-            if (want != null && want !== rec.__color) {
+            // Track lane width snapshot to catch resolution/scale changes
+            const lastLaneW = rec.__laneW;
+            if (want != null && (want !== rec.__color || lastLaneW !== this.laneWidth)) {
               rec.__color = want;
-              // Redraw receptor pieces with new color
-              rec.__chev?.clear();
-              rec.__chev?.moveTo(-14, -16); rec.__chev?.lineTo(0, -4); rec.__chev?.lineTo(14, -16);
-              rec.__chev?.stroke({ width: 3, color: want, alpha: 0.95 });
-
-              rec.__bar?.clear();
-              rec.__bar?.roundRect(-this.laneWidth * 0.35, -2, this.laneWidth * 0.7, 4, 2);
-              rec.__bar?.fill({ color: want, alpha: 0.25 });
-
-              rec.__glow?.clear();
-              rec.__glow?.roundRect(-this.laneWidth * 0.38, -6, this.laneWidth * 0.76, 12, 4);
-              rec.__glow?.fill({ color: want, alpha: rec.__glow?.alpha ?? 0.0 });
+              rec.__laneW = this.laneWidth;
+              // Redraw receptor pieces with new color only when needed
+              if (rec.__chev) {
+                rec.__chev.clear();
+                rec.__chev.moveTo(-14, -16); rec.__chev.lineTo(0, -4); rec.__chev.lineTo(14, -16);
+                rec.__chev.stroke({ width: 3, color: want, alpha: 0.95 });
+              }
+              if (rec.__bar) {
+                rec.__bar.clear();
+                rec.__bar.roundRect(-this.laneWidth * 0.35, -2, this.laneWidth * 0.7, 4, 2);
+                rec.__bar.fill({ color: want, alpha: 0.25 });
+              }
+              if (rec.__glow) {
+                const prevAlpha = rec.__glow.alpha ?? 0.0;
+                rec.__glow.clear();
+                rec.__glow.roundRect(-this.laneWidth * 0.38, -6, this.laneWidth * 0.76, 12, 4);
+                rec.__glow.fill({ color: want, alpha: prevAlpha });
+              }
             }
           } catch {}
+          // Pulse/decay unchanged
           if (rec.__pulse > 0) {
-            const t = rec.__pulse;
-            const scale = 1.0 + 0.12 * Math.sin((Math.PI * t) / 10);
+            const tPulse = rec.__pulse;
+            const scale = 1.0 + 0.12 * Math.sin((Math.PI * tPulse) / 10);
             rec.scale.set(scale, scale);
-            rec.__glow.alpha = Math.max(0, rec.__glow.alpha - 0.06);
+            if (rec.__glow) rec.__glow.alpha = Math.max(0, rec.__glow.alpha - 0.06);
             rec.__pulse--;
           } else {
             rec.scale.set(1, 1);
-            rec.__glow.alpha = Math.max(0, rec.__glow.alpha - 0.06);
+            if (rec.__glow) rec.__glow.alpha = Math.max(0, rec.__glow.alpha - 0.06);
           }
         }
 
@@ -1700,11 +1765,41 @@ export class Game {
           }
         } catch {}
 
-        // ===== Notes =====
-        for (let i = 0; i < this.noteSprites.length; i++) {
-          const obj = this.noteSprites[i];
-          const { n, cont, body, head, gloss } = obj;
-          if (!cont.parent && (!body || !body.parent)) continue;
+        // ===== Notes (Active Window Iteration) =====
+        const windowPastMs = 300; // keep passed notes shortly for miss/fade handling
+        const windowFutureMs = (this._laneHeight / this.pixelsPerMs) + 500; // ahead until off bottom
+        const tNow = tMs;
+        const tMin = tNow - windowPastMs;
+        const tMax = tNow + windowFutureMs;
+        if (!this._laneSpriteListsBuilt) {
+          this._noteSpritesByLane = Array.from({ length: this.laneCount }, () => []);
+          for (let i = 0; i < this.noteSprites.length; i++) {
+            const o = this.noteSprites[i];
+            if (o && o.n) this._noteSpritesByLane[o.n.lane]?.push(o);
+          }
+          for (let ln = 0; ln < this._noteSpritesByLane.length; ln++) {
+            this._noteSpritesByLane[ln].sort((a,b)=> (a.n.tMs||0) - (b.n.tMs||0));
+          }
+          this._laneHeadIndex = new Array(this.laneCount).fill(0);
+          this._laneSpriteListsBuilt = true;
+        }
+        for (let lane = 0; lane < this.laneCount; lane++) {
+          const list = this._noteSpritesByLane[lane];
+          if (!list || !list.length) continue;
+          let startIdx = this._laneHeadIndex[lane] || 0;
+          while (startIdx < list.length) {
+            const chk = list[startIdx];
+            if ((chk.n.tMs || 0) < (tMin - 400)) { startIdx++; continue; }
+            break;
+          }
+          this._laneHeadIndex[lane] = startIdx;
+          for (let i = startIdx; i < list.length; i++) {
+            const obj = list[i];
+            const nt = obj.n.tMs || 0;
+            if (nt > tMax) break; // beyond visible window
+            if (nt < tMin && !obj.cont.parent) continue;
+            const { n, cont, body, head, gloss } = obj;
+            if (!cont.parent && (!body || !body.parent)) continue;
 
           // ----- VFX-driven note sizing (global size factor) -----
           let noteSize = 1;
@@ -1901,6 +1996,7 @@ export class Game {
               head.tint = 0xFFFFFF;
             }
           }
+          }
         }
 
         // Maintain active holds (success/early release)
@@ -1971,6 +2067,33 @@ export class Game {
           this.progressFill.clear();
           this.progressFill.roundRect(x, y, Math.max(0.0001, barW * p), barH, 3);
           this.progressFill.fill({ color: 0xFFFFFF, alpha: 0.9 * p + 0.05 });
+        }
+
+        // One-shot keyframe verification (debug use only)
+        if (this._enableKeyframeVerify && !this._keyframeVerifyRan && this.vfx) {
+          this._keyframeVerifyRan = true;
+          try {
+            const sampleTimes = [0, 250, 500, 750, 1000, 1500, 2000, 4000, 8000];
+            const props = [
+              'background.gradient.angle',
+              'background.gradient.stops[0].color',
+              'background.gradient.stops[1].color',
+              'camera.x','camera.y','camera.z','camera.rotateZ'
+            ];
+            const rows = [];
+            for (const ms of sampleTimes) {
+              const row = { t: ms };
+              for (const pName of props) {
+                row[pName] = this._vfxValueAt(pName, ms);
+              }
+              rows.push(row);
+            }
+            // eslint-disable-next-line no-console
+            console.table(rows);
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('[PF] keyframe verify error', e);
+          }
         }
 
         if (tickHook) tickHook();
