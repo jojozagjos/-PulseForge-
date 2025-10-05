@@ -397,6 +397,16 @@ async function openEditor() {
     try {
       const { Game } = await loadModule("./modules/game.js?v=19", 2);
       game = new Game(runtime, settings);
+      // Dev console game reference exposure (safe)
+      try { window.__pfGame = game; } catch {}
+      try { window.__pfLastRuntime = runtime; } catch {}
+      if (window.PF_initDevConsole) {
+        // Refresh binding if already loaded
+        window.PF_initDevConsole({
+          getGame: () => window.__pfGame,
+          getLastRuntime: () => window.__pfLastRuntime
+        });
+      }
     } catch (e) {
       console.error(e); __pfHideLoader();
       alert("Could not load Game. Please try again.");
@@ -461,6 +471,29 @@ async function openEditor() {
 
   // Ensure we start on main menu
   show("main");
+
+  // -------- Dev Console Dynamic Loader (F10) --------
+  function ensureDevConsole(cb){
+    if (window.PF_initDevConsole) { cb?.(); return; }
+    import('./modules/devconsole.js').then(()=>cb?.()).catch(e=>console.warn('[PF] Dev console load failed', e));
+  }
+  function toggleDevConsole(){
+    if (!window.PF_initDevConsole) { ensureDevConsole(()=>toggleDevConsole()); return; }
+    const el = document.getElementById('pf-devconsole');
+    if (el) { el.remove(); return; }
+    window.PF_initDevConsole({
+      getGame: () => window.__pfGame,
+      getLastRuntime: () => window.__pfLastRuntime
+    });
+  }
+  window.addEventListener('keydown', (e)=>{
+    // if (e.key === 'F10') { e.preventDefault(); toggleDevConsole(); }
+  });
+  if (window.PF_DEV) {
+    ensureDevConsole(()=>{
+      window.PF_initDevConsole?.({ getGame:()=>window.__pfGame, getLastRuntime:()=>window.__pfLastRuntime });
+    });
+  }
 
   // Preload heavy modules after idle on capable devices; backup on first interaction
   try {

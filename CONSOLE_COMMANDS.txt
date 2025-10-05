@@ -1,0 +1,141 @@
+PulseForge Console Commands / Flags
+=================================
+
+Global Functions / Entry Points
+--------------------------------
+PF_startGame(options)
+  Launches a game session. Common options:
+    mode: "solo"
+    manifest: <chart manifest object>
+    difficulty: "easy" | "normal" | "hard" (or custom keys present in byDifficulty)
+    byDifficulty: { easy:{...}, normal:{...}, hard:{...} } (chart+vfx sets)
+    startAtMs: <number>  (optional mid-song start offset)
+    allowExit: true|false
+    autoSubmit: true|false (submit score automatically)
+    isEditorPreview: true|false (when launched from editor)
+    returnTo: "editor" | "menu" (where to return after results)
+    vfx: <legacy vfx object> (legacy compatibility)
+
+Example:
+  PF_startGame({ mode:"solo", manifest: window.lastLoadedManifest, difficulty:"normal", allowExit:true });
+
+Debug / Tuning Flags (set before starting a game)
+-------------------------------------------------
+window.PF_KEYFRAME_VERIFY = true
+  When true (set before game starts), logs a console table of sampled VFX property values once (gradient angle, first two gradient stop colors, camera transforms) at predefined times.
+
+(window.PF_DIAG)  (Planned safe diagnostics flag)
+  If/when re-enabled, setting to true would show lightweight performance stats overlay.
+
+Performance / Environment Observables (read-only patterns)
+----------------------------------------------------------
+Game instance internal fields (when you have a reference to the running Game object, e.g. window.__pfGame if you expose it):
+  game.state.timeMs           -> Current authoritative song time (ms, audio-clock based)
+  game.state.combo            -> Current combo
+  game.state.score            -> Current score
+  game.state.acc              -> Current accuracy (0..1)
+  game.state.judges           -> Judge counts {Perfect,Great,Good,Miss}
+  game._gradQuality           -> Current adaptive gradient internal resolution scale (0.25..1)
+  game._gradThrottleStats     -> Recent gradient generation timing stats { lastGenMs, avgGenMs, interval }
+  game._laneHeadIndex         -> Array of per-lane start indices for active note window iteration
+  game._noteSpritesByLane     -> Per-lane arrays of note sprite objects (built on first frame)
+
+(If needed, you can temporarily expose the Game instance by assigning inside code after creation: window.__pfGame = game; )
+
+Audio Context Utilities
+-----------------------
+window.__PF_audioCtxs (if present)
+  A Set collecting audio contexts created by the editor/runtime (for potential manual suspension/resume in debugging scenarios):
+    [...window.__PF_audioCtxs][0].suspend()
+    [...window.__PF_audioCtxs][0].resume()
+
+Custom Events You Can Dispatch (advanced)
+----------------------------------------
+window.dispatchEvent(new CustomEvent('pf-maxfps-changed', { detail:{ maxFps: 120 } }))
+  Adjust the max FPS cap (if listener is active in a running Game session).
+
+window.dispatchEvent(new CustomEvent('pf-render-scale-changed', { detail:{ renderScale: 1 } }))
+  Change render scale (may trigger renderer resize/adaptation).
+
+window.dispatchEvent(new CustomEvent('pf-volume-changed', { detail:{ volume: 0.8 } }))
+  Adjust master volume (if settings listener is present).
+
+Convenience Snippets
+--------------------
+// Mid-song quick start at 30s (30,000 ms) using existing manifest (if you have it in variable manifest)
+PF_startGame({ mode:'solo', manifest, difficulty:'normal', startAtMs: 30000, allowExit:true });
+
+// Run keyframe verification once (must set before PF_startGame)
+window.PF_KEYFRAME_VERIFY = true; PF_startGame({ mode:'solo', manifest, difficulty:'normal' });
+
+// Inspect gradient performance stats during gameplay
+console.log(window.__pfGame?._gradThrottleStats);
+console.log(window.__pfGame?._gradQuality);
+
+// Inspect active note window indices
+console.log(window.__pfGame?._laneHeadIndex);
+
+// Manually resume suspended audio contexts (if audio was blocked)
+[...window.__PF_audioCtxs].forEach(ctx => ctx.resume());
+
+Notes
+-----
+- Some flags (PF_KEYFRAME_VERIFY) must be set before starting the game to have an effect.
+- PF_DIAG is not currently re-enabled; when implemented it will show a safe overlay without interfering with gameplay.
+- Avoid mutating internal fields (those beginning with _) unless for temporary debugging.
+- If you frequently need the Game instance, add in code after creation: window.__pfGame = game; then use __pfGame in console.
+
+Planned / Potential Future Flags
+--------------------------------
+window.PF_DIAG = true   -> Re-enable safe diagnostics overlay (once implemented/merged).
+
+End of File
+ 
+Dev Console Overlay (Clickable UI)
+==================================
+File: public/js/modules/devconsole.js (lazy-loaded)
+Toggle Hotkey: F10 (loads on first press if not already loaded)
+
+Enable on Load:
+  Set window.PF_DEV = true before page load (e.g. in console then refresh) to auto-create the panel.
+
+Sections & Buttons:
+  Game:
+    Start (Last Runtime) - Replays the last used PF_startGame runtime object.
+    Force Silence - Invokes PF_forceSilenceAll to close/suspend audio contexts and pause <audio> tags.
+    Export State - Logs core game state (timeMs, score, combo, acc, judges table).
+    Log Perf Stats - Logs gradient throttle stats + current adaptive quality.
+    Log Note Window - Logs per-lane active window head indices.
+  VFX:
+    Keyframe Verify Once - Sets PF_KEYFRAME_VERIFY for next start.
+    Log Lane Colors Now - Logs current resolved lane VFX colors.
+    Log Gradient Quality - Logs current internal gradient quality scalar.
+  Audio:
+    Resume All Ctx - Calls resume on all tracked WebAudio contexts.
+    List Ctx States - Logs state of each tracked context (running/suspended/closed).
+  Start Options:
+    Mid Song Start (ms) - Numeric input to set startAtMs for next Start With Options.
+    Auto Keyframe Verify (checkbox) - Automatically sets PF_KEYFRAME_VERIFY before next start.
+    Auto Diagnostics (flag) - Sets PF_DIAG flag (overlay must be implemented separately to show stats).
+    Start With Options - Clones last runtime, applies startAtMs and flags, launches game.
+
+Persistence:
+  Panel saves checkbox states and startAtMs in localStorage under key pf.devconsole.
+
+Exposed References:
+  window.__pfGame         - Current game instance (set on each PF_startGame).
+  window.__pfLastRuntime  - Last runtime object passed to PF_startGame.
+
+Hotkeys:
+  F10 - Toggle dev console visibility (loads script if first time).
+  F8  - (Existing) Toggle debug performance overlay.
+
+Removal:
+  Click ✕ in top-right of panel. Press F10 again to re-open.
+
+Notes:
+  - Avoid editing internal fields beginning with _ unless temporarily debugging.
+  - Auto Diagnostics currently only sets PF_DIAG; ensure the diagnostics overlay implementation honors it when re-enabled.
+  - Keyframe verification runs once per game start when PF_KEYFRAME_VERIFY is set.
+
+End Dev Console Section
