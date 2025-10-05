@@ -215,11 +215,4 @@
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', createOverlay); else createOverlay();
   }
 
-  // F10 toggle
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'F10') {
-      const open = document.getElementById('pf-devconsole');
-      if (open) open.remove(); else createOverlay();
-    }
-  });
 })();

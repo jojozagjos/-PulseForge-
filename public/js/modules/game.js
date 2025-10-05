@@ -8,7 +8,9 @@ const GOOD_MS    = 100;
 
 /** Visual tuning */
 const WHITE_FLASH_MS = 140;      // taps only
-const HIT_FADE_RATE  = 0.05;
+// Fade rates (alpha reduction per frame). Lower = slower fade.
+const HIT_FADE_RATE  = 0.025; // was 0.05 - slows tap head fade ~2x
+const HOLD_FADE_RATE = 0.018; // dedicated slower fade for hold body/head after completion
 const MISS_FADE_RATE = 0.08;
 const HOLD_BODY_FADE = 0.06;
 
@@ -144,6 +146,16 @@ export class Game {
     // Debug: keyframe verification (one-shot logging) toggled via global flag
     this._enableKeyframeVerify = !!(typeof window !== 'undefined' && window.PF_KEYFRAME_VERIFY);
     this._keyframeVerifyRan = false;
+
+    // Audio clock stall mitigation (if AudioContext stops advancing, keep game time flowing)
+    this._lastAudioCtxTimeSec = 0;
+    this._audioStallFrames = 0;
+    this._audioStallFallbackActive = false;
+    this._audioStallFallbackBasePerfMs = 0;
+    this._audioStallFallbackBaseAudioSec = 0;
+    // Secondary stall watchdog + debug overlay placeholders
+    this._stallWatch = { lastPerfMs: (typeof performance!=='undefined'?performance.now():0), lastGameMs: 0, frames: 0 };
+    this._debugOverlay = null;
   }
 
   // ===== VFX Runtime support (subset for background/lanes/notes) =====
@@ -606,22 +618,27 @@ export class Game {
     this._fxStyles = {
       Perfect: new PIXI.TextStyle({
         fill: 0x25F4EE, fontSize: 36, fontFamily: "Arial", fontWeight: "bold",
+        stroke: { color: 0x000000, width: 4, join: 'round' },
         dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
       }),
       Great: new PIXI.TextStyle({
         fill: 0xC8FF4D, fontSize: 36, fontFamily: "Arial", fontWeight: "bold",
+        stroke: { color: 0x000000, width: 4, join: 'round' },
         dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
       }),
       Good: new PIXI.TextStyle({
         fill: 0x8A5CFF, fontSize: 36, fontFamily: "Arial", fontWeight: "bold",
+        stroke: { color: 0x000000, width: 4, join: 'round' },
         dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
       }),
       Miss: new PIXI.TextStyle({
         fill: 0xaa4b5b, fontSize: 36, fontFamily: "Arial", fontWeight: "bold",
+        stroke: { color: 0x000000, width: 4, join: 'round' },
         dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
       }),
       Countdown: new PIXI.TextStyle({
         fill: 0x25F4EE, fontSize: 48, fontFamily: "Arial", fontWeight: "bold",
+        stroke: { color: 0x000000, width: 5, join: 'round' },
         dropShadow: true, dropShadowColor: "#000000", dropShadowBlur: 3, dropShadowDistance: 2
       })
     };
@@ -636,6 +653,14 @@ export class Game {
     this.countdownText.position.set(this.width / 2, Math.floor(this.height * 0.18));
     this.countdownText.alpha = 0;
     this.hudLayer.addChild(this.countdownText);
+
+  // Debug overlay (opt-in) shows timing/stall info if window.PF_DEBUG
+  if (typeof window !== 'undefined' && window.PF_DEBUG && !this._debugOverlay) {
+    const dbg = new PIXI.Text({ text: 'debug', style: new PIXI.TextStyle({ fill: 0x25F4EE, fontSize: 14, fontFamily: 'Arial' }) });
+    dbg.x = 8; dbg.y = 6; dbg.alpha = 0.85; dbg.zIndex = 99;
+    this.hudLayer.addChild(dbg);
+    this._debugOverlay = dbg;
+  }
 
   // Loading text (centered)
   this.loadingText = new PIXI.Text({ text: "", style: this._fxStyles.Countdown });
@@ -954,7 +979,7 @@ export class Game {
             const key = this._serializeGradient(gInterp, ang);
             if (!key) continue;
             this._getGradientTextureCached(key, gInterp, ang);
-          }
+          } // end holdTailClipsAtJudge block
         }
       }
       // Small delay to allow GPU upload
@@ -1306,6 +1331,12 @@ export class Game {
 
   _registerHit(note, lane, label, isHold) {
     note.hit = true;
+    // Capture actual hit time (game time) for later drain timing logic (especially for early/late offsets)
+    if (note.__pfHitTimeMs == null) note.__pfHitTimeMs = this.state.timeMs;
+    // Reset simplified hold drain markers (new logic does direct time math each frame)
+    if (isHold) {
+      note.__pfCenterLocked = false; // will lock when head center reaches judge line the first time
+    }
 
     // scoring + counters
     const base = label === "Perfect" ? 100 : label === "Great" ? 80 : 50;
@@ -1351,13 +1382,14 @@ export class Game {
         endMs,
         broken: false,
         headRef: vis.head,
-        bodyRef: vis.body
+        bodyRef: vis.body,
+        lastHeldMs: this.state.timeMs || 0 // track last frame we saw the key down for grace handling
       });
 
       // Head flash then fade
       const until = (this.state.timeMs || 0) + WHITE_FLASH_MS;
       vis.head.__pfFlashUntil = until;
-      vis.head.__pfFadeRate   = HIT_FADE_RATE;
+  vis.head.__pfFadeRate   = HIT_FADE_RATE;
 
     } else {
       // Tap: brief head white flash
@@ -1365,7 +1397,7 @@ export class Game {
       vis.head.__pfWhiteSticky = true; // keep head white after hit
       const until = (this.state.timeMs || 0) + WHITE_FLASH_MS;
       vis.head.__pfFlashUntil = until;
-      vis.head.__pfFadeRate   = HIT_FADE_RATE;
+  vis.head.__pfFadeRate   = HIT_FADE_RATE;
     }
   }
 
@@ -1494,7 +1526,7 @@ export class Game {
       if (gloss) cont.addChild(gloss);
 
       head.__pfFlashUntil = null;
-      head.__pfFadeRate   = HIT_FADE_RATE;
+  head.__pfFadeRate   = HIT_FADE_RATE;
       head.__pfHoldActive = false;
   head.__pfWhiteSticky = false;
 
@@ -1529,6 +1561,33 @@ export class Game {
       this.app.ticker.add(() => {
         let audioTimeSec = 0;
         try { audioTimeSec = this._audio?.player?.ctx?.currentTime ?? 0; } catch {}
+
+        // --- Audio stall detection ---------------------------------------------------------
+        // Some browsers (or background tab throttling) can temporarily freeze AudioContext
+        // currentTime. When that happens our notes appear to "freeze" mid-lane. We detect
+        // a run of frames where currentTime does not advance and fall back to perf time.
+        if (audioTimeSec <= this._lastAudioCtxTimeSec + 1e-5) {
+          this._audioStallFrames++;
+          // After ~30 consecutive frames (~0.5s at 60fps) treat as stall.
+          if (!this._audioStallFallbackActive && this._audioStallFrames > 30) {
+            this._audioStallFallbackActive = true;
+            this._audioStallFallbackBasePerfMs = performance.now();
+            this._audioStallFallbackBaseAudioSec = this._lastAudioCtxTimeSec;
+            try { console.warn('[PulseForge] Audio clock stalled – falling back to performance timer for smooth note motion.'); } catch {}
+          }
+        } else {
+          // Audio advanced normally; clear stall state
+          this._audioStallFrames = 0;
+          this._audioStallFallbackActive = false;
+        }
+        this._lastAudioCtxTimeSec = Math.max(this._lastAudioCtxTimeSec, audioTimeSec);
+
+        if (this._audioStallFallbackActive) {
+          const perfDeltaSec = (performance.now() - this._audioStallFallbackBasePerfMs) / 1000;
+            audioTimeSec = this._audioStallFallbackBaseAudioSec + perfDeltaSec;
+        }
+        const _perfNow = performance.now();
+        // -----------------------------------------------------------------------------------
         const startAtSec = this._audio?.startAtSec || 0;
         // If audio not started yet, audioTimeSec < startAtSec
         const untilStartSec = startAtSec - audioTimeSec;
@@ -1582,6 +1641,38 @@ export class Game {
   }
   const tMs = (gameTimeMs < 0) ? gameTimeMs : this._visualTimeMs;
 
+        // Secondary stall watchdog: if gameTimeMs not advancing for >500ms wall time, force advance.
+        try {
+          const w = this._stallWatch;
+          if (w) {
+            if (gameTimeMs === w.lastGameMs) {
+              w.frames++;
+              if ((_perfNow - w.lastPerfMs) > 500 && w.frames > 30) {
+                const forced = _perfNow - w.lastPerfMs;
+                this._logicLastGameMs += forced;
+                this._logicStateTimeMs += forced;
+                this._visualTimeMs += forced;
+                this.state.timeMs += forced;
+                gameTimeMs = this.state.timeMs;
+                try { console.warn('[PulseForge] Watchdog forced +'+forced.toFixed(1)+'ms advance'); } catch {}
+                w.frames = 0;
+                w.lastPerfMs = _perfNow;
+                w.lastGameMs = gameTimeMs;
+              }
+            } else {
+              w.frames = 0;
+              w.lastGameMs = gameTimeMs;
+              w.lastPerfMs = _perfNow;
+            }
+          }
+        } catch {}
+
+        if (this._debugOverlay) {
+          try {
+            this._debugOverlay.text = `a:${(audioTimeSec*1000).toFixed(0)} g:${gameTimeMs.toFixed(0)} vis:${this._visualTimeMs.toFixed(0)} stall:${this._audioStallFallbackActive?'Y':'N'}`;
+          } catch {}
+        }
+
         if (gameTimeMs < 0) {
           showCountdown(-gameTimeMs);
         } else {
@@ -1602,7 +1693,7 @@ export class Game {
               child.__pfFade = null;
             }
           }
-        }
+  }
         // FX: rings
         for (let i = this.fxRingLayer.children.length - 1; i >= 0; i--) {
           const child = this.fxRingLayer.children[i];
@@ -1765,246 +1856,153 @@ export class Game {
           }
         } catch {}
 
-        // ===== Notes (Active Window Iteration) =====
-        const windowPastMs = 300; // keep passed notes shortly for miss/fade handling
-        const windowFutureMs = (this._laneHeight / this.pixelsPerMs) + 500; // ahead until off bottom
-        const tNow = tMs;
-        const tMin = tNow - windowPastMs;
-        const tMax = tNow + windowFutureMs;
-        if (!this._laneSpriteListsBuilt) {
-          this._noteSpritesByLane = Array.from({ length: this.laneCount }, () => []);
-          for (let i = 0; i < this.noteSprites.length; i++) {
-            const o = this.noteSprites[i];
-            if (o && o.n) this._noteSpritesByLane[o.n.lane]?.push(o);
-          }
-          for (let ln = 0; ln < this._noteSpritesByLane.length; ln++) {
-            this._noteSpritesByLane[ln].sort((a,b)=> (a.n.tMs||0) - (b.n.tMs||0));
-          }
-          this._laneHeadIndex = new Array(this.laneCount).fill(0);
-          this._laneSpriteListsBuilt = true;
-        }
-        for (let lane = 0; lane < this.laneCount; lane++) {
-          const list = this._noteSpritesByLane[lane];
-          if (!list || !list.length) continue;
-          let startIdx = this._laneHeadIndex[lane] || 0;
-          while (startIdx < list.length) {
-            const chk = list[startIdx];
-            if ((chk.n.tMs || 0) < (tMin - 400)) { startIdx++; continue; }
-            break;
-          }
-          this._laneHeadIndex[lane] = startIdx;
-          for (let i = startIdx; i < list.length; i++) {
-            const obj = list[i];
-            const nt = obj.n.tMs || 0;
-            if (nt > tMax) break; // beyond visible window
-            if (nt < tMin && !obj.cont.parent) continue;
+        // ===== Notes (Simplified Legacy Iteration) =====
+        for (let i = 0; i < this.noteSprites.length; i++) {
+          const obj = this.noteSprites[i];
+            if (!obj) continue;
             const { n, cont, body, head, gloss } = obj;
-            if (!cont.parent && (!body || !body.parent)) continue;
+            if (!head || !cont) continue;
+            // Position: head center hits judge at n.tMs
+            const yCenter = this.judgeY - ((n.tMs || 0) - tMs) * this.pixelsPerMs;
+            cont.y = yCenter - head.height / 2;
 
-          // ----- VFX-driven note sizing (global size factor) -----
-          let noteSize = 1;
-          try {
-            if (this.vfx) {
-              const v = Number(this._vfxValueAt('notes.size', tMs) ?? this.vfx.props?.notes?.size ?? 1);
-              if (Number.isFinite(v)) noteSize = Math.max(0.5, Math.min(2.0, v));
+            // Basic scaling (retain existing VFX size logic if any later needed)
+            if (body) body.scale.x = 1;
+
+            // Lane / note color baseline (matches head & tail). Prefer VFX override unless white override active.
+            let laneColor = null;
+            try { laneColor = this._vfxColorForLaneAt(tMs, n.lane); } catch {}
+            if (laneColor == null && this.vis && Array.isArray(this.vis.laneColors)) {
+              laneColor = this.vis.laneColors[n.lane % this.vis.laneColors.length];
             }
-          } catch {}
+            // Determine white override: a note that has been hit (tap) OR an active hold segment should remain white.
+            // White override logic:
+            //  - Tap note: becomes white after successful hit (n.hit && n.result !== 'Miss').
+            //  - Hold note: head becomes white once hit; stays white while actively held; on early release (broken) revert to lane tint.
+            //  - Miss: never white.
+            let whiteOverride = false;
+            if (n.hit && n.result !== 'Miss') {
+              // Determine if this is a hold (has body).
+              if (body) {
+                const stillHeld = !!(head.__pfHoldActive || body.__pfHoldActive);
+                // If hold was hit successfully and is still being held OR it already finished successfully (maskPersist), keep white.
+                if (stillHeld || body.__pfMaskPersist) whiteOverride = true;
+              } else {
+                whiteOverride = true; // tap
+              }
+            }
+            if (whiteOverride) {
+              if (head.tint !== 0xFFFFFF) head.tint = 0xFFFFFF;
+              if (body && body.tint !== 0xFFFFFF) body.tint = 0xFFFFFF;
+            } else if (laneColor != null) {
+              if (head.tint !== laneColor) head.tint = laneColor;
+              if (body && body.tint !== laneColor) body.tint = laneColor;
+            }
 
-          // Apply size to head and optional gloss, keep stem/body centered under the head
-          if (head) {
-            head.scale.set(noteSize, noteSize);
-          }
-          if (gloss) {
-            gloss.scale.set(noteSize, noteSize);
-          }
-          if (body) {
-            // scale tail width only; keep its length (Y) unscaled
-            body.scale.x = noteSize;
-            // position stem so it's centered under the (possibly scaled) head
-            const curHeadW = (head?.__pfBaseW || this.laneWidth) * noteSize;
-            const bodyW = (body.__pfBaseW || 12) * noteSize;
-            body.x = (curHeadW - bodyW) / 2;
-          }
+            // Ensure tail texture matches length & style (normal, not white override)
+            if (body && body.__pfLen) {
+              if (!body.__pfLastLen || body.__pfLastLen !== body.__pfLen || !body.texture) {
+                try { body.texture = this._getBodyTexture(body.__pfLen, false); body.__pfLastLen = body.__pfLen; } catch {}
+              }
+            }
 
-          // Center the container horizontally in the lane based on scaled head width
-          if (cont.parent && head) {
-            const curHeadW = (head.__pfBaseW || head.width) * noteSize;
-            cont.x = this._laneX(n.lane) + (this.laneWidth - curHeadW) / 2;
-          }
+            // Legacy hold mask: only clip while actively held (or persist flag) at judge line
+            if (body && this.holdTailClipsAtJudge) {
+              const totalLen = body.__pfLen || 0;
+              if (body.height !== totalLen) body.height = totalLen;
+              const desiredY = -(totalLen - 2);
+              if (body.y !== desiredY) body.y = desiredY;
+              if (!body.__pfMask) {
+                const g = new PIXI.Graphics();
+                g.isMask = true; g.visible = false; cont.addChild(g); body.__pfMask = g;
+              }
+              const active = !!(head.__pfHoldActive || body.__pfHoldActive || body.__pfMaskPersist);
+              const g = body.__pfMask;
+              if (active) {
+                if (body.mask !== g) body.mask = g;
+                g.visible = true; g.clear();
+                // judge line local Y
+                const cutLocalY = cont.toLocal(new PIXI.Point(0, this.judgeY)).y;
+                const margin = 8; const stemX = body.x - margin/2;
+                const maskW = (body.__pfBaseW || 12) * (body.scale?.x || 1) + margin;
+                g.rect(stemX, -50000, maskW, cutLocalY + 50000); g.fill(0xffffff); g.isMask = true;
+              } else {
+                if (body.mask) body.mask = null; g.visible = false; g.clear();
+              }
+            }
 
-          // Position so head center hits judge line at n.tMs (use scaled head height)
-          const yAtCenter = this.judgeY - (n.tMs - tMs) * this.pixelsPerMs;
-          let y = yAtCenter - (head.height / 2);
-          if (cont.parent) {
-            cont.y = y;
-          }
+            // Fade-out:
+            //  - Tap: fade immediately after successful hit.
+            //  - Hold: fade only after successful completion (no longer active, not broken) and not a miss.
+            const holdActive = !!(head.__pfHoldActive || body?.__pfHoldActive);
+            const shouldFade = n.hit && n.result !== 'Miss' && (!body ? true : (!holdActive && body.__pfMaskPersist));
+            if (shouldFade) {
+              // Head fade
+              if (head && !head.__pfFade) {
+                const rate = head.__pfFadeRate || HIT_FADE_RATE;
+                this._beginFadeOut(head, rate, true);
+              }
+              // Tail fade (if exists and not already fading)
+              if (body && !body.__pfFade) {
+                this._beginFadeOut(body, HOLD_FADE_RATE, true);
+              }
+            }
 
-          // Tap miss: after window passes, mark miss (no fade; let it scroll off-screen)
-          if (tMs >= 0 && !n.hit && (!body)) {
-            if (tMs - n.tMs > 120) {
-              n.hit = true;
+            // Apply fade alpha updates (notes previously lacked per-frame alpha decay)
+            if (head && head.__pfFade) {
+              if (head.alpha == null) head.alpha = 1;
+              head.alpha = Math.max(0, head.alpha - head.__pfFade.rate);
+              if (head.alpha <= 0.01) {
+                if (head.__pfFade.remove) {
+                  // For tap notes (no body) we can remove whole container when head done
+                  if (!body && cont.parent) cont.parent.removeChild(cont);
+                }
+                head.__pfFade = null;
+              }
+            }
+            if (body && body.__pfFade) {
+              if (body.alpha == null) body.alpha = 1;
+              body.alpha = Math.max(0, body.alpha - body.__pfFade.rate);
+              if (body.alpha <= 0.01) {
+                if (body.__pfFade.remove) {
+                  // Remove container if head also faded or doesn't exist
+                  const headGone = (!head || !head.__pfFade) && (head ? head.alpha <= 0.01 : true);
+                  if (headGone && cont.parent) cont.parent.removeChild(cont);
+                }
+                body.__pfFade = null;
+              }
+            }
+
+            // Simple miss handling for taps (do not classify hold bodies here)
+            if (!body && !n.hit && n.result !== 'Miss' && (tMs - (n.tMs || 0) > 120)) {
+              n.result = 'Miss';
+              n.hit = true; // legacy compatibility: other systems treat hit=true as judged; keep but mark result
               this.state.combo = 0;
-              this._recordJudge("Miss");
-              this._judgment("Miss", true);
-              // No fade here; culling will remove once fully below the lane
+              this._recordJudge('Miss');
+              this._judgment('Miss', true);
             }
-          }
 
-          // Update per-note hold mask (only apply when hold is actively held)
-          if (body && this.holdTailClipsAtJudge && body.__pfMask) {
-            const shouldMask = !!(head?.__pfHoldActive || body.__pfHoldActive || body.__pfMaskPersist);
-            if (shouldMask) {
-              if (body.mask !== body.__pfMask) body.mask = body.__pfMask;
-              body.__pfMask.visible = true;
-              const localJudge = cont.toLocal(new PIXI.Point(0, this.judgeY));
-              const cutY = localJudge.y;
-
-              body.__pfMask.clear();
-              // expand mask width to cover scaled tail width with a small margin
-              const margin = 8;
-              const stemX = body.x - margin/2;
-              const maskW = (body.__pfBaseW || 12) * (body.scale?.x || 1) + margin;
-              body.__pfMask.rect(stemX, -50000, maskW, cutY + 50000);
-              body.__pfMask.fill(0xffffff);
-              body.__pfMask.isMask = true;
-            } else {
-              if (body.mask) body.mask = null; // disable mask when not actively holding
-              body.__pfMask.visible = false;
-              body.__pfMask.clear();
+            // Cull when well below lane
+            const laneBottom = this._laneTop + this._laneHeight + 80;
+            if (cont.y - (body?.__pfLen || 0) > laneBottom) {
+              if (body?.__pfMask && !body.__pfTunnelActive) { body.mask = null; body.__pfMask.removeFromParent(); }
+              cont.parent?.removeChild(cont);
+              continue;
             }
-          }
-
-          // compute full visual bounds (head + tail)
-          const headTop = cont.y;
-          const headBottom = cont.y + head.height;
-          let topY = headTop;
-          let bottomY = headBottom;
-
-          if (body) {
-            const bodyTop = cont.y - (body.__pfLen - 2);
-            let bodyBottom = cont.y; // where tail meets head
-            // Only clip visual extent to judge line while masking is active
-            if (this.holdTailClipsAtJudge && body?.mask) {
-              bodyBottom = Math.min(bodyBottom, this.judgeY);
-            }
-            topY = Math.min(topY, bodyTop);
-            bottomY = Math.max(bottomY, bodyBottom);
-          }
-
-          // lane's visual bottom
-          const laneBottom = this._laneTop + this._laneHeight;
-
-          // Only cull once the entire note is past the bottom
-          const fullyBelowLane = topY > (laneBottom + 80);
-          if (fullyBelowLane) {
-            if (body?.__pfMask) { body.mask = null; body.__pfMask.removeFromParent(); body.__pfMaskPersist = false; }
-            cont.parent?.removeChild(cont);
-            continue;
-          }
-
-          // End of head flash -> begin head fade
-          const now = tMs;
-          if (head.__pfFlashUntil && now >= head.__pfFlashUntil) {
-            head.__pfFlashUntil = null;
-            if (!head.__pfFade) this._beginFadeOut(head, head.__pfFadeRate, false);
-          }
-
-          // Keep sprites horizontally aligned; positions already adjusted above
-          if (head) { head.x = 0; }
-          if (gloss) { gloss.x = 0; }
-          if (body && !Number.isFinite(body.x)) {
-            const curHeadW = (head?.__pfBaseW || this.laneWidth) * noteSize;
-            const bodyW = (body.__pfBaseW || 12) * noteSize;
-            body.x = (curHeadW - bodyW) / 2;
-          }
-
-          // Per-frame fading
-          if (head.parent && head.__pfFade) {
-            head.alpha = Math.max(0, head.alpha - head.__pfFade.rate);
-          }
-          if (body && body.__pfFade) {
-            body.alpha = Math.max(0, body.alpha - body.__pfFade.rate);
-            if (body.alpha <= 0.01 && body.__pfFade.remove) {
-              if (body.__pfMask) { body.mask = null; body.__pfMask.removeFromParent(); }
-              body.removeFromParent();
-              obj.body = null;
-            }
-          }
-
-          // Per-frame lane color override from VFX (heads and tails)
-          try {
-            if (this.vfx && head) {
-              const cHex = this._vfxColorForLaneAt(tMs, n.lane);
-              if (cHex != null) {
-                // Don’t override white flash or active hold white
-                if (!head.__pfFlashUntil && !head.__pfHoldActive && !head.__pfWhiteSticky) head.tint = cHex;
-                if (body && !body.__pfHoldActive) body.tint = cHex;
-              }
-            }
-          } catch {}
-
-          // Optional gloss near judge line, modulated by VFX notes.glow
-          if (gloss) {
-            const dy = Math.abs(this.judgeY - (y + head.height / 2));
-            let glowPct = 0;
-            try {
-              if (this.vfx) {
-                const gv = Number(this._vfxValueAt('notes.glow', tMs) ?? this.vfx.props?.notes?.glow ?? 0);
-                if (Number.isFinite(gv)) glowPct = Math.max(0, Math.min(100, gv));
-              }
-            } catch {}
-            const desired = Math.max(0, Math.min(1, 0.08 + (glowPct / 100) * 0.6));
-            gloss.alpha = Math.min(desired, head.alpha);
-            gloss.visible = dy < 420 && head.alpha > 0.05;
-          }
-
-          // Hold miss at head (no fade; unmask tail so it scrolls off-screen)
-          if (body && !n.hit && (tMs - n.tMs > 120)) {
-            n.hit = true;
-            this.state.combo = 0;
-            this._recordJudge("Miss");
-            this._judgment("Miss", true);
-            body.__pfHoldActive = false;
-            body.__pfMaskPersist = false;
-            // Let the tail continue off-screen like other notes: remove judge-line clip mask
-            if (body.__pfMask) { body.mask = null; body.__pfMask.removeFromParent(); body.__pfMask = null; }
-            // No fade for head/body on miss; they will scroll and be culled off-screen
-          }
-
-          // While actively holding, turn the entire tail white; otherwise keep normal color
-          if (body) {
-            const isActiveHold = !!(body.__pfHoldActive || (head && head.__pfHoldActive));
-            const onTail = !!(n.dMs && (tMs >= (n.tMs || 0)) && (tMs <= (n.tMs || 0) + Math.max(0, n.dMs || 0)));
-            if (isActiveHold && onTail && body.__pfLen) {
-              body.texture = this._getBodyTexture(body.__pfLen, true);
-              body.tint = 0xFFFFFF;
-              body.alpha = 0.95;
-            } else if (!isActiveHold) {
-              // restore normal tail when not flashing and not actively held white
-              body.texture = this._getBodyTexture(body.__pfLen || 10, false);
-              const vfxLane = this._vfxColorForLaneAt(tMs, n.lane);
-              body.tint = vfxLane != null ? vfxLane : this.vis.laneColors[n.lane % this.vis.laneColors.length];
-              body.alpha = 1.0;
-            }
-          }
-
-          // Also turn the head white only while actively holding during the tail timeline range
-          if (head) {
-            const isActiveHold = !!head.__pfHoldActive;
-            const onTail = !!(n.dMs && (tMs >= (n.tMs || 0)) && (tMs <= (n.tMs || 0) + Math.max(0, n.dMs || 0)));
-            if (isActiveHold && onTail) {
-              head.tint = 0xFFFFFF;
-            }
-          }
-          }
         }
 
         // Maintain active holds (success/early release)
         if (tMs >= 0) {
+          const RELEASE_GRACE_MS = 50; // short grace so tiny key wobble doesn't break hold
           for (const [lane, hold] of this.activeHoldsByLane) {
             if (hold.broken) continue;
             if (tMs < hold.endMs) {
-              if (!this.held[lane]) {
+              // update lastHeldMs if still held
+              if (this.held[lane]) {
+                hold.lastHeldMs = tMs;
+              }
+              const idleFor = tMs - (hold.lastHeldMs || 0);
+              if (!this.held[lane] && idleFor > RELEASE_GRACE_MS) {
                 hold.broken = true;
                 this.state.combo = 0;
                 this._recordJudge("Miss");
@@ -2013,7 +2011,7 @@ export class Game {
                   hold.bodyRef.__pfHoldActive = false;
                   hold.bodyRef.__pfMaskPersist = false;
                   // Unmask so tail scrolls off-screen; do not fade
-                  if (hold.bodyRef.__pfMask) { hold.bodyRef.mask = null; hold.bodyRef.__pfMask.removeFromParent(); hold.bodyRef.__pfMask = null; }
+                  if (hold.bodyRef.__pfMask && !hold.bodyRef.__pfTunnelActive) { hold.bodyRef.mask = null; hold.bodyRef.__pfMask.removeFromParent(); hold.bodyRef.__pfMask = null; }
                 }
                 if (hold.headRef) {
                   hold.headRef.__pfHoldActive = false;
@@ -2030,11 +2028,11 @@ export class Game {
                   hold.bodyRef.mask = hold.bodyRef.__pfMask;
                 }
                 // Optional: small fade; remove if you want no fade on success
-                this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE, true);
+                this._beginFadeOut(hold.bodyRef, HOLD_FADE_RATE, true);
               }
               if (hold.headRef) {
                 hold.headRef.__pfHoldActive = false;
-                this._beginFadeOut(hold.headRef, HIT_FADE_RATE, false);
+                this._beginFadeOut(hold.headRef, HOLD_FADE_RATE, false);
               }
               this.activeHoldsByLane.delete(lane);
             }

@@ -36,7 +36,10 @@ input,select{background:#0f1420;border:1px solid #2a3142;color:var(--text);borde
 #game-canvas{position:absolute;inset:0;width:100%;height:100%;display:none;z-index:10}
 .hud{position:absolute;inset:0;pointer-events:none;padding:16px;display:flex;z-index:20}
 .hud.hidden{display:none}
-.hud .left{position:absolute;left:16px;top:16px}.hud .right{position:absolute;right:16px;top:16px}.combo{font-size:28px;color:var(--neon)}.acc{font-size:14px;color:var(--muted)}.score{font-size:28px;color:#fff}
+.hud .left{position:absolute;left:16px;top:16px}.hud .right{position:absolute;right:16px;top:16px}
+.combo{font-size:28px;color:var(--neon);text-shadow:0 0 3px rgba(0,0,0,.65),0 0 6px rgba(0,0,0,.55),1px 1px 0 #000,-1px 1px 0 #000,1px -1px 0 #000,-1px -1px 0 #000}
+.acc{font-size:14px;color:var(--muted);text-shadow:0 0 2px rgba(0,0,0,.7),1px 1px 0 #000,-1px 1px 0 #000,1px -1px 0 #000,-1px -1px 0 #000}
+.score{font-size:28px;color:#fff;text-shadow:0 0 4px rgba(0,0,0,.75),0 0 8px rgba(0,0,0,.55),1px 1px 0 #000,-1px 1px 0 #000,1px -1px 0 #000,-1px -1px 0 #000}
 .judgment{position:absolute;left:50%;top:70%;transform:translate(-50%,-50%);font-size:36px;opacity:0;transition:opacity .1s ease,transform .1s ease}.judgment.show{opacity:1;transform:translate(-50%,-62%)}
 #screen-results .panel{max-width:680px}.results-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px dashed #2a3142}.results-row:last-child{border-bottom:none}
 
