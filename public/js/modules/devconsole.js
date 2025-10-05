@@ -71,47 +71,59 @@
     root.appendChild(closeBtn);
     root.appendChild(h('div', { style:{ fontWeight:600, marginBottom:'8px', fontSize:'13px' } }, 'PulseForge Dev Console'));
 
-    // Section: Game
-    const gameSec = section('Game');
+    // Section: Game & Control
+    const gameSec = section('Game / Control');
+    // Seek input
+    const seekInp = smallInput('number', '', (v)=>{}); seekInp.placeholder = 'ms';
+    const speedInp = smallInput('number', '1.0', ()=>{}); speedInp.step = '0.05'; speedInp.min = '0.05'; speedInp.style.width='60px';
     gameSec.body.append(
-      button('Start (Last Runtime)', () => {
-        const rt = getLastRuntime();
-        if (!rt) return alert('No last runtime available. Start a song normally first.');
-        window.PF_startGame?.(rt);
-      }),
+      button('Restart Last', () => { const rt=getLastRuntime(); if(!rt) return alert('No last runtime'); window.PF_startGame?.(rt); }),
       button('Force Silence', () => window.PF_forceSilenceAll?.()),
-      button('Export State', () => {
-        const g = getGame(); if (!g) return alert('No active game');
-        const out = { timeMs:g.state?.timeMs, score:g.state?.score, combo:g.state?.combo, acc:g.state?.acc, judges:g.state?.judges };
-        log('Game State', out); console.table(out.judges);
-      }),
-      button('Log Perf Stats', () => { const g=getGame(); if(!g) return alert('No game'); log('Gradient Stats', g._gradThrottleStats); log('GradQuality', g._gradQuality); }),
-      button('Log Note Window', () => { const g=getGame(); if(!g) return alert('No game'); log('laneHeadIndex', g._laneHeadIndex); })
+      button('Export State', () => { const g=getGame(); if(!g) return alert('No active game'); const out={ timeMs:g.state?.timeMs, score:g.state?.score, combo:g.state?.combo, acc:g.state?.acc, judges:g.state?.judges }; log('Game State', out); try{console.table(out.judges);}catch{} }),
+      h('div',{style:{display:'flex',alignItems:'center',gap:'4px',flexWrap:'wrap'}},
+        h('span',{style:{fontSize:'10px',opacity:.7}},'Seek:'), seekInp,
+        button('Go',()=>{ const g=getGame(); if(!g) return; const ms=Number(seekInp.value)||0; if(g.seek) try{g.seek(ms);}catch(e){log('seek fail',e);} })
+      ),
+      h('div',{style:{display:'flex',alignItems:'center',gap:'4px',flexWrap:'wrap'}},
+        h('span',{style:{fontSize:'10px',opacity:.7}},'Speed:'), speedInp,
+        button('Apply',()=>{ const g=getGame(); if(!g) return; const sp=Number(speedInp.value)||1; try{ g.setPlaybackRate?g.setPlaybackRate(sp):(g._playbackRate=sp); log('PlaybackRate',sp); }catch(e){} })
+      ),
+      button('Toggle SlowMo 0.5x',()=>{ const g=getGame(); if(!g) return; let cur=g.getPlaybackRate?g.getPlaybackRate():g._playbackRate||1; const nxt = Math.abs(cur-1)<1e-3?0.5:1; try{ g.setPlaybackRate?g.setPlaybackRate(nxt):(g._playbackRate=nxt);}catch{} log('PlaybackRate',nxt); }),
+      button('Copy Perf Snapshot',()=>{ const g=getGame(); if(!g) return; const snap={ t:g.state?.timeMs, grad:g._gradThrottleStats, q:g._gradQuality, notes:g._activeNoteCount, lanes:g._laneHeadIndex }; const txt=JSON.stringify(snap,null,2); navigator.clipboard?.writeText(txt); log('PerfSnapshot', snap); }),
+      button('Active Notes',()=>{ const g=getGame(); if(!g) return; log('ActiveNotes', g._activeNoteCount); }),
+      button('Log Window Indexes',()=>{ const g=getGame(); if(!g) return; log('laneHeadIndex', g._laneHeadIndex); }),
+      button('Results Overlay?',()=>{ const el=document.getElementById('pf-results-overlay'); log('ResultsOverlay', !!el); })
     );
 
-    // Section: VFX
-    const vfxSec = section('VFX');
+    // Section: VFX / Render
+    const vfxSec = section('VFX / Render');
     vfxSec.body.append(
       button('Keyframe Verify Once', () => { window.PF_KEYFRAME_VERIFY = true; alert('Will log on next start'); }),
-      button('Log Lane Colors Now', () => { const g=getGame(); if(!g) return alert('No game'); const arr=[0,1,2,3].map(i=>g._vfxColorForLaneAt?.(g.state.timeMs,i)); log('Lane Colors', arr); }),
-      button('Log Gradient Quality', () => { const g=getGame(); if(!g) return alert('No game'); log('GradQuality', g._gradQuality); })
+      button('Cycle Gradient Quality', () => { const g=getGame(); if(!g) return; const seq=[1,0.75,0.5,0.35,0.25]; const cur=g._gradQuality||1; const idx=seq.indexOf(seq.find(v=>Math.abs(v-cur)<1e-3)); const nxt=seq[(idx+1)%seq.length]; g._gradQuality=nxt; log('GradQuality->',nxt); }),
+      button('Toggle Diagnostics', () => { window.PF_DIAG = !window.PF_DIAG; log('PF_DIAG', window.PF_DIAG); try{ window.dispatchEvent(new CustomEvent('pf-diag-toggle',{detail:{on:window.PF_DIAG}})); }catch{} }),
+      button('Log Lane Colors', () => { const g=getGame(); if(!g) return; const arr=[0,1,2,3].map(i=>g._vfxColorForLaneAt?.(g.state.timeMs,i)); log('LaneColors', arr); }),
+      button('Spawn Test Notes', () => { const g=getGame(); if(!g) return; if(!Array.isArray(g.chart?.notes)) return; const base=g.state?.timeMs||0; for(let i=0;i<16;i++){ g.chart.notes.push({ lane:i%4, time: base + 500 + i*120, type:'tap'}); } log('Spawned test notes',16); })
     );
 
-    // Section: Audio
-    const audSec = section('Audio');
+    // Section: Audio / Timing
+    const audSec = section('Audio / Timing');
     audSec.body.append(
       button('Resume All Ctx', () => { try { [...(window.__PF_audioCtxs||[])].forEach(c=>c.resume?.()); } catch {} }),
-      button('List Ctx States', () => { try { [...(window.__PF_audioCtxs||[])].forEach(c=>log('Ctx', c.state)); } catch {} })
+      button('List Ctx States', () => { try { [...(window.__PF_audioCtxs||[])].forEach(c=>log('Ctx', c.state)); } catch {} }),
+      button('Audio Offset +5ms', () => { const g=getGame(); if(!g) return; g.settings.audioOffset = (g.settings.audioOffset||0)+5; log('audioOffset', g.settings.audioOffset); }),
+      button('Audio Offset -5ms', () => { const g=getGame(); if(!g) return; g.settings.audioOffset = (g.settings.audioOffset||0)-5; log('audioOffset', g.settings.audioOffset); })
     );
 
-    // Section: Start Options
-    const startSec = section('Start Options');
+    // Section: Start Options / Flags
+    const startSec = section('Start Options / Flags');
     const startAtInp = smallInput('number', state.startAtMs || '', (v)=>{ state.startAtMs = Number(v)||0; saveState(state); });
-    startSec.body.append(h('div',{}, 'Mid Song Start (ms): ', startAtInp));
+    const fpsCapInp = smallInput('number', state.fpsCap || '', (v)=>{ state.fpsCap = Number(v)||0; saveState(state); window.dispatchEvent(new CustomEvent('pf-fps-cap',{detail:{cap:state.fpsCap}})); }); fpsCapInp.placeholder='FPS cap'; fpsCapInp.style.width='70px';
+    startSec.body.append(h('div',{}, 'Mid Start (ms): ', startAtInp));
+    startSec.body.append(h('div',{}, 'FPS Cap: ', fpsCapInp));
     startSec.body.append(
       checkbox('Auto Keyframe Verify', 'autoKF', false, (v)=>{}),
-      checkbox('Auto Diagnostics (flag)', 'autoDiag', false, (v)=>{}),
-      button('Start With Options', () => {
+      checkbox('Auto Diagnostics', 'autoDiag', false, (v)=>{}),
+      button('Start (Opts)', () => {
         const rt = getLastRuntime(); if(!rt) return alert('No last runtime');
         const clone = JSON.parse(JSON.stringify(rt));
         if (state.startAtMs) clone.startAtMs = state.startAtMs;
@@ -121,7 +133,7 @@
       })
     );
 
-    root.append(gameSec.wrap, vfxSec.wrap, audSec.wrap, startSec.wrap);
+  root.append(gameSec.wrap, vfxSec.wrap, audSec.wrap, startSec.wrap);
 
     // Basic styles via injected <style>
     const style = h('style', {}, `#pf-devconsole button.pf-btn{margin:2px 4px 4px 0;padding:4px 8px;background:#1e2b40;border:1px solid #334761;color:#d9e7ff;border-radius:6px;font:600 11px system-ui;cursor:pointer;}
