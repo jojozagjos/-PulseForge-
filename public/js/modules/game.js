@@ -1982,6 +1982,23 @@ export class Game {
               this._judgment('Miss', true);
             }
 
+            // Miss handling for HOLD head never pressed: if it has a body (hold), was not hit, and we are beyond a late window.
+            // Use a slightly larger window than taps to allow human reaction; e.g., 150ms.
+            if (body && !n.hit && n.result !== 'Miss') {
+              const lateMs = tMs - (n.tMs || 0);
+              if (lateMs > 150) {
+                // Mark as miss, break combo, no white/fade success.
+                n.result = 'Miss';
+                n.hit = true;
+                this.state.combo = 0;
+                this._recordJudge('Miss');
+                this._judgment('Miss', true);
+                // Ensure active hold tracking does not treat it as started.
+                if (head.__pfHoldActive) head.__pfHoldActive = false;
+                if (body.__pfHoldActive) body.__pfHoldActive = false;
+              }
+            }
+
             // Cull when well below lane
             const laneBottom = this._laneTop + this._laneHeight + 80;
             if (cont.y - (body?.__pfLen || 0) > laneBottom) {
