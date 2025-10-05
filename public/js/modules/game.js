@@ -216,54 +216,60 @@ export class Game {
   }
   _vfxValueAt(property, timeMs) {
     if (!this.vfx) return null;
+    // Per-frame memoization
+    const cache = this._vfxFrameCache;
+    const cacheKey = property + '|' + (timeMs|0);
+    if (cache && cache.has(cacheKey)) return cache.get(cacheKey);
     const kfs = this.vfx.keyframes?.[property];
     if (!Array.isArray(kfs) || !kfs.length) {
-      // default from properties (no keyframes)
       const parts = property.split('.');
-      let v = this.vfx.props;
-      for (const p of parts) { if (v==null) return null; v = v[p]; }
+      let v = this.vfx.props; for (const p of parts) { if (v==null) { v = null; break; } v = v[p]; }
+      if (cache) cache.set(cacheKey, v);
       return v;
     }
     const arr = kfs.slice().sort((a,b)=>a.time-b.time);
     if (timeMs <= arr[0].time) {
       const first = arr[0];
-      // Starting value at t=0 comes from default properties unless a kf is at t=0
       let startVal;
       if (first && Math.abs(first.time) < 1) startVal = first.value; else {
         const parts = property.split('.');
         let v = this.vfx.props; for (const p of parts) { if (v==null) { v = null; break; } v = v[p]; }
         startVal = v;
       }
-      if (timeMs <= 0) return startVal;
-      if (first.time <= 0) return first.value;
+      if (timeMs <= 0) { if (cache) cache.set(cacheKey, startVal); return startVal; }
+      if (first.time <= 0) { if (cache) cache.set(cacheKey, first.value); return first.value; }
       const dur = Math.max(1, first.time);
       const t = Math.max(0, Math.min(1, timeMs / dur));
-      const ez = this._vfxUnpack(first.easing || "linear");
-      // Force linear morph for gradients if easing is instant
+      const ez = this._vfxUnpack(first.easing || 'linear');
       const gradPair = this._vfxIsGradient(startVal) && this._vfxIsGradient(first.value);
       const fn = (gradPair && ez.curve === 'instant') ? this._vfxEaseFn('linear') : this._vfxEaseFn(ez.curve, ez.style);
       const f = fn(t);
-      if (typeof startVal === 'number' && typeof first.value === 'number') return startVal + (first.value - startVal) * f;
-      if (typeof startVal === 'string' && /^#/.test(startVal) && typeof first.value === 'string') return this._vfxInterpolateColor(startVal, first.value, f);
-      if (this._vfxIsGradient(startVal) && this._vfxIsGradient(first.value)) return this._vfxInterpolateGradient(startVal, first.value, f);
-      if (typeof startVal === 'boolean') return f < 0.5 ? startVal : first.value;
-      return f < 0.5 ? startVal : first.value;
+      let out;
+      if (typeof startVal === 'number' && typeof first.value === 'number') out = startVal + (first.value - startVal) * f;
+      else if (typeof startVal === 'string' && /^#/.test(startVal) && typeof first.value === 'string') out = this._vfxInterpolateColor(startVal, first.value, f);
+      else if (this._vfxIsGradient(startVal) && this._vfxIsGradient(first.value)) out = this._vfxInterpolateGradient(startVal, first.value, f);
+      else if (typeof startVal === 'boolean') out = f < 0.5 ? startVal : first.value;
+      else out = f < 0.5 ? startVal : first.value;
+      if (cache) cache.set(cacheKey, out);
+      return out;
     }
-    if (timeMs >= arr[arr.length-1].time) return arr[arr.length-1].value;
+    if (timeMs >= arr[arr.length-1].time) { const v = arr[arr.length-1].value; if (cache) cache.set(cacheKey, v); return v; }
     let a = arr[0], b = arr[1];
     for (let i=0;i<arr.length-1;i++){ if (timeMs >= arr[i].time && timeMs <= arr[i+1].time) { a = arr[i]; b = arr[i+1]; break; } }
     const dur = Math.max(1, b.time - a.time);
     const t = Math.max(0, Math.min(1, (timeMs - a.time)/dur));
-  const ez = this._vfxUnpack(a.easing || "linear");
-  // If gradient and easing is 'instant', treat as linear to allow visible morph
-  const gradPair = this._vfxIsGradient(a.value) && this._vfxIsGradient(b.value);
-  const fn = (gradPair && ez.curve === 'instant') ? this._vfxEaseFn('linear') : this._vfxEaseFn(ez.curve, ez.style);
+    const ez = this._vfxUnpack(a.easing || 'linear');
+    const gradPair = this._vfxIsGradient(a.value) && this._vfxIsGradient(b.value);
+    const fn = (gradPair && ez.curve === 'instant') ? this._vfxEaseFn('linear') : this._vfxEaseFn(ez.curve, ez.style);
     const f = fn(t);
-    if (typeof a.value === 'number' && typeof b.value === 'number') return a.value + (b.value - a.value)*f;
-    if (typeof a.value === 'string' && /^#/.test(a.value) && typeof b.value === 'string') return this._vfxInterpolateColor(a.value, b.value, f);
-    if (this._vfxIsGradient(a.value) && this._vfxIsGradient(b.value)) return this._vfxInterpolateGradient(a.value, b.value, f);
-    if (typeof a.value === 'boolean') return f < 0.5 ? a.value : b.value;
-    return f < 0.5 ? a.value : b.value;
+    let out;
+    if (typeof a.value === 'number' && typeof b.value === 'number') out = a.value + (b.value - a.value)*f;
+    else if (typeof a.value === 'string' && /^#/.test(a.value) && typeof b.value === 'string') out = this._vfxInterpolateColor(a.value, b.value, f);
+    else if (this._vfxIsGradient(a.value) && this._vfxIsGradient(b.value)) out = this._vfxInterpolateGradient(a.value, b.value, f);
+    else if (typeof a.value === 'boolean') out = f < 0.5 ? a.value : b.value;
+    else out = f < 0.5 ? a.value : b.value;
+    if (cache) cache.set(cacheKey, out);
+    return out;
   }
 
   async run() {
@@ -682,11 +688,36 @@ export class Game {
   }
 
   _makeGradientTexture(key, g, angle) {
-    const w = Math.max(2, this.width);
-    const h = Math.max(2, this.height);
+    // Dynamic internal resolution scaling for performance.
+    if (!this._gradQuality) {
+      // 1 = full res, 0.5 = half, etc. Exposed knob via settings?.gradientQuality or adaptive throttle hints.
+      const userQ = Number(this.settings?.gradientQuality);
+      this._gradQuality = (Number.isFinite(userQ) && userQ > 0.1 && userQ <= 1) ? userQ : 1;
+      this._gradAdaptiveEnabled = true; // allow automatic downscale
+      this._gradAdaptiveCooldownMs = 0;
+    }
+    // If adaptive says to reduce temporarily (based on throttle stats) do so.
+    if (this._gradAdaptiveEnabled) {
+      const stats = this._gradThrottleStats;
+      const now = performance.now?.() || Date.now();
+      if (!this._gradAdaptiveCooldownMs) this._gradAdaptiveCooldownMs = now + 3000;
+      if (stats && stats.avgGenMs > 1.2 && now > this._gradAdaptiveCooldownMs) {
+        // Downscale one step (min 0.25) and set cooldown
+        this._gradQuality = Math.max(0.25, this._gradQuality * 0.75);
+        this._gradAdaptiveCooldownMs = now + 4000; // wait before next adjustment
+      } else if (stats && stats.avgGenMs < 0.4 && this._gradQuality < 1 && now > this._gradAdaptiveCooldownMs) {
+        // Upscale gradually (avoid oscillation)
+        this._gradQuality = Math.min(1, this._gradQuality * 1.12);
+        this._gradAdaptiveCooldownMs = now + 5000;
+      }
+    }
+    const scale = this._gradQuality;
+    const w = Math.max(2, Math.round(this.width * scale));
+    const h = Math.max(2, Math.round(this.height * scale));
     const cvs = document.createElement('canvas');
     cvs.width = w; cvs.height = h;
     const ctx = cvs.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
     ctx.clearRect(0,0,w,h);
   // Coerce legacy/unsupported types to linear or radial
   if (g && g.type !== 'linear' && g.type !== 'radial') g.type = 'linear';
@@ -708,6 +739,7 @@ export class Game {
     }
     ctx.fillRect(0,0,w,h);
     const tex = PIXI.Texture.from(cvs);
+    // When applying to sprite, we will stretch to full game canvas; minor blur acceptable.
     tex.__pfKey = key;
     return tex;
   }
@@ -737,89 +769,148 @@ export class Game {
   }
 
   _updateGradientSprite(timeMs) {
-    // New strategy: never build an interpolated blended gradient texture.
-    // Instead we cross-fade between discrete keyframe snapshots so textures are reused.
-    let g = null;
+    // Adaptive throttle inserted: dynamically skip gradient regeneration if too soon since last run.
+    if (!this._gradThrottle) {
+      this._gradThrottle = { lastUpdateMs: -Infinity, minIntervalMs: 16, avgGenMs: 0, samples: 0 };
+    }
+    const __gt = this._gradThrottle;
+    const __now = performance.now?.() || Date.now();
+    if (__now - __gt.lastUpdateMs < __gt.minIntervalMs && this._bgGradKey) {
+      return; // reuse existing gradient sprites / blend state
+    }
+    const __genStart = __now;
+    // Hybrid gradient interpolation: build/cached procedural gradient snapshots quantized by eased factor.
+    // 1. Resolve keyframes
     const kfs = this.vfx?.keyframes?.['background.gradient'];
-    if (Array.isArray(kfs) && kfs.length) {
+    const baseGrad = this.vfx?.props?.background?.gradient;
+    let renderGrad = null; // a fully interpolated gradient object
+    let angle = Number(this._vfxValueAt('background.angle', timeMs) ?? this.vfx?.props?.background?.angle ?? 0);
+    if (Array.isArray(kfs) && kfs.length > 0) {
       const arr = kfs.slice().sort((a,b)=>a.time-b.time);
       if (timeMs <= arr[0].time) {
-        g = arr[0].value; // before or at first keyframe
+        renderGrad = arr[0].value || baseGrad;
       } else if (timeMs >= arr[arr.length-1].time) {
-        g = arr[arr.length-1].value; // after last keyframe
+        renderGrad = arr[arr.length-1].value || baseGrad;
       } else {
-        // Find segment (linear scan acceptable given typical small count)
+        // find segment
         let a = arr[0], b = arr[1];
         for (let i=0;i<arr.length-1;i++) {
           if (timeMs >= arr[i].time && timeMs <= arr[i+1].time) { a = arr[i]; b = arr[i+1]; break; }
         }
         if (a && b) {
           const span = Math.max(1, b.time - a.time);
-          const tRaw = (timeMs - a.time) / span;
-          const ez = this._vfxUnpack(a.easing || 'linear');
-          // For gradients: treat 'instant' as linear; no custom curves needed—avoid math overhead.
-          let fn;
-          if (ez.curve === 'linear' || ez.curve === 'instant') fn = (x)=>x; else fn = this._vfxEaseFn(ez.curve, ez.style);
-          const f = Math.max(0, Math.min(1, fn(tRaw)));
-          // Produce a cross-fade object that reuses the two snapshot textures
-          g = { __pfBlend: true, from: a.value, to: b.value, factor: f };
+          const localT = (timeMs - a.time) / span;
+            const ez = this._vfxUnpack(a.easing || 'linear');
+            let fn;
+            if (ez.curve === 'instant') {
+              // Step-like: show a until boundary, then b.
+              renderGrad = localT < 1 ? a.value : b.value;
+            } else {
+              if (ez.curve === 'linear') fn = (x)=>x; else fn = this._vfxEaseFn(ez.curve, ez.style);
+              const eased = Math.max(0, Math.min(1, fn(localT)));
+              // Dynamic quantization: base steps plus refinement when motion is slow.
+              // If last factor exists, measure delta to adapt resolution.
+              if (!this._gradLastFactor) this._gradLastFactor = 0;
+              const diff = Math.abs(eased - this._gradLastFactor);
+              // Segment-adaptive base steps: longer spans deserve higher resolution.
+              const segMs = span;
+              let baseSteps = 60;
+              if (segMs > 8000) baseSteps = 180; else if (segMs > 4000) baseSteps = 140; else if (segMs > 2000) baseSteps = 100;
+              // Motion-adaptive refinement
+              if (diff < 0.01) baseSteps *= 2; else if (diff > 0.08) baseSteps = Math.max(40, Math.round(baseSteps * 0.66));
+              const steps = Math.min(300, baseSteps|0);
+              const q = Math.round(eased * steps) / steps;
+              this._gradLastFactor = eased;
+              // Build/cache interpolated gradient for (segment,q,angle)
+              const segKey = `gradseg:${a.time}-${b.time}:${ez.curve}:${ez.style||''}:${q.toFixed(3)}:${angle}`;
+              if (!this._gradInterpCache) { this._gradInterpCache = new Map(); this._gradInterpLRU = []; this._gradInterpMax = 48; }
+              if (this._gradInterpCache.has(segKey)) {
+                renderGrad = this._gradInterpCache.get(segKey).grad;
+              } else {
+                // Interpolate value types; if either missing fallback to b
+                const A = a.value || baseGrad; const B = b.value || baseGrad || A;
+                if (this._vfxIsGradient(A) && this._vfxIsGradient(B)) {
+                  renderGrad = this._vfxInterpolateGradient(A, B, q);
+                } else {
+                  // Color or other simple types: synthesize 2-stop gradient if colors
+                  if (typeof A === 'string' && /^#/.test(A) && typeof B === 'string') {
+                    const col = this._vfxInterpolateColor(A, B, q);
+                    renderGrad = { type:'linear', stops:[{pos:0,color:col},{pos:1,color:col}] };
+                  } else {
+                    renderGrad = B; // fallback
+                  }
+                }
+                // Insert into cache with LRU management
+                this._gradInterpCache.set(segKey, { grad: renderGrad, at: performance.now?.()||Date.now() });
+                this._gradInterpLRU.push(segKey);
+                if (this._gradInterpLRU.length > this._gradInterpMax) {
+                  const old = this._gradInterpLRU.shift();
+                  if (old) this._gradInterpCache.delete(old);
+                }
+              }
+            }
         }
       }
+    } else {
+      renderGrad = baseGrad;
     }
-    if (!g) g = this.vfx?.props?.background?.gradient;
-    // Legacy support: synthesize from color1/color2 if present
-    if (!g) {
+    // Legacy color1/color2 fallback only if still nothing
+    if (!renderGrad) {
       const c1 = this.vfx?.props?.background?.color1;
       const c2 = this.vfx?.props?.background?.color2 || c1;
       if (typeof c1 === 'string' && c1.startsWith('#')) {
-        g = { type: 'linear', stops: [ { pos: 0, color: c1 }, { pos: 1, color: c2 || c1 } ] };
+        renderGrad = { type:'linear', stops:[{pos:0,color:c1},{pos:1,color:c2||c1}] };
       }
     }
-    if (!g) {
-      if (this.app?.renderer?.background) this.app.renderer.background.color = 0x0a0c10;
+    if (!renderGrad) {
       if (this._bgSprite) this._bgSprite.visible = false;
       return;
     }
-    const angle = Number(this._vfxValueAt('background.angle', timeMs) ?? this.vfx?.props?.background?.angle ?? 0);
-    // Handle cross-fade object
-  const doCross = g && g.__pfBlend;
-    const snap = doCross ? g.from : g;
-    const snapB = doCross ? g.to : null;
-    const blendFactor = doCross ? Math.max(0, Math.min(1, g.factor||0)) : 1;
-    // Ensure primary sprite
     if (!this._bgSprite) this._ensureGradientLayer();
-    // Possibly ensure secondary sprite for crossfade
-    if (doCross && !this._bgSpriteB) {
-      this._bgSpriteB = new PIXI.Sprite(PIXI.Texture.WHITE);
-      this._bgSpriteB.zIndex = -9;
-      this._bgSpriteB.width = this.width;
-      this._bgSpriteB.height = this.height;
-      this._bgSpriteB.anchor.set(0,0);
-      this.app.stage.addChildAt(this._bgSpriteB, 1);
-    }
-    if (!doCross && this._bgSpriteB) {
-      try { this._bgSpriteB.visible = false; } catch {}
-    }
-    // Throttle texture regen: only when serialized key changes
-    const applySnapshot = (sprite, snapVal, which) => {
-      if (!snapVal || !sprite) return;
-      const k = this._serializeGradient(snapVal, angle);
-      if (!k) return;
-      const cacheField = which === 'A' ? '_bgGradKey' : '_bgGradKeyB';
-      if (this[cacheField] !== k) {
-        const tex = this._getGradientTextureCached(k, snapVal, angle);
-        this[cacheField] = k;
-        sprite.texture = tex;
-        sprite.width = this.width;
-        sprite.height = this.height;
-        sprite.visible = true;
+    // Serialize & cache as texture
+    const key = this._serializeGradient(renderGrad, angle);
+  if (key) {
+      // Ensure secondary sprite exists for interpolation
+      if (!this._bgSpriteB) {
+        this._bgSpriteB = new PIXI.Sprite(PIXI.Texture.WHITE);
+        this._bgSpriteB.width = this.width; this._bgSpriteB.height = this.height;
+        this._bgSpriteB.visible = false; this._bgSpriteB.alpha = 0; this._bgSpriteB.zIndex = -9;
+        this.app.stage.addChildAt(this._bgSpriteB, 1);
       }
-    };
-    applySnapshot(this._bgSprite, snap, 'A');
-    if (doCross && this._bgSpriteB) applySnapshot(this._bgSpriteB, snapB, 'B');
-    // Alpha blend
-    this._bgSprite.alpha = doCross ? (1 - blendFactor) : 1;
-    if (this._bgSpriteB) this._bgSpriteB.alpha = doCross ? blendFactor : 0;
+  if (this._bgGradKey !== key) {
+        // Move current texture to B (previous) for cross-fade, unless first assignment
+        if (this._bgSprite.texture && this._bgGradKey) {
+          this._bgSpriteB.texture = this._bgSprite.texture;
+          this._bgSpriteB.visible = true;
+          this._bgSpriteB.alpha = 1; // previous fully visible start of blend
+          this._gradBlendT = 0;      // reset blending progress
+        }
+        const tex = this._getGradientTextureCached(key, renderGrad, angle);
+        this._bgGradKey = key;
+        this._bgSprite.texture = tex;
+        this._bgSprite.width = this.width; this._bgSprite.height = this.height;
+        this._bgSprite.visible = true;
+        this._bgSprite.alpha = 0; // fade in new
+      }
+      // Advance blend (time-based using audio clock so speed is stable across FPS)
+      if (typeof this._gradBlendT !== 'number') this._gradBlendT = 1;
+      if (this._bgSprite.alpha < 1) {
+        const nowAudioMs = (this.state?.timeMs ?? 0);
+        if (!this._gradBlendStartMs) this._gradBlendStartMs = nowAudioMs;
+        const blendDurMs = 300; // total cross-fade duration
+        const prog = Math.max(0, Math.min(1, (nowAudioMs - this._gradBlendStartMs) / blendDurMs));
+        this._gradBlendT = prog;
+        this._bgSprite.alpha = prog;
+        if (this._bgSpriteB) this._bgSpriteB.alpha = 1 - prog;
+        if (prog >= 1 && this._bgSpriteB) {
+          this._bgSpriteB.visible = false;
+          this._gradBlendStartMs = null;
+        }
+      }
+    }
+    // Secondary sprite no longer needed for cross-fade; hide if exists
+    if (this._bgSpriteB) { try { this._bgSpriteB.visible = false; } catch {} }
+    this._bgSprite.alpha = 1;
   }
 
   async _prewarmVFX() {
@@ -842,6 +933,25 @@ export class Game {
           const key = this._serializeGradient(g, ang);
           if (!key) continue;
           this._getGradientTextureCached(key, g, ang);
+        }
+      }
+      // Hybrid interpolation prewarm: generate a few quantized intermediate blends for first 2 segments
+      const segs = kfs.slice().sort((a,b)=>a.time-b.time);
+      for (let si=0; si<Math.min(2, segs.length-1); si++) {
+        const A = segs[si], B = segs[si+1];
+        if (!A || !B) continue;
+        if (!this._vfxIsGradient(A.value) || !this._vfxIsGradient(B.value)) continue;
+        const ez = this._vfxUnpack(A.easing || 'linear');
+        const fn = (ez.curve === 'linear' || ez.curve === 'instant') ? (x)=>x : this._vfxEaseFn(ez.curve, ez.style);
+        const samples = [0, 0.25, 0.5, 0.75, 1];
+        for (const s of samples) {
+          const eased = fn(s);
+          const gInterp = this._vfxInterpolateGradient(A.value, B.value, eased);
+          for (const ang of angles) {
+            const key = this._serializeGradient(gInterp, ang);
+            if (!key) continue;
+            this._getGradientTextureCached(key, gInterp, ang);
+          }
         }
       }
       // Small delay to allow GPU upload
@@ -912,18 +1022,25 @@ export class Game {
   try { await this._prewarmVFX(); }
   catch(e){ this._setLoading(true, "VFX prewarm failed – continuing…"); }
 
-    // Visual & audio start
-    const visualStartPerfMs = performance.now() + this.leadInMs;
-    const audioStartAtSec = player.ctx.currentTime + (this.leadInMs / 1000);
+    // Audio-clock authoritative timing setup
+    // Schedule audio to start after lead-in unless we started mid-song (offsetMs > 0 => no full countdown)
+    const useLeadIn = offsetMs === 0;
+    const leadInMs = useLeadIn ? this.leadInMs : 0;
+    const audioCtx = player.ctx;
+    const audioStartAtSec = audioCtx.currentTime + (leadInMs / 1000);
+    // Start the buffer at offset (if playtesting mid-song) exactly at the scheduled time
+    const source = player.playAt(audioStartAtSec, { offsetSec: offsetMs / 1000 });
 
-    // NOTE: if your AudioPlayer.playAt doesn't support offset, update it accordingly.
-  const source = player.playAt(audioStartAtSec, { offsetSec: offsetMs / 1000 });
+    // Store timing anchors
+    this._audio = { player, source, startAtSec: audioStartAtSec, offsetMs };
+    // Negative time phase (countdown) ends when audio actually starts
+    // We'll compute game time each frame from audioCtx.currentTime; before start, we show -(remaining lead-in)
 
   // Hide overlay shortly before gameplay (after a rAF so first frame can upload textures)
   requestAnimationFrame(()=>{ requestAnimationFrame(()=> this._setLoading(false)); });
 
-    // loop
-    await this._gameLoop(visualStartPerfMs, () => {});
+    // loop (pass audio clock metadata instead of perf start)
+    await this._gameLoop(null, () => {});
     await this._reportScoreAndNotify();
 
     // wait for user to close the results before returning control
@@ -1343,14 +1460,74 @@ export class Game {
     };
     const hideCountdown = () => { if (this.countdownText) this.countdownText.alpha = 0; };
 
+    // Audio-clock based frame loop
+    const leadInMs = (this._audio?.offsetMs || 0) === 0 ? this.leadInMs : 0;
     return await new Promise(resolve => {
+      // Fixed-step logic parameters
+      this._logicStepMs = this._logicStepMs || 8.333; // 120 Hz logic
+      this._logicAccumMs = this._logicAccumMs || 0;
+      this._logicLastGameMs = this._logicLastGameMs || null;
+      this._logicStateTimeMs = this._logicStateTimeMs || 0; // last committed logic time
+      this._logicPrevStateTimeMs = this._logicPrevStateTimeMs || 0; // previous logic state time for interpolation
+      this._visualTimeMs = this._visualTimeMs || 0; // interpolated render time
       this.app.ticker.add(() => {
-        const nowPerf = performance.now();
-        const tMs = nowPerf - startPerfMs;
-        this.state.timeMs = tMs;
+        let audioTimeSec = 0;
+        try { audioTimeSec = this._audio?.player?.ctx?.currentTime ?? 0; } catch {}
+        const startAtSec = this._audio?.startAtSec || 0;
+        // If audio not started yet, audioTimeSec < startAtSec
+        const untilStartSec = startAtSec - audioTimeSec;
+        let gameTimeMs;
+        if (untilStartSec > 0) {
+          // still in countdown phase
+            gameTimeMs = -Math.max(0, Math.round(untilStartSec * 1000));
+        } else {
+          const elapsedAudioMs = (audioTimeSec - startAtSec) * 1000;
+          gameTimeMs = elapsedAudioMs + (this._audio?.offsetMs || 0);
+        }
+  this.state.timeMs = gameTimeMs; // authoritative audio time
+  // Reset per-frame VFX memo cache
+  this._vfxFrameCache = this._vfxFrameCache || new Map();
+  if (this._vfxFrameCache.size > 0) this._vfxFrameCache.clear();
+  // Legacy alias: many runtime sections (notes, VFX, judgments) still reference local tMs.
+  // After refactor to audio-clock timing we assign it explicitly here for backwards compatibility.
+  // Fixed-step logic update: advance logic state in uniform steps up to current audio time.
+  if (this._logicLastGameMs == null) {
+    this._logicLastGameMs = gameTimeMs;
+    this._logicStateTimeMs = gameTimeMs;
+    this._logicPrevStateTimeMs = gameTimeMs;
+  }
+  let dtReal = gameTimeMs - this._logicLastGameMs;
+  this._logicLastGameMs = gameTimeMs;
+  // During negative countdown, keep logic time locked to gameTimeMs (no interpolation needed)
+  if (gameTimeMs < 0) {
+    this._logicPrevStateTimeMs = this._logicStateTimeMs = gameTimeMs;
+    this._visualTimeMs = gameTimeMs;
+  } else {
+    // Accumulate and step
+    this._logicAccumMs += dtReal;
+    const step = this._logicStepMs;
+    // Prevent spiral of death: cap catch-up (e.g., if tab was inactive) to 8 steps per frame
+    let steps = 0;
+    while (this._logicAccumMs >= step && steps < 8) {
+      this._logicAccumMs -= step;
+      this._logicPrevStateTimeMs = this._logicStateTimeMs;
+      this._logicStateTimeMs += step;
+      steps++;
+    }
+    // If we hit cap (lag spike), snap logic to audio time to avoid widening gap
+    if (steps === 8 && this._logicStateTimeMs < gameTimeMs - 50) {
+      this._logicPrevStateTimeMs = this._logicStateTimeMs = gameTimeMs;
+      this._logicAccumMs = 0;
+    }
+  const alpha = Math.max(0, Math.min(1, this._logicAccumMs / step));
+  // Interpolate strictly between previous and current committed logic states for temporal stability
+  this._visualTimeMs = this._logicPrevStateTimeMs * (1 - alpha) + this._logicStateTimeMs * alpha;
+    if (this._visualTimeMs > gameTimeMs + 10) this._visualTimeMs = gameTimeMs; // clamp runaway
+  }
+  const tMs = (gameTimeMs < 0) ? gameTimeMs : this._visualTimeMs;
 
-        if (tMs < 0) {
-          showCountdown(-tMs);
+        if (gameTimeMs < 0) {
+          showCountdown(-gameTimeMs);
         } else {
           hideCountdown();
         }
@@ -1853,7 +2030,10 @@ export class Game {
         } catch (_) {}
       }
     }
-    console.warn("[PulseForge] ParticleContainer not available; using PIXI.Container for FX.");
+    if (!this._warnedNoParticleContainer) {
+      this._warnedNoParticleContainer = true;
+      try { console.warn("[PulseForge] ParticleContainer not available; using PIXI.Container for FX."); } catch {}
+    }
     return new PIXI.Container();
   }
 
