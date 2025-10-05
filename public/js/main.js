@@ -487,7 +487,7 @@ async function openEditor() {
     });
   }
   window.addEventListener('keydown', (e)=>{
-    // if (e.key === 'F10') { e.preventDefault(); toggleDevConsole(); }
+    if (e.key === 'F10') { e.preventDefault(); toggleDevConsole(); }
   });
   if (window.PF_DEV) {
     ensureDevConsole(()=>{
