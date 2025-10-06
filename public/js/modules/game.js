@@ -7,12 +7,14 @@ const GREAT_MS   = 65;
 const GOOD_MS    = 100;
 
 /** Visual tuning */
-const WHITE_FLASH_MS = 140;      // taps only
+const WHITE_FLASH_MS = 140;      // taps only (placeholder for potential flash effect)
 // Fade rates (alpha reduction per frame). Lower = slower fade.
-const HIT_FADE_RATE  = 0.025; // was 0.05 - slows tap head fade ~2x
-const HOLD_FADE_RATE = 0.018; // dedicated slower fade for hold body/head after completion
-const MISS_FADE_RATE = 0.08;
-const HOLD_BODY_FADE = 0.06;
+const HIT_FADE_RATE  = 0.025;    // tap head fade speed
+const HOLD_FADE_RATE = 0.018;    // hold success fade speed
+const MISS_FADE_RATE = 0.08;     // miss fade speed (broken hold head / optional)
+// Miss windows (ms after scheduled head time)
+const TAP_MISS_LATE_MS  = 120;
+const HOLD_MISS_LATE_MS = 150;
 
 /** Visual options */
 const VIS = {
@@ -1296,7 +1298,7 @@ export class Game {
       this._judgment("Miss", true);
       if (hold.bodyRef) {
         hold.bodyRef.__pfHoldActive = false;
-        this._beginFadeOut(hold.bodyRef, HOLD_BODY_FADE, true);
+        this._beginFadeOut(hold.bodyRef, HOLD_FADE_RATE, true);
       }
       if (hold.headRef) {
         hold.headRef.__pfHoldActive = false;
@@ -1974,7 +1976,7 @@ export class Game {
             }
 
             // Simple miss handling for taps (do not classify hold bodies here)
-            if (!body && !n.hit && n.result !== 'Miss' && (tMs - (n.tMs || 0) > 120)) {
+            if (!body && !n.hit && n.result !== 'Miss' && (tMs - (n.tMs || 0) > TAP_MISS_LATE_MS)) {
               n.result = 'Miss';
               n.hit = true; // legacy compatibility: other systems treat hit=true as judged; keep but mark result
               this.state.combo = 0;
@@ -2002,7 +2004,7 @@ export class Game {
             // Cull when well below lane
             const laneBottom = this._laneTop + this._laneHeight + 80;
             if (cont.y - (body?.__pfLen || 0) > laneBottom) {
-              if (body?.__pfMask && !body.__pfTunnelActive) { body.mask = null; body.__pfMask.removeFromParent(); }
+              if (body?.__pfMask) { body.mask = null; body.__pfMask.removeFromParent(); }
               cont.parent?.removeChild(cont);
               continue;
             }
@@ -2028,7 +2030,7 @@ export class Game {
                   hold.bodyRef.__pfHoldActive = false;
                   hold.bodyRef.__pfMaskPersist = false;
                   // Unmask so tail scrolls off-screen; do not fade
-                  if (hold.bodyRef.__pfMask && !hold.bodyRef.__pfTunnelActive) { hold.bodyRef.mask = null; hold.bodyRef.__pfMask.removeFromParent(); hold.bodyRef.__pfMask = null; }
+                  if (hold.bodyRef.__pfMask) { hold.bodyRef.mask = null; hold.bodyRef.__pfMask.removeFromParent(); hold.bodyRef.__pfMask = null; }
                 }
                 if (hold.headRef) {
                   hold.headRef.__pfHoldActive = false;
