@@ -612,7 +612,9 @@ export class Game {
   // Full-screen flash overlay (UI space; not affected by camera)
   this._flashOverlay = new PIXI.Graphics();
   this._flashOverlay.rect(0, 0, this.width, this.height);
-  this._flashOverlay.fill({ color: 0xffffff, alpha: 0 });
+  // Fill geometry should be fully opaque; we animate visibility via container alpha
+  this._flashOverlay.fill({ color: 0xffffff, alpha: 1 });
+  this._flashOverlay.alpha = 0; // start hidden
   this._flashOverlay.zIndex = 20; // above gameplay, below HUD
   this.app.stage.addChild(this._flashOverlay);
 
@@ -1846,7 +1848,8 @@ export class Game {
                   this._flashColor = col;
                   this._flashOverlay.clear();
                   this._flashOverlay.rect(0, 0, this.width, this.height);
-                  this._flashOverlay.fill({ color: this._flashColor, alpha: 0 });
+                  // Keep geometry opaque; container alpha controls fade
+                  this._flashOverlay.fill({ color: this._flashColor, alpha: 1 });
                 }
               }
               const rem = Math.max(0, this._flashUntilMs - t);

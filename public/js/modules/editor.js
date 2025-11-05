@@ -1,5 +1,6 @@
 // public/js/modules/editor.js
 // PulseForge Chart Editor — metronome, playtest, center-follow, true zoom scaling, Undo/Redo, QoL tools
+import { audioStore, sha256Hex } from './idb.js?v=19';
 export class Editor {
   constructor(opts) {
     this.canvas = document.getElementById(opts.canvasId);
@@ -53,7 +54,8 @@ export class Editor {
     this.audioSource = null;
     this.masterGain = null;
     this.metroGain = null;
-    this.audioUrl = null;
+  this.audioUrl = null;
+  this.audioStoreId = null; // key into IndexedDB when audio was imported from a file
 
     // Keep last decoded bytes so we can re-decode after context recreation (if URL not available)
     this._lastAudioArrayBuffer = null;
@@ -3565,6 +3567,7 @@ export class Editor {
         await this._ensureAudioCtx();
         await this._loadAudio(url);
         this.audioUrl = url;
+        this.audioStoreId = null;
         this._updateScrubMax();
         this._help("Loaded audio from URL.");
         if (applyManifest?.checked) {
@@ -3591,6 +3594,18 @@ export class Editor {
 
         await this._loadAudio(blobUrl, arrBuf);
         this.audioUrl = blobUrl;
+        // Persist audio Blob in IndexedDB for autosave restore across reloads
+        try {
+          const hash = await sha256Hex(arrBuf);
+          const ext = (f.name.split('.').pop() || '').toLowerCase();
+          const id = `file:${hash}:${f.size}:${ext}`;
+          await audioStore.put(id, new Blob([arrBuf], { type: f.type || 'audio/mpeg' }), { name: f.name });
+          this.audioStoreId = id;
+          // Mark dirty so autosave captures audioStoreId
+          this._markDirtyAndAutosave("audio-file-import");
+        } catch (e) {
+          console.warn('[PF] Failed to persist audio in IndexedDB:', e);
+        }
         this._updateScrubMax();
         this._help("Loaded audio from file (preview via blob URL).");
         if (applyManifest?.checked) {
@@ -4352,7 +4367,8 @@ export class Editor {
           manifestUrl: this.manifestUrl || null,
           title: this.manifest?.title || null,
           difficulty: this.difficulty || "normal",
-          audioUrl: this.audioUrl || null
+          audioUrl: this.audioUrl || null,
+          audioStoreId: this.audioStoreId || null
         },
         chart: this.chart ? JSON.parse(JSON.stringify(this.chart)) : null,
         vfxSets: this.vfx?._sets ? JSON.parse(JSON.stringify(this.vfx._sets)) : null,
@@ -4428,6 +4444,8 @@ export class Editor {
       // If autosave recorded an audio URL, try to load it (skip blob: which won't survive reloads)
       try {
         const aurl = draft.meta?.audioUrl;
+        const audioStoreId = draft.meta?.audioStoreId;
+        let restored = false;
         if (aurl && typeof aurl === "string" && !aurl.startsWith("blob:")) {
           await this._ensureAudioCtx();
           await this._loadAudio(aurl);
@@ -4435,6 +4453,25 @@ export class Editor {
           const urlBox = document.getElementById(this.ids.audioUrl);
           if (urlBox) urlBox.value = aurl;
           this._updateScrubMax();
+          restored = true;
+        }
+        // If URL was not usable but we have a stored Blob, restore from IndexedDB
+        if (!restored && audioStoreId) {
+          const rec = await audioStore.get(audioStoreId);
+          if (rec && rec.blob) {
+            const blobUrl = URL.createObjectURL(rec.blob);
+            await this._ensureAudioCtx();
+            const arrBuf = await rec.blob.arrayBuffer();
+            await this._loadAudio(blobUrl, arrBuf);
+            this.audioUrl = blobUrl;
+            this.audioStoreId = audioStoreId;
+            const urlBox = document.getElementById(this.ids.audioUrl);
+            if (urlBox) urlBox.value = '';
+            const hint = document.getElementById(this.ids.audioHint);
+            if (hint) hint.textContent = "Restored audio from local storage (IndexedDB).";
+            this._updateScrubMax();
+            restored = true;
+          }
         }
       } catch (e) {
         console.warn("Autosave restore: audio not loaded:", e);
@@ -4495,6 +4532,7 @@ export class Editor {
         const val = (urlBox.value || "").trim();
         if (!val) return;
         this.audioUrl = val;
+        this.audioStoreId = null;
         applyToManifest(val);
         // Duration may change after audio decode; best-effort scrub update
         this._updateScrubMax();
@@ -4508,6 +4546,7 @@ export class Editor {
         const val = (urlBox.value || "").trim();
         if (!val) return;
         this.audioUrl = val;
+        this.audioStoreId = null;
         applyToManifest(val);
         this._updateScrubMax();
         this._markDirtyAndAutosave("audio-load-url");
